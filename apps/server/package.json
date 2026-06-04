@@ -1,0 +1,22 @@
+{
+  "name": "@repohelm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@repohelm/core": "file:../../packages/core",
+    "@hono/node-server": "^1.19.6",
+    "hono": "^4.10.7",
+    "tsx": "^4.20.6",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1"
+  }
+}
+
