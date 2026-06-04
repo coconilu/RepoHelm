@@ -27,7 +27,7 @@ test.afterAll(async () => {
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "RepoHelm Demo Workspace" })).toBeVisible();
+  await expect(page.locator(".workspace-card").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
   await expect(page.getByText("Projects")).toBeVisible();
 
   await page.getByRole("textbox", { name: "标题" }).fill(questTitle);
@@ -40,18 +40,26 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await expect(page.getByRole("button", { name: new RegExp(questTitle) }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
-  await expect(page.locator(".quest-meta").filter({ hasText: "Mock Implementation Agent" })).toBeVisible();
+  await expect(page.locator(".run-context").filter({ hasText: "Mock Implementation Agent" })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "从浏览器创建 Quest" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "验收标准" })).toBeVisible();
 
-  await page.getByRole("button", { name: /运行 Quest/ }).click();
+  await page.locator(".run-action").click();
 
   await expect(page.locator("strong").filter({ hasText: "Worktree 已创建" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Validation & Review" })).toBeVisible();
+  await expect(page.locator("strong").filter({ hasText: "验证完成" })).toBeVisible();
+
+  await page.locator(".inspector-tabs").getByRole("button", { name: "知识" }).click();
   await expect(page.getByText(`Quest Memory: ${questTitle}`).first()).toBeVisible();
+
+  await page.locator(".inspector-tabs").getByRole("button", { name: "概要" }).click();
+  await expect(page.getByText("Spec validation").first()).toBeVisible();
   await expect(page.getByText(new RegExp(`repohelm/${questSlug}-`))).toBeVisible();
   await expect(page.locator(".badge.green").filter({ hasText: "created" })).toBeVisible();
-  await expect(page.locator(".changed-file-row").filter({ hasText: `repohelm-quest-output/${questSlug}.md` })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Diff Review" })).toBeVisible();
+
+  await page.locator(".inspector-tabs").getByRole("button", { name: "文件" }).click();
+  const changedFileRow = page.locator(".changed-file-row").filter({ hasText: `repohelm-quest-output/${questSlug}.md` });
+  await expect(changedFileRow).toBeVisible();
+  await changedFileRow.click();
   await expect(page.getByText("MVP mock Implementation Agent")).toBeVisible();
 });
