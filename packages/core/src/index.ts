@@ -1,3 +1,4 @@
+export * from "./agent.js";
 export * from "./service.js";
 export * from "./git.js";
 export * from "./store.js";

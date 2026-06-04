@@ -11,6 +11,17 @@ export type QuestStatus =
   | "blocked"
   | "cancelled";
 
+export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode";
+
+export interface AgentBackendInfo {
+  id: AgentBackendId;
+  name: string;
+  available: boolean;
+  configured: boolean;
+  command?: string;
+  detail: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -50,6 +61,14 @@ export interface WorktreeState {
   repoRoot?: string;
 }
 
+export interface ChangedFile {
+  projectId: string;
+  path: string;
+  status: string;
+  diff: string;
+  worktreePath: string;
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -57,9 +76,10 @@ export interface Quest {
   requirement: string;
   status: QuestStatus;
   spec: QuestSpec;
+  agentBackendId: AgentBackendId;
   affectedProjectIds: string[];
   worktrees: WorktreeState[];
-  changedFiles: string[];
+  changedFiles: Array<ChangedFile | string>;
   validationResults: string[];
   reviewNotes: string[];
   createdAt: string;
@@ -114,7 +134,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   state: () => request<RepoHelmState>("/api/state"),
-  createQuest: (input: { workspaceId: string; title: string; requirement: string; affectedProjectIds: string[] }) =>
+  agentBackends: () => request<AgentBackendInfo[]>("/api/agent-backends"),
+  createQuest: (input: {
+    workspaceId: string;
+    title: string;
+    requirement: string;
+    agentBackendId: AgentBackendId;
+    affectedProjectIds: string[];
+  }) =>
     request<Quest>("/api/quests", {
       method: "POST",
       body: JSON.stringify(input)

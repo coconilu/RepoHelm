@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { nanoid } from "nanoid";
+import { AgentBackendRegistry } from "./agent.js";
 import { GitWorktreeManager } from "./git.js";
 import type {
   AgentEvent,
@@ -28,6 +29,7 @@ const slugify = (value: string) =>
 
 export class RepoHelmService {
   private readonly gitWorktreeManager = new GitWorktreeManager();
+  private readonly agentBackendRegistry = new AgentBackendRegistry();
   private readonly worktreeRootDir: string;
 
   constructor(
@@ -86,6 +88,10 @@ export class RepoHelmService {
 
   async getState(): Promise<RepoHelmState> {
     return this.bootstrap();
+  }
+
+  async listAgentBackends() {
+    return this.agentBackendRegistry.listAvailability();
   }
 
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
@@ -150,6 +156,7 @@ export class RepoHelmService {
       requirement: input.requirement,
       status: "planning",
       spec,
+      agentBackendId: input.agentBackendId ?? "mock",
       affectedProjectIds,
       worktrees: [],
       changedFiles: [],
@@ -216,34 +223,45 @@ export class RepoHelmService {
     );
     const createdWorktrees = worktrees.filter((worktree) => worktree.status === "created");
     const failedWorktrees = worktrees.filter((worktree) => worktree.status === "failed");
+    const backend = this.agentBackendRegistry.get(quest.agentBackendId ?? "mock");
+    const backendResult = await backend.run({ quest, worktrees });
     const changedFiles = (
       await Promise.all(
         createdWorktrees.map((worktree) =>
-          this.gitWorktreeManager.getChangedFiles(worktree.worktreePath).catch(() => [])
+          this.gitWorktreeManager.getChangedFiles(worktree.projectId, worktree.worktreePath).catch(() => [])
         )
       )
     ).flat();
 
     const updatedQuest: Quest = {
       ...quest,
-      status: failedWorktrees.length > 0 && createdWorktrees.length === 0 ? "blocked" : "ready",
+      status:
+        backendResult.status === "blocked" || (failedWorktrees.length > 0 && createdWorktrees.length === 0)
+          ? "blocked"
+          : "ready",
       worktrees,
       changedFiles,
+      agentSummary: backendResult.summary,
       validationResults: [
-        "Mock validation: Spec 覆盖了用户目标、受影响项目和验收标准。",
+        `Agent backend: ${backend.name} (${backendResult.status})。`,
+        "Spec validation: Spec 覆盖了用户目标、受影响项目和验收标准。",
         createdWorktrees.length > 0
           ? `Worktree validation: 已创建 ${createdWorktrees.length} 个 Git worktree。`
           : "Worktree validation: 没有成功创建 Git worktree。",
+        changedFiles.length > 0
+          ? `Diff validation: 检测到 ${changedFiles.length} 个文件变更，可进入 diff review。`
+          : "Diff validation: 未检测到文件变更。",
         failedWorktrees.length > 0 ? `Worktree validation: ${failedWorktrees.length} 个项目创建失败。` : ""
       ].filter(Boolean),
       reviewNotes: [
+        backendResult.status === "blocked" ? `Review Agent: ${backendResult.summary}` : "",
         changedFiles.length > 0
-          ? "Review Agent: 当前 worktree 中已有文件变更，需要进入 diff review。"
+          ? "Review Agent: 当前 worktree 中已有文件变更，可以进入 diff review。"
           : "Review Agent: 当前 worktree 暂无文件变更，等待真实 implementation agent 写入代码。",
         failedWorktrees.length > 0
           ? "Review Agent: 部分项目 worktree 创建失败，需要先处理 Git 仓库或路径问题。"
           : "Review Agent: Worktree 隔离已就绪，可以安全接入 implementation agent。"
-      ],
+      ].filter(Boolean),
       updatedAt: now()
     };
 
@@ -253,13 +271,14 @@ export class RepoHelmService {
       questId,
       type: "memory",
       title: `Quest Memory: ${quest.title}`,
-      body: `本次 Quest 记录了需求 "${quest.requirement}" 的 Spec，并创建了 ${createdWorktrees.length} 个 Git worktree。`,
+      body: `本次 Quest 记录了需求 "${quest.requirement}" 的 Spec，创建了 ${createdWorktrees.length} 个 Git worktree，并生成了 ${changedFiles.length} 个可 review 变更。`,
       tags: ["quest", "memory"],
       createdAt: now(),
       updatedAt: now()
     };
 
     const events = [
+      ...backendResult.events.map((event) => this.event(questId, event.type, event.title, event.detail, event.agent)),
       this.event(
         questId,
         "worktree.created",
@@ -269,7 +288,7 @@ export class RepoHelmService {
           : "Worktree Manager 未能创建任何 worktree。",
         "Workspace Analyst"
       ),
-      this.event(questId, "agent.started", "Implementation Agent 已执行", "第一版使用 mock implementation agent 展示执行闭环。", "Implementation Agent"),
+      this.event(questId, "agent.completed", "Agent backend 已完成", backendResult.summary, backend.name),
       this.event(questId, "validation.completed", "验证完成", "Test Agent 生成了 mock validation 结果。", "Test Agent"),
       this.event(questId, "review.completed", "Review 完成", "Review Agent 已输出风险和下一步建议。", "Review Agent"),
       this.event(questId, "knowledge.updated", "知识库已更新", "Knowledge Agent 记录了本次 Quest memory。", "Knowledge Agent")

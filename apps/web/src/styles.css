@@ -129,7 +129,8 @@ button {
 .stack,
 .quest-list,
 .knowledge-list,
-.file-list {
+.file-list,
+.changed-file-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -324,7 +325,8 @@ label span {
 }
 
 input,
-textarea {
+textarea,
+.field-select {
   background: #fff;
   border: 1px solid #d7d2c5;
   border-radius: 8px;
@@ -332,6 +334,19 @@ textarea {
   outline: 0;
   padding: 10px 11px;
   width: 100%;
+}
+
+.field-select {
+  min-height: 42px;
+}
+
+.field-help {
+  color: #66737a;
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  margin-top: 6px;
 }
 
 textarea {
@@ -412,6 +427,25 @@ textarea {
   line-height: 1.55;
   margin: 8px 0 0;
   max-width: 920px;
+}
+
+.quest-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.quest-meta span {
+  color: #a9b8bd;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.quest-meta strong {
+  color: #fffaf0;
+  font-size: 13px;
 }
 
 .detail-grid {
@@ -543,6 +577,77 @@ code {
 
 .file-list code {
   display: block;
+}
+
+.changed-file-row {
+  align-items: flex-start;
+  background: #f7f5ee;
+  border: 1px solid #e2dccf;
+  border-radius: 8px;
+  color: #1d252c;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
+  text-align: left;
+}
+
+.changed-file-row.active {
+  background: #e8f4f1;
+  border-color: #73b8ad;
+}
+
+.changed-file-row span {
+  color: #66737a;
+  font-size: 12px;
+  font-weight: 800;
+  grid-column: 1 / -1;
+}
+
+.changed-file-row code {
+  min-width: 0;
+}
+
+.changed-file-row em {
+  background: #f3e4bb;
+  border-radius: 999px;
+  color: #76560f;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
+.diff-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diff-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.diff-meta strong {
+  font-size: 13px;
+}
+
+.diff-review pre {
+  background: #172026;
+  border-radius: 8px;
+  color: #eef7f3;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 0;
+  max-height: 520px;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 1080px) {

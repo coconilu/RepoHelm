@@ -15,7 +15,18 @@ import {
   TerminalSquare
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AgentEvent, api, KnowledgeItem, Project, Quest, RepoHelmState, Workspace } from "./api";
+import {
+  AgentBackendId,
+  AgentBackendInfo,
+  AgentEvent,
+  api,
+  ChangedFile,
+  KnowledgeItem,
+  Project,
+  Quest,
+  RepoHelmState,
+  Workspace
+} from "./api";
 
 const statusLabel: Record<string, string> = {
   draft: "草稿",
@@ -46,12 +57,15 @@ export function App() {
   const [questRequirement, setQuestRequirement] = useState(
     "在 Quest 执行前，为每个受影响项目创建隔离 worktree，并在 UI 中展示 worktree 路径、分支和状态。"
   );
+  const [agentBackendId, setAgentBackendId] = useState<AgentBackendId>("mock");
+  const [agentBackends, setAgentBackends] = useState<AgentBackendInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const load = async () => {
-    const nextState = await api.state();
+    const [nextState, nextBackends] = await Promise.all([api.state(), api.agentBackends()]);
     setState(nextState);
+    setAgentBackends(nextBackends);
     setSelectedWorkspaceId((current) => current || nextState.workspaces[0]?.id || "");
     setSelectedQuestId((current) => current || nextState.quests[0]?.id || "");
   };
@@ -94,6 +108,7 @@ export function App() {
         workspaceId: workspace.id,
         title: questTitle,
         requirement: questRequirement,
+        agentBackendId,
         affectedProjectIds: projects.map((project) => project.id)
       });
       await load();
@@ -221,6 +236,24 @@ export function App() {
                   onChange={(event) => setQuestRequirement(event.target.value)}
                 />
               </label>
+              <label>
+                <span>Agent Backend</span>
+                <select
+                  aria-label="Agent Backend"
+                  className="field-select"
+                  value={agentBackendId}
+                  onChange={(event) => setAgentBackendId(event.target.value as AgentBackendId)}
+                >
+                  {agentBackends.map((backend) => (
+                    <option key={backend.id} value={backend.id}>
+                      {backend.name} {backend.available ? "可用" : backend.configured ? "待启用" : "未配置"}
+                    </option>
+                  ))}
+                </select>
+                <span className="field-help">
+                  {agentBackends.find((backend) => backend.id === agentBackendId)?.detail ?? "正在读取 backend 状态。"}
+                </span>
+              </label>
             </div>
             <button className="primary-action" disabled={busy} type="submit">
               <Plus size={16} />
@@ -235,6 +268,7 @@ export function App() {
               knowledge={knowledge}
               projects={projects}
               quest={selectedQuest}
+              agentBackends={agentBackends}
               onRun={runQuest}
             />
           ) : (
@@ -268,6 +302,7 @@ function QuestDetail({
   knowledge,
   projects,
   quest,
+  agentBackends,
   onRun
 }: {
   busy: boolean;
@@ -275,9 +310,20 @@ function QuestDetail({
   knowledge: KnowledgeItem[];
   projects: Project[];
   quest: Quest;
+  agentBackends: AgentBackendInfo[];
   onRun: () => void;
 }) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
+  const changedFiles = quest.changedFiles.map((file) => normalizeChangedFile(file));
+  const [selectedChangedFileKey, setSelectedChangedFileKey] = useState("");
+  const selectedChangedFile = changedFiles.find((file) => changedFileKey(file) === selectedChangedFileKey) ?? changedFiles[0];
+  const questBackend = agentBackends.find((backend) => backend.id === quest.agentBackendId);
+
+  useEffect(() => {
+    if (changedFiles.length > 0 && !changedFiles.some((file) => changedFileKey(file) === selectedChangedFileKey)) {
+      setSelectedChangedFileKey(changedFileKey(changedFiles[0]));
+    }
+  }, [changedFiles, selectedChangedFileKey]);
 
   return (
     <section className="quest-detail">
@@ -286,6 +332,13 @@ function QuestDetail({
           <span className="eyebrow">Quest</span>
           <h2>{quest.title}</h2>
           <p>{quest.requirement}</p>
+          <div className="quest-meta">
+            <span>Backend</span>
+            <strong>{questBackend?.name ?? quest.agentBackendId}</strong>
+            <em className={questBackend?.available ? "badge green" : "badge blue"}>
+              {questBackend?.available ? "available" : "not ready"}
+            </em>
+          </div>
         </div>
         <button className="run-action" disabled={busy} onClick={onRun} type="button">
           <Play size={16} />
@@ -382,16 +435,63 @@ function QuestDetail({
             <h3>Changed Files</h3>
             <Search size={17} />
           </div>
-          <div className="file-list">
-            {quest.changedFiles.length === 0 ? <p className="muted">运行 Quest 后会展示变更文件。</p> : null}
-            {quest.changedFiles.map((file) => (
-              <code key={file}>{file}</code>
+          <div className="changed-file-list">
+            {changedFiles.length === 0 ? <p className="muted">运行 Quest 后会展示变更文件。</p> : null}
+            {changedFiles.map((file) => (
+              <button
+                className={`changed-file-row ${changedFileKey(file) === changedFileKey(selectedChangedFile) ? "active" : ""}`}
+                key={changedFileKey(file)}
+                onClick={() => setSelectedChangedFileKey(changedFileKey(file))}
+                type="button"
+              >
+                <span>{projectById.get(file.projectId)?.name ?? file.projectId}</span>
+                <code>{file.path}</code>
+                <em>{file.status}</em>
+              </button>
             ))}
           </div>
+        </section>
+
+        <section className="panel wide">
+          <div className="panel-heading compact">
+            <h3>Diff Review</h3>
+            <Search size={17} />
+          </div>
+          {selectedChangedFile ? (
+            <div className="diff-review">
+              <div className="diff-meta">
+                <strong>{projectById.get(selectedChangedFile.projectId)?.name ?? selectedChangedFile.projectId}</strong>
+                <code>{selectedChangedFile.path}</code>
+              </div>
+              <pre>{selectedChangedFile.diff || "No diff content."}</pre>
+            </div>
+          ) : (
+            <p className="muted">运行 Quest 并产生变更后，可以在这里审查 diff。</p>
+          )}
         </section>
       </div>
     </section>
   );
+}
+
+function normalizeChangedFile(file: ChangedFile | string): ChangedFile {
+  if (typeof file === "string") {
+    return {
+      projectId: "unknown",
+      path: file,
+      status: "unknown",
+      diff: "",
+      worktreePath: ""
+    };
+  }
+  return file;
+}
+
+function changedFileKey(file?: ChangedFile) {
+  if (!file) {
+    return "";
+  }
+  return `${file.projectId}:${file.path}`;
 }
 
 function SpecBlock({ title, items, empty }: { title: string; items: string[]; empty?: string }) {

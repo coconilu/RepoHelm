@@ -12,6 +12,7 @@ export type QuestStatus =
   | "cancelled";
 
 export type ProjectRole = "frontend" | "backend" | "documentation" | "library" | "infra" | "unknown";
+export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode";
 
 export interface Workspace {
   id: string;
@@ -52,6 +53,16 @@ export interface WorktreeState {
   repoRoot?: string;
 }
 
+export type ChangeKind = "added" | "modified" | "deleted" | "renamed" | "untracked" | "unknown";
+
+export interface ChangedFile {
+  projectId: string;
+  path: string;
+  status: ChangeKind;
+  diff: string;
+  worktreePath: string;
+}
+
 export interface AgentEvent {
   id: string;
   questId: string;
@@ -69,11 +80,13 @@ export interface Quest {
   requirement: string;
   status: QuestStatus;
   spec: QuestSpec;
+  agentBackendId: AgentBackendId;
   affectedProjectIds: string[];
   worktrees: WorktreeState[];
-  changedFiles: string[];
+  changedFiles: ChangedFile[];
   validationResults: string[];
   reviewNotes: string[];
+  agentSummary?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -116,5 +129,6 @@ export interface CreateQuestInput {
   workspaceId: string;
   title: string;
   requirement: string;
+  agentBackendId?: AgentBackendId;
   affectedProjectIds?: string[];
 }

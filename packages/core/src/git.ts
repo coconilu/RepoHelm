@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import type { ChangedFile, ChangeKind } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,14 +63,57 @@ export class GitWorktreeManager {
     }
   }
 
-  async getChangedFiles(worktreePath: string): Promise<string[]> {
-    const output = await this.git(worktreePath, ["status", "--short"]);
-    return output
+  async getChangedFiles(projectId: string, worktreePath: string): Promise<ChangedFile[]> {
+    const output = await this.git(worktreePath, ["status", "--short", "--untracked-files=all"]);
+    const entries = output
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => line.slice(3).trim())
-      .filter(Boolean);
+      .map((line) => this.parseStatusLine(line))
+      .filter((entry) => entry.path.length > 0);
+
+    return Promise.all(
+      entries.map(async (entry) => ({
+        projectId,
+        path: entry.path,
+        status: entry.status,
+        diff: await this.getFileDiff(worktreePath, entry.path, entry.status),
+        worktreePath
+      }))
+    );
+  }
+
+  private parseStatusLine(line: string): { path: string; status: ChangeKind } {
+    const rawStatus = line.slice(0, 2);
+    const rawPath = line.slice(3).trim();
+    const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1)!.trim() : rawPath;
+    if (rawStatus === "??") {
+      return { path, status: "untracked" };
+    }
+    if (rawStatus.includes("R")) {
+      return { path, status: "renamed" };
+    }
+    if (rawStatus.includes("D")) {
+      return { path, status: "deleted" };
+    }
+    if (rawStatus.includes("A")) {
+      return { path, status: "added" };
+    }
+    if (rawStatus.includes("M")) {
+      return { path, status: "modified" };
+    }
+    return { path, status: "unknown" };
+  }
+
+  private async getFileDiff(worktreePath: string, path: string, status: ChangeKind): Promise<string> {
+    if (status === "untracked") {
+      return this.gitAllowingDiffExit(worktreePath, ["diff", "--no-index", "--", "/dev/null", join(worktreePath, path)]);
+    }
+    const unstaged = await this.git(worktreePath, ["diff", "--", path]);
+    if (unstaged.trim().length > 0) {
+      return unstaged;
+    }
+    return this.git(worktreePath, ["diff", "--cached", "--", path]);
   }
 
   private async getRepoRoot(path: string): Promise<string> {
@@ -86,6 +130,20 @@ export class GitWorktreeManager {
       }
     });
     return stdout;
+  }
+
+  private async gitAllowingDiffExit(cwd: string, args: string[]): Promise<string> {
+    try {
+      return await this.git(cwd, args);
+    } catch (error) {
+      if (error && typeof error === "object") {
+        const maybeError = error as { stdout?: string };
+        if (maybeError.stdout) {
+          return maybeError.stdout;
+        }
+      }
+      throw error;
+    }
   }
 
   private async pathExists(path: string): Promise<boolean> {
@@ -105,4 +163,3 @@ export class GitWorktreeManager {
     return String(error);
   }
 }
-

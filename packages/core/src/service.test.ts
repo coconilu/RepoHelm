@@ -59,10 +59,23 @@ describe("RepoHelmService", () => {
     const nextState = await service.getState();
 
     expect(quest.status).toBe("planning");
+    expect(quest.agentBackendId).toBe("mock");
     expect(quest.affectedProjectIds).toEqual(workspace.projectIds);
     expect(quest.spec.userGoal).toContain("隔离 worktree");
     expect(quest.spec.acceptanceCriteria).toHaveLength(3);
     expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(3);
+  });
+
+  it("lists available agent backends with mock enabled by default", async () => {
+    const { service } = await createService();
+
+    const backends = await service.listAgentBackends();
+
+    expect(backends.find((backend) => backend.id === "mock")).toMatchObject({
+      available: true,
+      configured: true
+    });
+    expect(backends.map((backend) => backend.id)).toEqual(["mock", "codex-cli", "claude-code", "opencode"]);
   });
 
   it("runs a quest into ready state with a real git worktree, validation, review, and memory", async () => {
@@ -90,9 +103,14 @@ describe("RepoHelmService", () => {
     await expect(readFile(join(completedQuest.worktrees[0]!.worktreePath, "README.md"), "utf8")).resolves.toContain("Fixture");
     expect(completedQuest.validationResults.length).toBeGreaterThan(0);
     expect(completedQuest.reviewNotes.length).toBeGreaterThan(0);
-    expect(completedQuest.changedFiles).toEqual([]);
-    expect(questEvents).toHaveLength(8);
+    expect(completedQuest.changedFiles).toHaveLength(1);
+    expect(completedQuest.changedFiles[0]?.path).toBe("repohelm-quest-output/run-mvp-loop.md");
+    expect(completedQuest.changedFiles[0]?.status).toBe("untracked");
+    expect(completedQuest.changedFiles[0]?.diff).toContain("MVP mock Implementation Agent");
+    expect(completedQuest.agentSummary).toContain("Mock backend");
+    expect(questEvents).toHaveLength(10);
     expect(questMemory?.type).toBe("memory");
+    expect(questMemory?.body).toContain("1 个可 review 变更");
   });
 
   it("blocks a quest when the affected project is not a git repository", async () => {
@@ -113,5 +131,6 @@ describe("RepoHelmService", () => {
     expect(completedQuest.worktrees).toHaveLength(1);
     expect(completedQuest.worktrees[0]?.status).toBe("failed");
     expect(completedQuest.worktrees[0]?.note).toContain("not a git repository");
+    expect(completedQuest.changedFiles).toEqual([]);
   });
 });

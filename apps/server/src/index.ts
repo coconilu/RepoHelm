@@ -21,7 +21,9 @@ const rootDir = resolveRootDir();
 const stateRootDir = process.env.REPOHELM_STATE_ROOT ? resolve(process.env.REPOHELM_STATE_ROOT) : rootDir;
 const worktreeRootDir = process.env.REPOHELM_WORKTREE_ROOT
   ? resolve(process.env.REPOHELM_WORKTREE_ROOT)
-  : join(stateRootDir, "worktrees");
+  : stateRootDir === rootDir
+    ? join(rootDir, ".repohelm", "worktrees")
+    : join(stateRootDir, "worktrees");
 const port = Number(process.env.REPOHELM_PORT ?? 4300);
 const service = new RepoHelmService(new JsonStateStore(stateRootDir), rootDir, { worktreeRootDir });
 
@@ -54,6 +56,7 @@ const questSchema = z.object({
   workspaceId: z.string().min(1),
   title: z.string().min(1),
   requirement: z.string().min(1),
+  agentBackendId: z.enum(["mock", "codex-cli", "claude-code", "opencode"]).optional(),
   affectedProjectIds: z.array(z.string()).optional()
 });
 
@@ -70,6 +73,11 @@ app.get("/api/health", (context) =>
 app.get("/api/state", async (context) => {
   const state = await service.getState();
   return context.json(state);
+});
+
+app.get("/api/agent-backends", async (context) => {
+  const backends = await service.listAgentBackends();
+  return context.json(backends);
 });
 
 app.post("/api/workspaces", async (context) => {
