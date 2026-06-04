@@ -35,7 +35,18 @@ http://localhost:4300/
 ```bash
 pnpm typecheck
 pnpm build
+pnpm test
+pnpm test:e2e
+pnpm test:all
 ```
+
+## 测试
+
+- `pnpm test`：运行核心领域逻辑测试，覆盖 workspace bootstrap、Quest 创建和 mock Quest 执行闭环。
+- `pnpm test:e2e`：运行 Playwright 浏览器测试，覆盖从 UI 创建 Quest、生成 Spec、运行 Quest、展示 worktree/review/knowledge 的主流程。
+- `pnpm test:all`：依次运行类型检查、单元测试和 e2e 测试。
+
+e2e 测试会使用 `.repohelm/e2e` 作为独立运行状态目录，不会复用本地开发状态。
 
 ## 当前实现边界
 

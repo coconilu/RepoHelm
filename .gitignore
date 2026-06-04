@@ -3,6 +3,6 @@ dist/
 .DS_Store
 .env
 .env.*
-.repohelm/state.json
-.repohelm/worktrees/
-
+.repohelm/
+test-results/
+playwright-report/

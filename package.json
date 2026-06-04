@@ -7,9 +7,13 @@
   "scripts": {
     "dev": "pnpm --filter @repohelm/core build && concurrently -n api,web -c cyan,magenta \"pnpm --filter @repohelm/server dev\" \"pnpm --filter @repohelm/web dev\"",
     "build": "pnpm --filter @repohelm/core build && pnpm --filter @repohelm/server build && pnpm --filter @repohelm/web build",
-    "typecheck": "pnpm --filter @repohelm/core build && pnpm --filter @repohelm/server typecheck && pnpm --filter @repohelm/web typecheck"
+    "typecheck": "pnpm --filter @repohelm/core build && pnpm --filter @repohelm/server typecheck && pnpm --filter @repohelm/web typecheck",
+    "test": "pnpm --filter @repohelm/core test",
+    "test:e2e": "NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test",
+    "test:all": "pnpm typecheck && pnpm test && pnpm test:e2e"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3"
   }

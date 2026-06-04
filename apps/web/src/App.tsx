@@ -211,11 +211,15 @@ export function App() {
             <div className="field-grid">
               <label>
                 <span>标题</span>
-                <input value={questTitle} onChange={(event) => setQuestTitle(event.target.value)} />
+                <input aria-label="标题" value={questTitle} onChange={(event) => setQuestTitle(event.target.value)} />
               </label>
               <label>
                 <span>需求</span>
-                <textarea value={questRequirement} onChange={(event) => setQuestRequirement(event.target.value)} />
+                <textarea
+                  aria-label="需求"
+                  value={questRequirement}
+                  onChange={(event) => setQuestRequirement(event.target.value)}
+                />
               </label>
             </div>
             <button className="primary-action" disabled={busy} type="submit">
@@ -400,4 +404,3 @@ function SpecBlock({ title, items, empty }: { title: string; items: string[]; em
     </div>
   );
 }
-
