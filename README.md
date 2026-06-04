@@ -14,8 +14,8 @@ RepoHelm 是一个开源的 Quest 工作区原型，用来验证“虚拟 worksp
 ## 启动
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 启动后访问：
@@ -33,8 +33,8 @@ http://localhost:4300/
 ## 常用命令
 
 ```bash
-npm run typecheck
-npm run build
+pnpm typecheck
+pnpm build
 ```
 
 ## 当前实现边界
@@ -45,4 +45,3 @@ npm run build
 - 模型 provider、Codex CLI、Claude Code、OpenCode backend adapter 还未接入。
 
 完整方向见：[架构文档](docs/architecture.md)。
-

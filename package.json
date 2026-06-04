@@ -3,14 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
+  "packageManager": "pnpm@10.33.4",
   "scripts": {
-    "dev": "npm run build -w @repohelm/core && concurrently -n api,web -c cyan,magenta \"npm run dev -w @repohelm/server\" \"npm run dev -w @repohelm/web\"",
-    "build": "npm run build -w @repohelm/core && npm run build -w @repohelm/server && npm run build -w @repohelm/web",
-    "typecheck": "npm run build -w @repohelm/core && npm run typecheck -w @repohelm/server && npm run typecheck -w @repohelm/web"
+    "dev": "pnpm --filter @repohelm/core build && concurrently -n api,web -c cyan,magenta \"pnpm --filter @repohelm/server dev\" \"pnpm --filter @repohelm/web dev\"",
+    "build": "pnpm --filter @repohelm/core build && pnpm --filter @repohelm/server build && pnpm --filter @repohelm/web build",
+    "typecheck": "pnpm --filter @repohelm/core build && pnpm --filter @repohelm/server typecheck && pnpm --filter @repohelm/web typecheck"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
