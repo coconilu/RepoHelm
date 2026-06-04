@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { nanoid } from "nanoid";
+import { GitWorktreeManager } from "./git.js";
 import type {
   AgentEvent,
   CreateProjectInput,
@@ -26,10 +27,16 @@ const slugify = (value: string) =>
     .slice(0, 48) || "quest";
 
 export class RepoHelmService {
+  private readonly gitWorktreeManager = new GitWorktreeManager();
+  private readonly worktreeRootDir: string;
+
   constructor(
     private readonly store: JsonStateStore,
-    private readonly rootDir: string
-  ) {}
+    private readonly rootDir: string,
+    options: { worktreeRootDir?: string } = {}
+  ) {
+    this.worktreeRootDir = options.worktreeRootDir ?? join(rootDir, ".repohelm", "worktrees");
+  }
 
   async bootstrap(): Promise<RepoHelmState> {
     const state = await this.store.read();
@@ -176,35 +183,66 @@ export class RepoHelmService {
       throw new Error("Workspace not found");
     }
 
-    const branchName = `repohelm/${slugify(quest.title)}`;
-    const worktrees = quest.affectedProjectIds.map<WorktreeState>((projectId) => {
-      const project = state.projects.find((item) => item.id === projectId);
-      const projectName = project?.name ?? projectId;
-      return {
-        projectId,
-        branchName,
-        worktreePath: join(this.rootDir, ".repohelm", "worktrees", slugify(quest.title), slugify(projectName)),
-        status: "planned",
-        note: "第一版先记录 worktree 计划，不自动修改用户仓库。"
-      };
-    });
+    const branchSuffix = quest.id.replace(/^quest_/, "").toLowerCase().slice(0, 8);
+    const branchName = `repohelm/${slugify(quest.title)}-${branchSuffix}`;
+    const worktrees = await Promise.all(
+      quest.affectedProjectIds.map<Promise<WorktreeState>>(async (projectId) => {
+        const project = state.projects.find((item) => item.id === projectId);
+        const projectName = project?.name ?? projectId;
+        const worktreePath = join(this.worktreeRootDir, slugify(quest.title), slugify(projectName));
+        if (!project) {
+          return {
+            projectId,
+            branchName,
+            worktreePath,
+            status: "failed",
+            note: "Project not found"
+          };
+        }
+        const result = await this.gitWorktreeManager.createWorktree({
+          repoPath: project.path,
+          branchName,
+          worktreePath
+        });
+        return {
+          projectId,
+          branchName: result.branchName,
+          worktreePath: result.worktreePath,
+          status: result.status,
+          note: result.note,
+          repoRoot: result.repoRoot
+        };
+      })
+    );
+    const createdWorktrees = worktrees.filter((worktree) => worktree.status === "created");
+    const failedWorktrees = worktrees.filter((worktree) => worktree.status === "failed");
+    const changedFiles = (
+      await Promise.all(
+        createdWorktrees.map((worktree) =>
+          this.gitWorktreeManager.getChangedFiles(worktree.worktreePath).catch(() => [])
+        )
+      )
+    ).flat();
 
     const updatedQuest: Quest = {
       ...quest,
-      status: "ready",
+      status: failedWorktrees.length > 0 && createdWorktrees.length === 0 ? "blocked" : "ready",
       worktrees,
-      changedFiles: [
-        "docs/specs/quest-spec.md",
-        "src/example/implementation-plan.ts",
-        "docs/knowledge/quest-memory.md"
-      ],
+      changedFiles,
       validationResults: [
         "Mock validation: Spec 覆盖了用户目标、受影响项目和验收标准。",
-        "Mock validation: Worktree 计划已生成，等待真实 Git 集成。"
-      ],
+        createdWorktrees.length > 0
+          ? `Worktree validation: 已创建 ${createdWorktrees.length} 个 Git worktree。`
+          : "Worktree validation: 没有成功创建 Git worktree。",
+        failedWorktrees.length > 0 ? `Worktree validation: ${failedWorktrees.length} 个项目创建失败。` : ""
+      ].filter(Boolean),
       reviewNotes: [
-        "Review Agent: 第一版没有直接写入业务项目，风险较低。",
-        "Review Agent: 下一步需要接入真实 worktree create 和 diff 读取。"
+        changedFiles.length > 0
+          ? "Review Agent: 当前 worktree 中已有文件变更，需要进入 diff review。"
+          : "Review Agent: 当前 worktree 暂无文件变更，等待真实 implementation agent 写入代码。",
+        failedWorktrees.length > 0
+          ? "Review Agent: 部分项目 worktree 创建失败，需要先处理 Git 仓库或路径问题。"
+          : "Review Agent: Worktree 隔离已就绪，可以安全接入 implementation agent。"
       ],
       updatedAt: now()
     };
@@ -215,14 +253,22 @@ export class RepoHelmService {
       questId,
       type: "memory",
       title: `Quest Memory: ${quest.title}`,
-      body: `本次 Quest 记录了需求 "${quest.requirement}" 的 Spec、worktree 计划和 mock validation。`,
+      body: `本次 Quest 记录了需求 "${quest.requirement}" 的 Spec，并创建了 ${createdWorktrees.length} 个 Git worktree。`,
       tags: ["quest", "memory"],
       createdAt: now(),
       updatedAt: now()
     };
 
     const events = [
-      this.event(questId, "worktree.planned", "Worktree 计划已生成", "Worktree Manager 为受影响项目生成了隔离分支和路径。", "Workspace Analyst"),
+      this.event(
+        questId,
+        "worktree.created",
+        createdWorktrees.length > 0 ? "Worktree 已创建" : "Worktree 创建失败",
+        createdWorktrees.length > 0
+          ? `Worktree Manager 已为 ${createdWorktrees.length} 个项目创建隔离 worktree。`
+          : "Worktree Manager 未能创建任何 worktree。",
+        "Workspace Analyst"
+      ),
       this.event(questId, "agent.started", "Implementation Agent 已执行", "第一版使用 mock implementation agent 展示执行闭环。", "Implementation Agent"),
       this.event(questId, "validation.completed", "验证完成", "Test Agent 生成了 mock validation 结果。", "Test Agent"),
       this.event(questId, "review.completed", "Review 完成", "Review Agent 已输出风险和下一步建议。", "Review Agent"),
@@ -274,4 +320,3 @@ export class RepoHelmService {
     };
   }
 }
-

@@ -47,6 +47,7 @@ export interface WorktreeState {
   worktreePath: string;
   status: string;
   note: string;
+  repoRoot?: string;
 }
 
 export interface Quest {
@@ -128,4 +129,3 @@ export const api = {
       body: JSON.stringify(input)
     })
 };
-

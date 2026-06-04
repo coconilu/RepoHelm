@@ -3,7 +3,7 @@ import { JsonStateStore, RepoHelmService } from "@repohelm/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 function resolveRootDir() {
@@ -18,8 +18,12 @@ function resolveRootDir() {
 }
 
 const rootDir = resolveRootDir();
+const stateRootDir = process.env.REPOHELM_STATE_ROOT ? resolve(process.env.REPOHELM_STATE_ROOT) : rootDir;
+const worktreeRootDir = process.env.REPOHELM_WORKTREE_ROOT
+  ? resolve(process.env.REPOHELM_WORKTREE_ROOT)
+  : join(stateRootDir, "worktrees");
 const port = Number(process.env.REPOHELM_PORT ?? 4300);
-const service = new RepoHelmService(new JsonStateStore(rootDir), rootDir);
+const service = new RepoHelmService(new JsonStateStore(stateRootDir), rootDir, { worktreeRootDir });
 
 const app = new Hono();
 
@@ -57,7 +61,9 @@ app.get("/api/health", (context) =>
   context.json({
     ok: true,
     name: "RepoHelm API",
-    rootDir
+    rootDir,
+    stateRootDir,
+    worktreeRootDir
   })
 );
 

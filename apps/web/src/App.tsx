@@ -336,7 +336,10 @@ function QuestDetail({
             ) : null}
             {quest.worktrees.map((worktree) => (
               <article className="worktree-row" key={`${worktree.projectId}-${worktree.worktreePath}`}>
-                <strong>{projectById.get(worktree.projectId)?.name ?? worktree.projectId}</strong>
+                <div className="worktree-title">
+                  <strong>{projectById.get(worktree.projectId)?.name ?? worktree.projectId}</strong>
+                  <em className={worktree.status === "created" ? "badge green" : "badge red"}>{worktree.status}</em>
+                </div>
                 <code>{worktree.branchName}</code>
                 <span>{worktree.worktreePath}</span>
                 <em>{worktree.note}</em>

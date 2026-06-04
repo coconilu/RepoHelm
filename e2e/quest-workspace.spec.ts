@@ -1,4 +1,27 @@
 import { expect, test } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+test.afterAll(async () => {
+  const response = await fetch("http://127.0.0.1:4300/api/state");
+  const state = await response.json();
+  const targetQuest = state.quests.find((quest: { title: string }) => quest.title === "E2E 验证 worktree Quest");
+  if (!targetQuest) {
+    return;
+  }
+  for (const worktree of targetQuest.worktrees ?? []) {
+    const project = state.projects.find((item: { id: string }) => item.id === worktree.projectId);
+    if (!project || worktree.status !== "created") {
+      continue;
+    }
+    await execFileAsync("git", ["worktree", "remove", "--force", worktree.worktreePath], { cwd: project.path }).catch(
+      () => undefined
+    );
+    await execFileAsync("git", ["branch", "-D", worktree.branchName], { cwd: project.path }).catch(() => undefined);
+  }
+});
 
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.goto("/");
@@ -19,9 +42,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await page.getByRole("button", { name: /运行 Quest/ }).click();
 
-  await expect(page.locator("strong").filter({ hasText: "Worktree 计划已生成" })).toBeVisible();
+  await expect(page.locator("strong").filter({ hasText: "Worktree 已创建" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Validation & Review" })).toBeVisible();
   await expect(page.getByText("Quest Memory: E2E 验证 worktree Quest")).toBeVisible();
-  await expect(page.getByText("repohelm/e2e-worktree-quest")).toBeVisible();
-  await expect(page.getByText("docs/specs/quest-spec.md")).toBeVisible();
+  await expect(page.getByText(/repohelm\/e2e-worktree-quest-/)).toBeVisible();
+  await expect(page.getByText("created")).toBeVisible();
+  await expect(page.getByText("当前 worktree 暂无文件变更")).toBeVisible();
 });

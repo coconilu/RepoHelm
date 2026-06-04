@@ -499,6 +499,13 @@ textarea {
   gap: 6px;
 }
 
+.worktree-title {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
 code {
   background: #edf1ed;
   border: 1px solid #d8ded6;
@@ -579,4 +586,3 @@ code {
     display: flex;
   }
 }
-

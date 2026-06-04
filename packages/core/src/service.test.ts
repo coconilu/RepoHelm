@@ -1,12 +1,30 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { RepoHelmService } from "./service.js";
 import { JsonStateStore } from "./store.js";
 
+const execFileAsync = promisify(execFile);
+
 async function createService() {
   const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-test-"));
+  return {
+    rootDir,
+    service: new RepoHelmService(new JsonStateStore(rootDir), rootDir)
+  };
+}
+
+async function createGitRepoService() {
+  const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-git-test-"));
+  await execFileAsync("git", ["init", "-b", "main"], { cwd: rootDir });
+  await writeFile(join(rootDir, "README.md"), "# Fixture\n", "utf8");
+  await execFileAsync("git", ["add", "README.md"], { cwd: rootDir });
+  await execFileAsync("git", ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "Initial commit"], {
+    cwd: rootDir
+  });
   return {
     rootDir,
     service: new RepoHelmService(new JsonStateStore(rootDir), rootDir)
@@ -47,8 +65,8 @@ describe("RepoHelmService", () => {
     expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(3);
   });
 
-  it("runs a quest into ready state with worktree plan, validation, review, and memory", async () => {
-    const { rootDir, service } = await createService();
+  it("runs a quest into ready state with a real git worktree, validation, review, and memory", async () => {
+    const { rootDir, service } = await createGitRepoService();
     const state = await service.bootstrap();
     const workspace = state.workspaces[0]!;
     const project = state.projects[0]!;
@@ -66,13 +84,34 @@ describe("RepoHelmService", () => {
 
     expect(completedQuest.status).toBe("ready");
     expect(completedQuest.worktrees).toHaveLength(1);
-    expect(completedQuest.worktrees[0]?.branchName).toBe("repohelm/run-mvp-loop");
+    expect(completedQuest.worktrees[0]?.status).toBe("created");
+    expect(completedQuest.worktrees[0]?.branchName).toMatch(/^repohelm\/run-mvp-loop-/);
     expect(completedQuest.worktrees[0]?.worktreePath).toContain(join(rootDir, ".repohelm", "worktrees"));
+    await expect(readFile(join(completedQuest.worktrees[0]!.worktreePath, "README.md"), "utf8")).resolves.toContain("Fixture");
     expect(completedQuest.validationResults.length).toBeGreaterThan(0);
     expect(completedQuest.reviewNotes.length).toBeGreaterThan(0);
-    expect(completedQuest.changedFiles).toContain("docs/specs/quest-spec.md");
+    expect(completedQuest.changedFiles).toEqual([]);
     expect(questEvents).toHaveLength(8);
     expect(questMemory?.type).toBe("memory");
   });
-});
 
+  it("blocks a quest when the affected project is not a git repository", async () => {
+    const { service } = await createService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const project = state.projects[0]!;
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Non git project",
+      requirement: "尝试为非 Git 项目创建 worktree。",
+      affectedProjectIds: [project.id]
+    });
+
+    const completedQuest = await service.runQuest(quest.id);
+
+    expect(completedQuest.status).toBe("blocked");
+    expect(completedQuest.worktrees).toHaveLength(1);
+    expect(completedQuest.worktrees[0]?.status).toBe("failed");
+    expect(completedQuest.worktrees[0]?.note).toContain("not a git repository");
+  });
+});

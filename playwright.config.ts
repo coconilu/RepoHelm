@@ -18,7 +18,7 @@ export default defineConfig({
   },
   webServer: {
     command:
-      "rm -rf .repohelm/e2e && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= REPOHELM_ROOT=$PWD/.repohelm/e2e pnpm dev",
+      "rm -rf .repohelm/e2e && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= REPOHELM_ROOT=$PWD REPOHELM_STATE_ROOT=$PWD/.repohelm/e2e pnpm dev",
     url: "http://127.0.0.1:5173",
     reuseExistingServer: false,
     timeout: 120_000

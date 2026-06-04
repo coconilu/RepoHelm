@@ -49,6 +49,7 @@ export interface WorktreeState {
   worktreePath: string;
   status: "not_created" | "planned" | "created" | "failed";
   note: string;
+  repoRoot?: string;
 }
 
 export interface AgentEvent {
@@ -117,4 +118,3 @@ export interface CreateQuestInput {
   requirement: string;
   affectedProjectIds?: string[];
 }
-
