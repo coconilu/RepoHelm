@@ -62,7 +62,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await page
     .getByRole("textbox", { name: "需求" })
-    .fill(`${questTitle}\n从浏览器创建 Quest，生成 Spec，运行 mock agent，并展示 worktree、review 和 knowledge。`);
+    .fill(`${questTitle}\n从浏览器创建 Quest，生成 Spec，推荐 security skill 审查 MCP manifest，运行 mock agent，并展示 worktree、review 和 knowledge。`);
   await expect(page.getByRole("combobox", { name: "Agent Backend" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "执行模式" })).toBeVisible();
   await page.getByRole("button", { name: "发送给 Agent" }).click();
@@ -73,6 +73,12 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.getByRole("listitem").filter({ hasText: "从浏览器创建 Quest" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agent Spec" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "验收标准" })).toBeVisible();
+  await page.locator(".inspector-tabs").getByRole("button", { name: "能力" }).click();
+  const securityCapability = page.locator(".capability-row").filter({ hasText: "Security Review Skill" });
+  await expect(securityCapability).toBeVisible();
+  await expect(securityCapability.getByText("read:changed-files")).toBeVisible();
+  await securityCapability.getByRole("button", { name: "确认启用" }).click();
+  await expect(securityCapability.getByText("accepted")).toBeVisible();
 
   await page.getByRole("button", { name: "运行 Request" }).click();
 

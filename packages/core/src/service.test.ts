@@ -147,8 +147,40 @@ describe("RepoHelmService", () => {
     expect(quest.spec.userGoal).toContain("隔离 worktree");
     expect(quest.spec.acceptanceCriteria).toHaveLength(3);
     expect(quest.spec.background).toContain("workspace 知识");
-    expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(4);
+    expect(quest.capabilityRecommendations.length).toBeGreaterThan(0);
+    expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(5);
     expect(await service.searchKnowledge(workspace.id, "RepoHelm")).not.toHaveLength(0);
+  });
+
+  it("recommends auditable capabilities and records manual acceptance", async () => {
+    const { service } = await createService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Audit MCP permissions",
+      requirement: "需要 security skill 审查 MCP manifest 和 secrets 权限。"
+    });
+    const securityRecommendation = quest.capabilityRecommendations.find(
+      (recommendation) => recommendation.capabilityId === "cap_security_skill"
+    );
+    const mcpRecommendation = quest.capabilityRecommendations.find(
+      (recommendation) => recommendation.capabilityId === "cap_mcp_manifest"
+    );
+
+    expect(securityRecommendation?.status).toBe("pending");
+    expect(mcpRecommendation?.requiredPermissions).toContain("read:mcp-manifest");
+
+    const acceptedQuest = await service.acceptCapabilityRecommendation(quest.id, "cap_security_skill");
+    const nextState = await service.getState();
+
+    expect(
+      acceptedQuest.capabilityRecommendations.find((recommendation) => recommendation.capabilityId === "cap_security_skill")
+        ?.status
+    ).toBe("accepted");
+    expect(nextState.capabilities.find((capability) => capability.id === "cap_security_skill")?.installed).toBe(true);
+    expect(nextState.events.find((event) => event.questId === quest.id && event.type === "capability.accepted")).toBeTruthy();
   });
 
   it("lists available agent backends with mock enabled by default", async () => {
@@ -239,7 +271,7 @@ describe("RepoHelmService", () => {
     expect(completedQuest.changedFiles[0]?.status).toBe("untracked");
     expect(completedQuest.changedFiles[0]?.diff).toContain("MVP mock Implementation Agent");
     expect(completedQuest.agentSummary).toContain("Mock backend");
-    expect(questEvents).toHaveLength(11);
+    expect(questEvents).toHaveLength(12);
     expect(questMemory?.type).toBe("memory");
     expect(questMemory?.body).toContain("1 个可 review 变更");
     expect(questMemory?.sourcePath).toContain(join(rootDir, ".repohelm", "knowledge"));

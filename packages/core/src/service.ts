@@ -6,6 +6,8 @@ import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
 import type {
   AgentEvent,
+  CapabilityDefinition,
+  CapabilityRecommendation,
   CreateProjectInput,
   CreateQuestInput,
   CreateWorkspaceInput,
@@ -107,7 +109,8 @@ export class RepoHelmService {
       ...state,
       workspaces: [workspace],
       projects: [project],
-      knowledge
+      knowledge,
+      capabilities: this.seedCapabilities(timestamp)
     };
     await this.store.write(nextState);
     return nextState;
@@ -288,6 +291,7 @@ export class RepoHelmService {
     const questId = id("quest");
     const relatedKnowledge = this.searchKnowledgeItems(state.knowledge, input.workspaceId, input.requirement).slice(0, 3);
     const spec = this.generateSpec(input.requirement, relatedKnowledge);
+    const capabilityRecommendations = this.recommendCapabilities(state.capabilities, input.requirement, timestamp);
     const quest: Quest = {
       id: questId,
       workspaceId: input.workspaceId,
@@ -302,6 +306,7 @@ export class RepoHelmService {
       validationResults: [],
       reviewNotes: [],
       deliveryResults: [],
+      capabilityRecommendations,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -316,6 +321,15 @@ export class RepoHelmService {
             "知识库已引用",
             `Agent 读取了 ${relatedKnowledge.length} 条相关知识。`,
             "Knowledge Agent"
+          )
+        : undefined,
+      capabilityRecommendations.length > 0
+        ? this.event(
+            questId,
+            "capability.recommended",
+            "能力推荐已生成",
+            `Capability Agent 推荐了 ${capabilityRecommendations.length} 个可审计能力。`,
+            "Capability Agent"
           )
         : undefined
     ].filter(Boolean) as AgentEvent[];
@@ -626,6 +640,19 @@ export class RepoHelmService {
     return this.searchKnowledgeItems(state.knowledge, workspaceId, query).slice(0, 20);
   }
 
+  async listCapabilities(): Promise<CapabilityDefinition[]> {
+    const state = await this.getState();
+    return state.capabilities;
+  }
+
+  async acceptCapabilityRecommendation(questId: string, capabilityId: string): Promise<Quest> {
+    return this.updateCapabilityRecommendation(questId, capabilityId, "accepted");
+  }
+
+  async dismissCapabilityRecommendation(questId: string, capabilityId: string): Promise<Quest> {
+    return this.updateCapabilityRecommendation(questId, capabilityId, "dismissed");
+  }
+
   private generateSpec(requirement: string, relatedKnowledge: KnowledgeItem[] = []): QuestSpec {
     return {
       background:
@@ -711,13 +738,144 @@ export class RepoHelmService {
       })),
       quests: state.quests.map((quest) => ({
         ...quest,
-        deliveryResults: quest.deliveryResults ?? []
-      }))
+        deliveryResults: quest.deliveryResults ?? [],
+        capabilityRecommendations: quest.capabilityRecommendations ?? []
+      })),
+      capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now())
     };
   }
 
   private generateCommitMessage(quest: Quest): string {
     return `RepoHelm: ${quest.title}`.slice(0, 72);
+  }
+
+  private async updateCapabilityRecommendation(
+    questId: string,
+    capabilityId: string,
+    status: "accepted" | "dismissed"
+  ): Promise<Quest> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    const capability = state.capabilities.find((item) => item.id === capabilityId);
+    if (!capability) {
+      throw new Error("Capability not found");
+    }
+    const updatedQuest: Quest = {
+      ...quest,
+      capabilityRecommendations: quest.capabilityRecommendations.map((item) =>
+        item.capabilityId === capabilityId ? { ...item, status } : item
+      ),
+      updatedAt: now()
+    };
+    const capabilities = state.capabilities.map((item) =>
+      item.id === capabilityId && status === "accepted"
+        ? {
+            ...item,
+            installed: true,
+            updatedAt: now()
+          }
+        : item
+    );
+    const events = [
+      this.event(
+        questId,
+        status === "accepted" ? "capability.accepted" : "capability.dismissed",
+        status === "accepted" ? "能力已确认" : "能力已忽略",
+        `${capability.name} (${capability.kind}) 已被${status === "accepted" ? "标记为启用" : "忽略"}。权限声明：${capability.permissions.join(", ") || "none"}。`,
+        "Capability Agent"
+      )
+    ];
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      capabilities,
+      events: [...events, ...state.events]
+    });
+    return updatedQuest;
+  }
+
+  private seedCapabilities(timestamp: string): CapabilityDefinition[] {
+    return [
+      {
+        id: "cap_spec_agent",
+        kind: "agent",
+        name: "Spec Agent",
+        description: "将用户需求整理为背景、范围、验收标准和开放问题。",
+        source: "builtin",
+        permissions: ["read:workspace-knowledge", "write:quest-spec"],
+        installed: true,
+        tags: ["spec", "planning"],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      },
+      {
+        id: "cap_review_agent",
+        kind: "agent",
+        name: "Review Agent",
+        description: "审查 worktree diff、验证结果和交付风险。",
+        source: "builtin",
+        permissions: ["read:worktree-diff", "write:review-notes"],
+        installed: true,
+        tags: ["review", "diff"],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      },
+      {
+        id: "cap_security_skill",
+        kind: "skill",
+        name: "Security Review Skill",
+        description: "在涉及权限、命令执行、secrets 或 MCP 时提供安全检查清单。",
+        source: "builtin",
+        permissions: ["read:quest-spec", "read:changed-files"],
+        installed: false,
+        tags: ["security", "permission", "secrets"],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      },
+      {
+        id: "cap_mcp_manifest",
+        kind: "mcp",
+        name: "MCP Manifest Auditor",
+        description: "记录 MCP server 来源、权限声明和人工确认状态。",
+        source: "builtin",
+        permissions: ["read:mcp-manifest", "write:audit-log"],
+        installed: false,
+        tags: ["mcp", "manifest", "audit"],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+    ];
+  }
+
+  private recommendCapabilities(
+    capabilities: CapabilityDefinition[],
+    requirement: string,
+    timestamp: string
+  ): CapabilityRecommendation[] {
+    const normalized = requirement.toLowerCase();
+    return capabilities
+      .filter((capability) => {
+        if (capability.installed && capability.kind !== "agent") {
+          return false;
+        }
+        return (
+          capability.kind === "agent" ||
+          capability.tags.some((tag) => normalized.includes(tag)) ||
+          normalized.includes(capability.kind)
+        );
+      })
+      .slice(0, 4)
+      .map((capability) => ({
+        capabilityId: capability.id,
+        reason: `${capability.name} 匹配当前 Quest 的 ${capability.tags.join(", ")} 能力需求。`,
+        confidence: capability.kind === "agent" ? 0.72 : 0.86,
+        requiredPermissions: capability.permissions,
+        status: "pending",
+        createdAt: timestamp
+      }));
   }
 
   private event(questId: string, type: string, title: string, detail: string, agent: string): AgentEvent {

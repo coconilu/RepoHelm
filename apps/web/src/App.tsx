@@ -27,6 +27,7 @@ import {
   AgentEvent,
   api,
   ChangedFile,
+  CapabilityDefinition,
   KnowledgeItem,
   Project,
   Quest,
@@ -55,7 +56,7 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "overview" | "files" | "diff" | "logs";
+type InspectorTab = "spec" | "overview" | "capabilities" | "files" | "diff" | "logs";
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
@@ -217,6 +218,40 @@ export function App() {
       await api.deliverQuest(selectedQuest.id);
       await load();
       setInspectorTab("overview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function acceptCapability(capabilityId: string) {
+    if (!selectedQuest) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.acceptCapability(selectedQuest.id, capabilityId);
+      await load();
+      setInspectorTab("capabilities");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function dismissCapability(capabilityId: string) {
+    if (!selectedQuest) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.dismissCapability(selectedQuest.id, capabilityId);
+      await load();
+      setInspectorTab("capabilities");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -402,12 +437,15 @@ export function App() {
           onRequirementChange={setQuestRequirement}
         />
         <Inspector
+          capabilities={state.capabilities}
           changedFiles={changedFiles}
           events={questEvents}
           projects={projects}
           quest={selectedQuest}
           selectedChangedFile={selectedChangedFile}
           tab={inspectorTab}
+          onAcceptCapability={acceptCapability}
+          onDismissCapability={dismissCapability}
           onFileSelect={(file) => {
             setSelectedChangedFileKey(changedFileKey(file));
             setInspectorTab("diff");
@@ -685,21 +723,27 @@ function QuestStage({
 }
 
 function Inspector({
+  capabilities,
   changedFiles,
   events,
   projects,
   quest,
   selectedChangedFile,
   tab,
+  onAcceptCapability,
+  onDismissCapability,
   onFileSelect,
   onTabChange
 }: {
+  capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
   events: AgentEvent[];
   projects: Project[];
   quest?: Quest;
   selectedChangedFile?: ChangedFile;
   tab: InspectorTab;
+  onAcceptCapability: (capabilityId: string) => void;
+  onDismissCapability: (capabilityId: string) => void;
   onFileSelect: (file: ChangedFile) => void;
   onTabChange: (tab: InspectorTab) => void;
 }) {
@@ -707,6 +751,7 @@ function Inspector({
   const tabs: Array<{ id: InspectorTab; label: string }> = [
     { id: "spec", label: "Spec" },
     { id: "overview", label: "概要" },
+    { id: "capabilities", label: "能力" },
     { id: "files", label: "文件" },
     { id: "diff", label: "Diff" },
     { id: "logs", label: "日志" }
@@ -731,6 +776,14 @@ function Inspector({
         {tab === "spec" ? <SpecPanel quest={quest} /> : null}
         {tab === "overview" ? (
           <OverviewPanel changedFiles={changedFiles} events={events} projects={projects} quest={quest} />
+        ) : null}
+        {tab === "capabilities" ? (
+          <CapabilitiesPanel
+            capabilities={capabilities}
+            quest={quest}
+            onAcceptCapability={onAcceptCapability}
+            onDismissCapability={onDismissCapability}
+          />
         ) : null}
         {tab === "files" ? (
           <FilesPanel changedFiles={changedFiles} projectById={projectById} onFileSelect={onFileSelect} />
@@ -830,6 +883,72 @@ function OverviewPanel({
         ) : (
           <p className="muted">暂无交付记录。</p>
         )}
+      </InspectorSection>
+    </div>
+  );
+}
+
+function CapabilitiesPanel({
+  capabilities,
+  quest,
+  onAcceptCapability,
+  onDismissCapability
+}: {
+  capabilities: CapabilityDefinition[];
+  quest?: Quest;
+  onAcceptCapability: (capabilityId: string) => void;
+  onDismissCapability: (capabilityId: string) => void;
+}) {
+  const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
+  const recommendations = quest?.capabilityRecommendations ?? [];
+
+  return (
+    <div className="inspector-stack">
+      <InspectorSection title="Capability Agent">
+        {recommendations.length === 0 ? <p className="muted">当前 Quest 暂无能力推荐。</p> : null}
+        {recommendations.map((recommendation) => {
+          const capability = capabilityById.get(recommendation.capabilityId);
+          if (!capability) {
+            return null;
+          }
+          return (
+            <article className="capability-row" key={recommendation.capabilityId}>
+              <div className="worktree-title">
+                <strong>{capability.name}</strong>
+                <em className={recommendation.status === "pending" ? "badge blue" : "badge green"}>
+                  {recommendation.status}
+                </em>
+              </div>
+              <p>{capability.description}</p>
+              <span>{recommendation.reason}</span>
+              <code>{capability.kind} · {capability.source} · confidence {Math.round(recommendation.confidence * 100)}%</code>
+              <div className="capability-permissions">
+                {recommendation.requiredPermissions.map((permission) => (
+                  <em key={permission}>{permission}</em>
+                ))}
+              </div>
+              {recommendation.status === "pending" ? (
+                <div className="capability-actions">
+                  <button className="secondary-action" onClick={() => onAcceptCapability(capability.id)} type="button">
+                    确认启用
+                  </button>
+                  <button className="ghost-action" onClick={() => onDismissCapability(capability.id)} type="button">
+                    忽略
+                  </button>
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
+      </InspectorSection>
+      <InspectorSection title="Manifest">
+        {capabilities.map((capability) => (
+          <div className="manifest-row" key={capability.id}>
+            <strong>{capability.name}</strong>
+            <span>{capability.kind} · {capability.source}</span>
+            <em className={capability.installed ? "badge green" : "badge"}>{capability.installed ? "enabled" : "available"}</em>
+          </div>
+        ))}
       </InspectorSection>
     </div>
   );

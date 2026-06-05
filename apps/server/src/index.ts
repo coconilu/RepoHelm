@@ -92,6 +92,11 @@ app.get("/api/agent-backends", async (context) => {
   return context.json(backends);
 });
 
+app.get("/api/capabilities", async (context) => {
+  const capabilities = await service.listCapabilities();
+  return context.json(capabilities);
+});
+
 app.get("/api/workspaces/:id/knowledge", async (context) => {
   const knowledge = await service.searchKnowledge(context.req.param("id"), context.req.query("q") ?? "");
   return context.json(knowledge);
@@ -159,6 +164,16 @@ app.post("/api/quests/:id/cleanup", async (context) => {
 
 app.post("/api/quests/:id/deliver", async (context) => {
   const quest = await service.deliverQuest(context.req.param("id"));
+  return context.json(quest);
+});
+
+app.post("/api/quests/:id/capabilities/:capabilityId/accept", async (context) => {
+  const quest = await service.acceptCapabilityRecommendation(context.req.param("id"), context.req.param("capabilityId"));
+  return context.json(quest);
+});
+
+app.post("/api/quests/:id/capabilities/:capabilityId/dismiss", async (context) => {
+  const quest = await service.dismissCapabilityRecommendation(context.req.param("id"), context.req.param("capabilityId"));
   return context.json(quest);
 });
 

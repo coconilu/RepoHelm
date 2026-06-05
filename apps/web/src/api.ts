@@ -91,6 +91,28 @@ export interface DeliveryState {
   createdAt: string;
 }
 
+export interface CapabilityDefinition {
+  id: string;
+  kind: "skill" | "agent" | "mcp";
+  name: string;
+  description: string;
+  source: "builtin" | "workspace" | "external";
+  permissions: string[];
+  installed: boolean;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapabilityRecommendation {
+  capabilityId: string;
+  reason: string;
+  confidence: number;
+  requiredPermissions: string[];
+  status: "pending" | "accepted" | "dismissed";
+  createdAt: string;
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -105,6 +127,7 @@ export interface Quest {
   validationResults: string[];
   reviewNotes: string[];
   deliveryResults: DeliveryState[];
+  capabilityRecommendations: CapabilityRecommendation[];
   createdAt: string;
   updatedAt: string;
 }
@@ -139,6 +162,7 @@ export interface RepoHelmState {
   quests: Quest[];
   events: AgentEvent[];
   knowledge: KnowledgeItem[];
+  capabilities: CapabilityDefinition[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -159,6 +183,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state: () => request<RepoHelmState>("/api/state"),
   agentBackends: () => request<AgentBackendInfo[]>("/api/agent-backends"),
+  capabilities: () => request<CapabilityDefinition[]>("/api/capabilities"),
   searchKnowledge: (workspaceId: string, query: string) =>
     request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
   createQuest: (input: {
@@ -186,6 +211,14 @@ export const api = {
     }),
   deliverQuest: (questId: string) =>
     request<Quest>(`/api/quests/${questId}/deliver`, {
+      method: "POST"
+    }),
+  acceptCapability: (questId: string, capabilityId: string) =>
+    request<Quest>(`/api/quests/${questId}/capabilities/${capabilityId}/accept`, {
+      method: "POST"
+    }),
+  dismissCapability: (questId: string, capabilityId: string) =>
+    request<Quest>(`/api/quests/${questId}/capabilities/${capabilityId}/dismiss`, {
       method: "POST"
     }),
   updateWorkspace: (workspaceId: string, input: { name?: string; description?: string; worktreeRoot?: string }) =>

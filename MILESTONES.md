@@ -258,22 +258,26 @@
 
 ## M6：Capability Agent 和扩展能力
 
-状态：Planned
+状态：Done
 
 目标：
 
 实现“根据任务分析需要哪些 skills、agents、MCP”的能力，但默认保持可审计和可控。
 
-计划做：
+已完成：
 
-- Capability Agent。
-- Skills manifest。
-- Agents manifest。
-- MCP manifest。
-- 能力推荐。
-- 能力来源记录。
-- 人工确认后安装或复制能力。
-- 能力权限声明。
+- Capability Agent 会在 Quest 创建时生成能力推荐。
+- 内置 Skills manifest：Security Review Skill。
+- 内置 Agents manifest：Spec Agent、Review Agent。
+- 内置 MCP manifest：MCP Manifest Auditor。
+- 能力推荐包含 reason、confidence、required permissions 和状态。
+- 能力来源记录支持 builtin/workspace/external。
+- UI Inspector 新增“能力”页，展示推荐和 manifest。
+- 人工确认后能力会标记 enabled，并写入 Agent event。
+- 人工忽略会记录 dismissed 状态和审计事件。
+- 能力权限声明在 UI 和事件中展示。
+- 单元测试覆盖推荐、权限声明和人工确认。
+- e2e 覆盖 UI 能力推荐和确认启用。
 
 暂不做：
 

@@ -8,7 +8,8 @@ const emptyState = (): RepoHelmState => ({
   projects: [],
   quests: [],
   events: [],
-  knowledge: []
+  knowledge: [],
+  capabilities: []
 });
 
 export interface StateStore {

@@ -96,6 +96,30 @@ export interface DeliveryState {
   createdAt: string;
 }
 
+export type CapabilityKind = "skill" | "agent" | "mcp";
+
+export interface CapabilityDefinition {
+  id: string;
+  kind: CapabilityKind;
+  name: string;
+  description: string;
+  source: "builtin" | "workspace" | "external";
+  permissions: string[];
+  installed: boolean;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapabilityRecommendation {
+  capabilityId: string;
+  reason: string;
+  confidence: number;
+  requiredPermissions: string[];
+  status: "pending" | "accepted" | "dismissed";
+  createdAt: string;
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -110,6 +134,7 @@ export interface Quest {
   validationResults: string[];
   reviewNotes: string[];
   deliveryResults: DeliveryState[];
+  capabilityRecommendations: CapabilityRecommendation[];
   agentSummary?: string;
   createdAt: string;
   updatedAt: string;
@@ -135,6 +160,7 @@ export interface RepoHelmState {
   quests: Quest[];
   events: AgentEvent[];
   knowledge: KnowledgeItem[];
+  capabilities: CapabilityDefinition[];
 }
 
 export interface CreateWorkspaceInput {
