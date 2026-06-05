@@ -4,19 +4,19 @@ import {
   Boxes,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Circle,
   FileText,
-  GitBranch,
-  LayoutDashboard,
   ListChecks,
+  MoreHorizontal,
   Play,
   Plus,
   RefreshCw,
   Route,
-  Search,
+  Send,
   ShieldCheck,
   Sparkles,
-  TerminalSquare
+  X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
@@ -53,20 +53,20 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "overview" | "files" | "diff" | "knowledge" | "logs";
+type InspectorTab = "spec" | "overview" | "files" | "diff" | "logs";
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("");
   const [selectedQuestId, setSelectedQuestId] = useState<string>("");
-  const [questTitle, setQuestTitle] = useState("为 RepoHelm 增加真实 worktree 创建能力");
-  const [questRequirement, setQuestRequirement] = useState(
-    "在 Quest 执行前，为每个受影响项目创建隔离 worktree，并在 UI 中展示 worktree 路径、分支和状态。"
-  );
+  const [questRequirement, setQuestRequirement] = useState("");
   const [agentBackendId, setAgentBackendId] = useState<AgentBackendId>("mock");
   const [agentBackends, setAgentBackends] = useState<AgentBackendInfo[]>([]);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("overview");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("spec");
   const [selectedChangedFileKey, setSelectedChangedFileKey] = useState("");
+  const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
+  const [workspaceConfigOpen, setWorkspaceConfigOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -76,6 +76,7 @@ export function App() {
     setAgentBackends(nextBackends);
     setSelectedWorkspaceId((current) => current || nextState.workspaces[0]?.id || "");
     setSelectedQuestId((current) => current || nextState.quests[0]?.id || "");
+    setExpandedWorkspaceIds((current) => (current.length > 0 ? current : nextState.workspaces[0] ? [nextState.workspaces[0].id] : []));
   };
 
   useEffect(() => {
@@ -119,19 +120,24 @@ export function App() {
     if (!workspace) {
       return;
     }
+    const trimmedRequirement = questRequirement.trim();
+    if (!trimmedRequirement) {
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       const quest = await api.createQuest({
         workspaceId: workspace.id,
-        title: questTitle,
-        requirement: questRequirement,
+        title: deriveRequestTitle(trimmedRequirement),
+        requirement: trimmedRequirement,
         agentBackendId,
         affectedProjectIds: projects.map((project) => project.id)
       });
       await load();
       setSelectedQuestId(quest.id);
-      setInspectorTab("overview");
+      setQuestRequirement("");
+      setInspectorTab("spec");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -178,23 +184,13 @@ export function App() {
           </div>
         </div>
         <div className="toolbar-controls">
-          <label className="toolbar-select">
-            <LayoutDashboard size={15} />
-            <select value={workspace.id} onChange={(event) => setSelectedWorkspaceId(event.target.value)}>
-              {state.workspaces.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
           <span className={activeBackend?.available ? "backend-pill available" : "backend-pill"}>
             <Bot size={14} />
             {activeBackend?.name ?? "Backend"}
           </span>
           <button className="toolbar-action" disabled={busy || !selectedQuest} onClick={runQuest} type="button">
             <Play size={15} />
-            <span>{selectedQuest?.status === "ready" ? "重新运行" : "运行 Quest"}</span>
+            <span>{selectedQuest?.status === "ready" ? "重新运行" : "运行 Request"}</span>
           </button>
         </div>
       </header>
@@ -204,17 +200,32 @@ export function App() {
       <section className="quest-workbench">
         <Sidebar
           knowledgeCount={knowledge.length}
-          projects={projects}
           quests={quests}
           selectedQuest={selectedQuest}
-          workspace={workspace}
+          selectedWorkspaceId={workspace.id}
+          workspaces={state.workspaces}
+          expandedWorkspaceIds={expandedWorkspaceIds}
+          onConfigWorkspace={() => setWorkspaceConfigOpen(true)}
+          onKnowledgeOpen={() => setKnowledgeOpen(true)}
           onNewQuest={() => {
             setSelectedQuestId("");
-            setInspectorTab("overview");
+            setQuestRequirement("");
+            setInspectorTab("spec");
           }}
           onSelectQuest={(questId) => {
             setSelectedQuestId(questId);
-            setInspectorTab("overview");
+            setInspectorTab("spec");
+          }}
+          onSelectWorkspace={(workspaceId) => {
+            setSelectedWorkspaceId(workspaceId);
+            setSelectedQuestId("");
+            setQuestRequirement("");
+            setInspectorTab("spec");
+          }}
+          onToggleWorkspace={(workspaceId) => {
+            setExpandedWorkspaceIds((current) =>
+              current.includes(workspaceId) ? current.filter((id) => id !== workspaceId) : [...current, workspaceId]
+            );
           }}
         />
         <QuestStage
@@ -225,18 +236,14 @@ export function App() {
           projects={projects}
           quest={selectedQuest}
           questRequirement={questRequirement}
-          questTitle={questTitle}
           workspace={workspace}
           onBackendChange={setAgentBackendId}
           onCreateQuest={createQuest}
           onRequirementChange={setQuestRequirement}
-          onRunQuest={runQuest}
-          onTitleChange={setQuestTitle}
         />
         <Inspector
           changedFiles={changedFiles}
           events={questEvents}
-          knowledge={knowledge}
           projects={projects}
           quest={selectedQuest}
           selectedChangedFile={selectedChangedFile}
@@ -248,85 +255,119 @@ export function App() {
           onTabChange={setInspectorTab}
         />
       </section>
+
+      {workspaceConfigOpen ? (
+        <WorkspaceConfigDialog
+          projects={projects}
+          workspace={workspace}
+          onClose={() => setWorkspaceConfigOpen(false)}
+        />
+      ) : null}
+
+      {knowledgeOpen ? (
+        <KnowledgeDialog
+          knowledge={knowledge}
+          onClose={() => setKnowledgeOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
 
 function Sidebar({
+  expandedWorkspaceIds,
   knowledgeCount,
-  projects,
   quests,
   selectedQuest,
-  workspace,
+  selectedWorkspaceId,
+  workspaces,
+  onConfigWorkspace,
+  onKnowledgeOpen,
   onNewQuest,
-  onSelectQuest
+  onSelectQuest,
+  onSelectWorkspace,
+  onToggleWorkspace
 }: {
+  expandedWorkspaceIds: string[];
   knowledgeCount: number;
-  projects: Project[];
   quests: Quest[];
   selectedQuest?: Quest;
-  workspace: Workspace;
+  selectedWorkspaceId: string;
+  workspaces: Workspace[];
+  onConfigWorkspace: () => void;
+  onKnowledgeOpen: () => void;
   onNewQuest: () => void;
   onSelectQuest: (questId: string) => void;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onToggleWorkspace: (workspaceId: string) => void;
 }) {
   return (
     <aside className="sidebar">
       <button className="new-quest-button" onClick={onNewQuest} type="button">
         <Plus size={16} />
-        <span>创建 Quest</span>
+        <span>创建 Request</span>
         <kbd>N</kbd>
       </button>
 
-      <section className="sidebar-section">
-        <span className="section-label">Workspace</span>
-        <div className="workspace-card">
-          <Boxes size={16} />
-          <div>
-            <strong>{workspace.name}</strong>
-            <span>{workspace.description}</span>
-          </div>
-        </div>
-      </section>
-
-      <section className="sidebar-section">
-        <span className="section-label">Projects</span>
-        <div className="nav-list">
-          {projects.map((project) => (
-            <div className="project-row" key={project.id}>
-              <FileText size={15} />
-              <div>
-                <strong>{project.name}</strong>
-                <span>{project.role}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <section className="sidebar-section grow">
-        <span className="section-label">Quests</span>
-        <div className="quest-list">
-          {quests.length === 0 ? <p className="muted">暂无 Quest</p> : null}
-          {quests.map((quest) => (
-            <button
-              className={`quest-row ${quest.id === selectedQuest?.id ? "active" : ""}`}
-              key={quest.id}
-              onClick={() => onSelectQuest(quest.id)}
-              type="button"
-            >
-              <Circle size={10} />
-              <span>{quest.title}</span>
-              <em className={statusClass[quest.status] ?? "badge"}>{statusLabel[quest.status]}</em>
-            </button>
-          ))}
+        <span className="section-label">Workspaces</span>
+        <div className="workspace-tree">
+          {workspaces.map((item) => {
+            const expanded = expandedWorkspaceIds.includes(item.id);
+            const itemQuests = quests.filter((quest) => quest.workspaceId === item.id);
+            return (
+              <div className="workspace-node" key={item.id}>
+                <div className={`workspace-row ${item.id === selectedWorkspaceId ? "active" : ""}`}>
+                  <button
+                    aria-label={expanded ? "收起 workspace" : "展开 workspace"}
+                    className="icon-button"
+                    onClick={() => onToggleWorkspace(item.id)}
+                    type="button"
+                  >
+                    {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  </button>
+                  <button className="workspace-title-button" onClick={() => onSelectWorkspace(item.id)} type="button">
+                    <Boxes size={15} />
+                    <span>{item.name}</span>
+                  </button>
+                  <button
+                    aria-label={`配置 ${item.name}`}
+                    className="icon-button"
+                    onClick={() => onConfigWorkspace()}
+                    type="button"
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+                </div>
+
+                {expanded ? (
+                  <div className="request-list">
+                    {itemQuests.length === 0 ? <p className="muted request-empty">暂无 Request</p> : null}
+                    {itemQuests.map((quest) => (
+                      <button
+                        className={`quest-row ${quest.id === selectedQuest?.id ? "active" : ""}`}
+                        key={quest.id}
+                        onClick={() => onSelectQuest(quest.id)}
+                        type="button"
+                      >
+                        <Circle size={10} />
+                        <span>{quest.title}</span>
+                        <em className={statusClass[quest.status] ?? "badge"}>{statusLabel[quest.status]}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </section>
 
-      <section className="sidebar-footer">
+      <button className="sidebar-footer" onClick={onKnowledgeOpen} type="button">
         <BookOpen size={15} />
         <span>知识中心</span>
         <em>{knowledgeCount}</em>
-      </section>
+      </button>
     </aside>
   );
 }
@@ -339,13 +380,10 @@ function QuestStage({
   projects,
   quest,
   questRequirement,
-  questTitle,
   workspace,
   onBackendChange,
   onCreateQuest,
-  onRequirementChange,
-  onRunQuest,
-  onTitleChange
+  onRequirementChange
 }: {
   agentBackendId: AgentBackendId;
   agentBackends: AgentBackendInfo[];
@@ -354,107 +392,127 @@ function QuestStage({
   projects: Project[];
   quest?: Quest;
   questRequirement: string;
-  questTitle: string;
   workspace: Workspace;
   onBackendChange: (backend: AgentBackendId) => void;
   onCreateQuest: (event: FormEvent) => void;
   onRequirementChange: (value: string) => void;
-  onRunQuest: () => void;
-  onTitleChange: (value: string) => void;
 }) {
   const questBackend = agentBackends.find((backend) => backend.id === quest?.agentBackendId);
+  const backend = questBackend ?? agentBackends.find((item) => item.id === agentBackendId);
 
   return (
-    <section className="quest-stage">
-      <div className="stage-intro">
-        <div className="ghost-mark">
-          <Sparkles size={26} />
-        </div>
+    <section className="quest-stage chat-stage">
+      <header className="chat-header">
         <div>
-          <p className="eyebrow">Quest</p>
-          <h1>{quest ? quest.title : "Quest on, hands off"}</h1>
+          <p className="eyebrow">Agent Chat</p>
+          <h1>{quest ? quest.title : "把需求交给 Agent"}</h1>
           <div className="run-context">
             <span>{workspace.name}</span>
             <ChevronDown size={14} />
-            <span>{questBackend?.name ?? agentBackends.find((backend) => backend.id === agentBackendId)?.name ?? "Mock"}</span>
+            <span>{backend?.name ?? "Mock"}</span>
             <ChevronDown size={14} />
             <span>{projects.length} project{projects.length === 1 ? "" : "s"}</span>
           </div>
         </div>
+      </header>
+
+      <div className="chat-thread">
+        {!quest ? (
+          <article className="chat-message assistant">
+            <div className="chat-avatar">
+              <Sparkles size={16} />
+            </div>
+            <div className="chat-bubble">
+              <strong>RepoHelm Agent</strong>
+              <p>描述你要完成的 request。Agent 会判断是否需要创建 Spec、worktree、执行计划和 review。</p>
+            </div>
+          </article>
+        ) : (
+          <>
+            <article className="chat-message user">
+              <div className="chat-bubble">
+                <strong>你</strong>
+                <p>{quest.requirement}</p>
+              </div>
+            </article>
+            <article className="chat-message assistant">
+              <div className="chat-avatar">
+                <Bot size={16} />
+              </div>
+              <div className="chat-bubble">
+                <strong>{backend?.name ?? "RepoHelm Agent"}</strong>
+                <p>
+                  Request 已进入工作流。右侧会展示 Agent 判断后生成的 Spec、执行进展、产物和 diff。
+                </p>
+              </div>
+            </article>
+            {events.map((event) => (
+              <article className="chat-message assistant compact" key={event.id}>
+                <div className="chat-avatar">
+                  <CheckCircle2 size={15} />
+                </div>
+                <div className="chat-bubble">
+                  <strong>{event.title}</strong>
+                  <span>{event.agent}</span>
+                  <p>{event.detail}</p>
+                </div>
+              </article>
+            ))}
+          </>
+        )}
       </div>
 
       <form className="quest-composer" onSubmit={onCreateQuest}>
-        <div className="composer-grid">
-          <label>
-            <span>标题</span>
-            <input aria-label="标题" value={questTitle} onChange={(event) => onTitleChange(event.target.value)} />
-          </label>
-          <label>
-            <span>Agent Backend</span>
-            <select
-              aria-label="Agent Backend"
-              className="field-select"
-              value={agentBackendId}
-              onChange={(event) => onBackendChange(event.target.value as AgentBackendId)}
-            >
-              {agentBackends.map((backend) => (
-                <option key={backend.id} value={backend.id}>
-                  {backend.name} {backend.available ? "可用" : backend.configured ? "待启用" : "未配置"}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <label className="composer-textarea">
-          <span>描述计划、引用上下文，或说明验收标准</span>
-          <textarea
-            aria-label="需求"
-            value={questRequirement}
-            onChange={(event) => onRequirementChange(event.target.value)}
-          />
-        </label>
+        <textarea
+          aria-label="需求"
+          placeholder="描述计划，@ 引用上下文，/ 使用命令"
+          value={questRequirement}
+          onChange={(event) => onRequirementChange(event.target.value)}
+        />
         <div className="composer-footer">
-          <span>{agentBackends.find((backend) => backend.id === agentBackendId)?.detail ?? "正在读取 backend 状态。"}</span>
-          <button className="send-button" disabled={busy} type="submit">
-            <Plus size={16} />
-            <span>生成 Spec</span>
-          </button>
+          <div className="composer-tools">
+            <label className="composer-select">
+              <Bot size={15} />
+              <select
+                aria-label="Agent Backend"
+                value={agentBackendId}
+                onChange={(event) => onBackendChange(event.target.value as AgentBackendId)}
+              >
+                {agentBackends.map((backend) => (
+                  <option key={backend.id} value={backend.id}>
+                    {composerBackendLabel(backend)}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={14} />
+            </label>
+            <label className="composer-select mode-select">
+              <select aria-label="执行模式" defaultValue="auto">
+                <option value="auto">Auto</option>
+                <option value="plan">Plan</option>
+                <option value="review">Review</option>
+              </select>
+              <ChevronDown size={14} />
+            </label>
+            <button aria-label="上下文清单" className="composer-icon-button" type="button">
+              <ListChecks size={16} />
+            </button>
+          </div>
+          <div className="composer-actions">
+            <button aria-label="智能增强" className="spark-action" type="button">
+              <Sparkles size={17} />
+            </button>
+            <button
+              aria-label="发送给 Agent"
+              className="send-button icon-send"
+              disabled={busy || !questRequirement.trim()}
+              type="submit"
+            >
+              <Send size={16} />
+            </button>
+          </div>
         </div>
       </form>
-
-      {quest ? (
-        <div className="stage-content">
-          <section className="stage-panel">
-            <div className="panel-heading compact">
-              <h2>Spec</h2>
-              <ShieldCheck size={17} />
-            </div>
-            <SpecBlock title="用户目标" items={[quest.spec.userGoal]} />
-            <SpecBlock title="功能需求" items={quest.spec.functionalRequirements} />
-            <SpecBlock title="非功能需求" items={quest.spec.nonFunctionalRequirements} />
-            <SpecBlock title="验收标准" items={quest.spec.acceptanceCriteria} />
-            <SpecBlock title="暂不做" items={quest.spec.outOfScope} />
-          </section>
-
-          <section className="stage-panel compact-panel">
-            <div className="panel-heading compact">
-              <h2>Execution</h2>
-              <TerminalSquare size={17} />
-            </div>
-            <Timeline events={events} />
-          </section>
-
-          <button className="run-action" disabled={busy} onClick={onRunQuest} type="button">
-            <Play size={16} />
-            <span>{quest.status === "ready" ? "重新运行 Quest" : "运行 Quest"}</span>
-          </button>
-        </div>
-      ) : (
-        <div className="empty-hint">
-          <ListChecks size={22} />
-          <span>创建 Quest 后，Spec、执行进度和 worktree 状态会在这里展开。</span>
-        </div>
-      )}
     </section>
   );
 }
@@ -462,7 +520,6 @@ function QuestStage({
 function Inspector({
   changedFiles,
   events,
-  knowledge,
   projects,
   quest,
   selectedChangedFile,
@@ -472,7 +529,6 @@ function Inspector({
 }: {
   changedFiles: ChangedFile[];
   events: AgentEvent[];
-  knowledge: KnowledgeItem[];
   projects: Project[];
   quest?: Quest;
   selectedChangedFile?: ChangedFile;
@@ -482,10 +538,10 @@ function Inspector({
 }) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const tabs: Array<{ id: InspectorTab; label: string }> = [
+    { id: "spec", label: "Spec" },
     { id: "overview", label: "概要" },
     { id: "files", label: "文件" },
     { id: "diff", label: "Diff" },
-    { id: "knowledge", label: "知识" },
     { id: "logs", label: "日志" }
   ];
 
@@ -505,6 +561,7 @@ function Inspector({
       </div>
 
       <div className="inspector-body">
+        {tab === "spec" ? <SpecPanel quest={quest} /> : null}
         {tab === "overview" ? (
           <OverviewPanel changedFiles={changedFiles} events={events} projects={projects} quest={quest} />
         ) : null}
@@ -512,10 +569,32 @@ function Inspector({
           <FilesPanel changedFiles={changedFiles} projectById={projectById} onFileSelect={onFileSelect} />
         ) : null}
         {tab === "diff" ? <DiffPanel file={selectedChangedFile} projectById={projectById} /> : null}
-        {tab === "knowledge" ? <KnowledgePanel knowledge={knowledge} /> : null}
         {tab === "logs" ? <Timeline events={events} /> : null}
       </div>
     </aside>
+  );
+}
+
+function SpecPanel({ quest }: { quest?: Quest }) {
+  if (!quest) {
+    return (
+      <div className="inspector-empty">
+        <ShieldCheck size={18} />
+        <p>Agent 会根据 request 判断是否需要创建 Spec。创建后会在这里展示。</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="inspector-stack">
+      <InspectorSection title="Agent Spec">
+        <SpecBlock title="用户目标" items={[quest.spec.userGoal]} />
+        <SpecBlock title="功能需求" items={quest.spec.functionalRequirements} />
+        <SpecBlock title="非功能需求" items={quest.spec.nonFunctionalRequirements} />
+        <SpecBlock title="验收标准" items={quest.spec.acceptanceCriteria} />
+        <SpecBlock title="暂不做" items={quest.spec.outOfScope} />
+      </InspectorSection>
+    </div>
   );
 }
 
@@ -612,6 +691,7 @@ function DiffPanel({ file, projectById }: { file?: ChangedFile; projectById: Map
 function KnowledgePanel({ knowledge }: { knowledge: KnowledgeItem[] }) {
   return (
     <div className="knowledge-list">
+      {knowledge.length === 0 ? <p className="muted">暂无知识记录。</p> : null}
       {knowledge.slice(0, 8).map((item) => (
         <article className="knowledge-row" key={item.id}>
           <strong>{item.title}</strong>
@@ -623,6 +703,72 @@ function KnowledgePanel({ knowledge }: { knowledge: KnowledgeItem[] }) {
           </div>
         </article>
       ))}
+    </div>
+  );
+}
+
+function WorkspaceConfigDialog({
+  projects,
+  workspace,
+  onClose
+}: {
+  projects: Project[];
+  workspace: Workspace;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="workspace-config-title" className="modal-panel" role="dialog">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">Workspace Config</p>
+            <h2 id="workspace-config-title">{workspace.name}</h2>
+          </div>
+          <button aria-label="关闭 workspace 配置" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <div className="modal-body">
+          <section className="config-section">
+            <h3>关联项目</h3>
+            {projects.map((project) => (
+              <label className="project-config-row" key={project.id}>
+                <input checked readOnly type="checkbox" />
+                <FileText size={15} />
+                <span>
+                  <strong>{project.name}</strong>
+                  <em>{project.path}</em>
+                </span>
+              </label>
+            ))}
+          </section>
+          <section className="config-section">
+            <h3>后续配置项</h3>
+            <p className="muted">M2 会补齐新增/移除项目、默认分支、验证命令和 worktree root 配置。</p>
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function KnowledgeDialog({ knowledge, onClose }: { knowledge: KnowledgeItem[]; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="knowledge-title" className="modal-panel knowledge-modal" role="dialog">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">Knowledge Center</p>
+            <h2 id="knowledge-title">知识中心</h2>
+          </div>
+          <button aria-label="关闭知识中心" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <div className="modal-body">
+          <KnowledgePanel knowledge={knowledge} />
+        </div>
+      </section>
     </div>
   );
 }
@@ -686,4 +832,25 @@ function changedFileKey(file?: ChangedFile) {
     return "";
   }
   return `${file.projectId}:${file.path}`;
+}
+
+function deriveRequestTitle(requirement: string) {
+  const firstLine = requirement
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
+    return "Untitled Request";
+  }
+  return firstLine.length > 42 ? `${firstLine.slice(0, 42)}...` : firstLine;
+}
+
+function composerBackendLabel(backend: AgentBackendInfo) {
+  const labels: Record<AgentBackendId, string> = {
+    mock: "智能体",
+    "codex-cli": "Codex",
+    "claude-code": "Claude Code",
+    opencode: "OpenCode"
+  };
+  return labels[backend.id] ?? backend.name;
 }

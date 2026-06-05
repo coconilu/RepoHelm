@@ -27,30 +27,34 @@ test.afterAll(async () => {
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.locator(".workspace-card").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
-  await expect(page.getByText("Projects")).toBeVisible();
+  await expect(page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "配置 RepoHelm Demo Workspace" }).click();
+  await expect(page.getByRole("dialog", { name: "RepoHelm Demo Workspace" })).toBeVisible();
+  await expect(page.getByText("关联项目")).toBeVisible();
+  await page.getByRole("button", { name: "关闭 workspace 配置" }).click();
 
-  await page.getByRole("textbox", { name: "标题" }).fill(questTitle);
   await page
     .getByRole("textbox", { name: "需求" })
-    .fill("从浏览器创建 Quest，生成 Spec，运行 mock agent，并展示 worktree、review 和 knowledge。");
+    .fill(`${questTitle}\n从浏览器创建 Quest，生成 Spec，运行 mock agent，并展示 worktree、review 和 knowledge。`);
   await expect(page.getByRole("combobox", { name: "Agent Backend" })).toBeVisible();
-  await expect(page.getByText("内置 backend")).toBeVisible();
-  await page.getByRole("button", { name: /生成 Spec/ }).click();
+  await expect(page.getByRole("combobox", { name: "执行模式" })).toBeVisible();
+  await page.getByRole("button", { name: "发送给 Agent" }).click();
 
   await expect(page.getByRole("button", { name: new RegExp(questTitle) }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
   await expect(page.locator(".run-context").filter({ hasText: "Mock Implementation Agent" })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "从浏览器创建 Quest" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent Spec" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "验收标准" })).toBeVisible();
 
-  await page.locator(".run-action").click();
+  await page.getByRole("button", { name: "运行 Request" }).click();
 
   await expect(page.locator("strong").filter({ hasText: "Worktree 已创建" })).toBeVisible();
   await expect(page.locator("strong").filter({ hasText: "验证完成" })).toBeVisible();
 
-  await page.locator(".inspector-tabs").getByRole("button", { name: "知识" }).click();
+  await page.getByRole("button", { name: /知识中心/ }).click();
   await expect(page.getByText(`Quest Memory: ${questTitle}`).first()).toBeVisible();
+  await page.getByRole("button", { name: "关闭知识中心" }).click();
 
   await page.locator(".inspector-tabs").getByRole("button", { name: "概要" }).click();
   await expect(page.getByText("Spec validation").first()).toBeVisible();

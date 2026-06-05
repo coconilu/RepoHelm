@@ -113,18 +113,24 @@
 
 - 参考 Qoder Quest 工作区的空间组织方式。
 - 从卡片式 dashboard 调整为三栏 Quest 工作台。
-- 左侧负责 workspace、projects、quests、knowledge 入口。
-- 中间负责 Quest 创建、Spec、执行主流程。
-- 右侧负责 overview、files、diff、knowledge、logs 检查。
+- 左侧负责 workspace 树、requests 和知识中心入口。
+- 中间负责 Agent Chat。
+- 右侧负责 Spec、overview、files、diff、logs 检查。
 
 已完成：
 
 - 新增 UI 方案文档：`docs/ui-layout.md`。
 - 重构 Web UI 为三栏布局。
 - 增加 Inspector tabs。
+- 左栏改为 workspace 顶级树，展开后显示 requests。
+- Workspace 三点菜单打开配置弹窗，并展示已关联项目。
+- 中间主区域改为 Agent Chat。
+- Spec 移动到右侧 Inspector，由 Agent 判断后展示。
+- 左下角知识中心改为弹窗。
 - 保留现有 API 和 runtime，不改变核心领域逻辑。
 - e2e 测试已更新到新布局。
 - 桌面和移动宽度无横向溢出。
+- 桌面 App 形态限制为 `100vh`，三栏支持独立滚动。
 
 未做：
 
@@ -321,4 +327,3 @@
 2. M3：SQLite + 文件系统知识库。
 3. M4：先接入一个真实 Agent Backend，建议从 Codex CLI 或 OpenCode 开始。
 4. M5：补齐 worktree 清理和交付流程。
-
