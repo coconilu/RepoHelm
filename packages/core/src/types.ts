@@ -111,6 +111,7 @@ export interface KnowledgeItem {
   title: string;
   body: string;
   tags: string[];
+  sourcePath?: string;
   createdAt: string;
   updatedAt: string;
 }

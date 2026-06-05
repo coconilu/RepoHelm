@@ -368,6 +368,7 @@ export function App() {
       {knowledgeOpen ? (
         <KnowledgeDialog
           knowledge={knowledge}
+          workspace={workspace}
           onClose={() => setKnowledgeOpen(false)}
         />
       ) : null}
@@ -797,6 +798,7 @@ function KnowledgePanel({ knowledge }: { knowledge: KnowledgeItem[] }) {
         <article className="knowledge-row" key={item.id}>
           <strong>{item.title}</strong>
           <span>{item.body}</span>
+          {item.sourcePath ? <code>{item.sourcePath}</code> : null}
           <div>
             {item.tags.map((tag) => (
               <em key={tag}>{tag}</em>
@@ -1113,7 +1115,33 @@ function ProjectFields({
   );
 }
 
-function KnowledgeDialog({ knowledge, onClose }: { knowledge: KnowledgeItem[]; onClose: () => void }) {
+function KnowledgeDialog({
+  knowledge,
+  workspace,
+  onClose
+}: {
+  knowledge: KnowledgeItem[];
+  workspace: Workspace;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(knowledge);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    setResults(knowledge);
+  }, [knowledge]);
+
+  async function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    setSearching(true);
+    try {
+      setResults(await api.searchKnowledge(workspace.id, query));
+    } finally {
+      setSearching(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section aria-labelledby="knowledge-title" className="modal-panel knowledge-modal" role="dialog">
@@ -1127,7 +1155,18 @@ function KnowledgeDialog({ knowledge, onClose }: { knowledge: KnowledgeItem[]; o
           </button>
         </header>
         <div className="modal-body">
-          <KnowledgePanel knowledge={knowledge} />
+          <form className="knowledge-search" onSubmit={submitSearch}>
+            <input
+              aria-label="搜索知识"
+              placeholder="搜索 memory、project summary 或 architecture"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <button className="secondary-action" disabled={searching} type="submit">
+              搜索
+            </button>
+          </form>
+          <KnowledgePanel knowledge={results} />
         </div>
       </section>
     </div>

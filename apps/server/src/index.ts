@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { JsonStateStore, RepoHelmService } from "@repohelm/core";
+import { RepoHelmService, SqliteStateStore } from "@repohelm/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -24,8 +24,13 @@ const worktreeRootDir = process.env.REPOHELM_WORKTREE_ROOT
   : stateRootDir === rootDir
     ? join(rootDir, ".repohelm", "worktrees")
     : join(stateRootDir, "worktrees");
+const knowledgeRootDir = process.env.REPOHELM_KNOWLEDGE_ROOT
+  ? resolve(process.env.REPOHELM_KNOWLEDGE_ROOT)
+  : stateRootDir === rootDir
+    ? join(rootDir, ".repohelm", "knowledge")
+    : join(stateRootDir, "knowledge");
 const port = Number(process.env.REPOHELM_PORT ?? 4300);
-const service = new RepoHelmService(new JsonStateStore(stateRootDir), rootDir, { worktreeRootDir });
+const service = new RepoHelmService(new SqliteStateStore(stateRootDir), rootDir, { knowledgeRootDir, worktreeRootDir });
 
 const app = new Hono();
 
@@ -72,7 +77,8 @@ app.get("/api/health", (context) =>
     name: "RepoHelm API",
     rootDir,
     stateRootDir,
-    worktreeRootDir
+    worktreeRootDir,
+    knowledgeRootDir
   })
 );
 
@@ -84,6 +90,11 @@ app.get("/api/state", async (context) => {
 app.get("/api/agent-backends", async (context) => {
   const backends = await service.listAgentBackends();
   return context.json(backends);
+});
+
+app.get("/api/workspaces/:id/knowledge", async (context) => {
+  const knowledge = await service.searchKnowledge(context.req.param("id"), context.req.query("q") ?? "");
+  return context.json(knowledge);
 });
 
 app.post("/api/workspaces", async (context) => {

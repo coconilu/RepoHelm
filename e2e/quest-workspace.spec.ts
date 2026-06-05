@@ -77,6 +77,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await page.getByRole("button", { name: /知识中心/ }).click();
   await expect(page.getByText(`Quest Memory: ${questTitle}`).first()).toBeVisible();
+  await page.getByRole("textbox", { name: "搜索知识" }).fill(questTitle);
+  await page.getByRole("button", { name: "搜索" }).click();
+  await expect(page.getByText(`Quest Memory: ${questTitle}`).first()).toBeVisible();
+  await expect(page.getByText(new RegExp(`\\.repohelm/e2e/knowledge/.+${questSlug}`))).toBeVisible();
   await page.getByRole("button", { name: "关闭知识中心" }).click();
 
   await page.locator(".inspector-tabs").getByRole("button", { name: "概要" }).click();

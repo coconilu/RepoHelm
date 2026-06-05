@@ -150,7 +150,7 @@
 
 已完成：
 
-- Workspace 配置已进入本地状态文件 `.repohelm/state.json`，并支持旧状态自动补齐新字段。
+- Workspace 配置已进入本地状态库，并支持旧状态自动补齐新字段。
 - Workspace 支持名称、描述、worktree root 配置。
 - 一个 workspace 可以关联多个本地项目。
 - Project 支持 role、路径、默认分支、验证命令。
@@ -169,21 +169,27 @@
 
 ## M3：持久化和知识库
 
-状态：Planned
+状态：Done
 
 目标：
 
 替换临时 JSON state，建立可长期演进的本地数据层和知识库。
 
-计划做：
+已完成：
 
-- SQLite 状态库。
-- 文件系统知识库目录。
-- Quest memory 文件化。
-- Project summary。
-- Knowledge 搜索。
-- Agent 可以读取相关 knowledge。
-- Agent 可以写入 Quest memory。
+- 默认状态存储切换为 `.repohelm/state.sqlite`。
+- 保留 legacy `.repohelm/state.json` 迁移路径。
+- 文件系统知识库目录默认写入 `.repohelm/knowledge`。
+- Bootstrap 阶段会写入产品方向 seed knowledge 和 Project summary。
+- Project 新增或更新时会维护对应 Project summary。
+- Quest 创建时会检索相关 workspace knowledge，并把引用动作写入 Agent event。
+- Spec background 会体现 Agent 已参考 workspace knowledge。
+- Quest 运行结束后会将 Quest memory 写入知识库 Markdown 文件。
+- 知识中心弹窗支持按关键词搜索 workspace knowledge。
+- API 支持 `GET /api/workspaces/:id/knowledge?q=...`。
+- 启动时会为缺少 `sourcePath` 或文件丢失的知识项补写 Markdown 文件。
+- 单元测试覆盖 SQLite 默认持久化、legacy JSON 迁移、知识检索和 Quest memory 文件化。
+- e2e 覆盖知识中心搜索和知识文件路径展示。
 
 暂不做：
 
@@ -326,7 +332,7 @@
 
 下一阶段优先级建议：
 
-1. M2：真实 workspace/project 配置。
-2. M3：SQLite + 文件系统知识库。
-3. M4：先接入一个真实 Agent Backend，建议从 Codex CLI 或 OpenCode 开始。
-4. M5：补齐 worktree 清理和交付流程。
+1. M4：先接入一个真实 Agent Backend，建议从 Codex CLI 或 OpenCode 开始。
+2. M5：补齐 worktree 清理和交付流程。
+3. M6：Capability Agent 和能力 manifest。
+4. M7：安全执行和权限模型。

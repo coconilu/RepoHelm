@@ -115,6 +115,7 @@ export interface KnowledgeItem {
   title: string;
   body: string;
   tags: string[];
+  sourcePath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -145,6 +146,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state: () => request<RepoHelmState>("/api/state"),
   agentBackends: () => request<AgentBackendInfo[]>("/api/agent-backends"),
+  searchKnowledge: (workspaceId: string, query: string) =>
+    request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
   createQuest: (input: {
     workspaceId: string;
     title: string;

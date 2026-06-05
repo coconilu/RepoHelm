@@ -1,7 +1,9 @@
+import { access } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { AgentBackendRegistry } from "./agent.js";
 import { GitWorktreeManager } from "./git.js";
+import { KnowledgeFileStore } from "./knowledge.js";
 import type {
   AgentEvent,
   CreateProjectInput,
@@ -18,7 +20,7 @@ import type {
   Workspace,
   WorktreeState
 } from "./types.js";
-import { JsonStateStore } from "./store.js";
+import type { StateStore } from "./store.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
@@ -38,19 +40,21 @@ export class RepoHelmService {
   private readonly gitWorktreeManager = new GitWorktreeManager();
   private readonly agentBackendRegistry = new AgentBackendRegistry();
   private readonly worktreeRootDir: string;
+  private readonly knowledgeFileStore: KnowledgeFileStore;
 
   constructor(
-    private readonly store: JsonStateStore,
+    private readonly store: StateStore,
     private readonly rootDir: string,
-    options: { worktreeRootDir?: string } = {}
+    options: { knowledgeRootDir?: string; worktreeRootDir?: string } = {}
   ) {
     this.worktreeRootDir = options.worktreeRootDir ?? join(rootDir, ".repohelm", "worktrees");
+    this.knowledgeFileStore = new KnowledgeFileStore(options.knowledgeRootDir ?? join(rootDir, ".repohelm", "knowledge"));
   }
 
   async bootstrap(): Promise<RepoHelmState> {
     const state = await this.store.read();
     if (state.workspaces.length > 0) {
-      const normalized = this.normalizeState(state);
+      const normalized = await this.ensureKnowledgeFiles(this.normalizeState(state));
       if (JSON.stringify(normalized) !== JSON.stringify(state)) {
         await this.store.write(normalized);
       }
@@ -79,7 +83,7 @@ export class RepoHelmService {
       createdAt: timestamp,
       updatedAt: timestamp
     };
-    const knowledge: KnowledgeItem = {
+    const architectureKnowledge: KnowledgeItem = {
       id: "knowledge_architecture_seed",
       workspaceId: workspace.id,
       projectId: project.id,
@@ -90,12 +94,19 @@ export class RepoHelmService {
       createdAt: timestamp,
       updatedAt: timestamp
     };
+    const knowledge = [
+      {
+        ...architectureKnowledge,
+        sourcePath: await this.knowledgeFileStore.writeKnowledgeItem(architectureKnowledge)
+      },
+      await this.knowledgeFileStore.writeProjectSummary(workspace, project, timestamp)
+    ];
 
     const nextState: RepoHelmState = {
       ...state,
       workspaces: [workspace],
       projects: [project],
-      knowledge: [knowledge]
+      knowledge
     };
     await this.store.write(nextState);
     return nextState;
@@ -169,7 +180,13 @@ export class RepoHelmService {
         : item
     );
 
-    await this.store.write({ ...state, workspaces, projects: [project, ...state.projects] });
+    const projectSummary = await this.knowledgeFileStore.writeProjectSummary(workspace, project, now());
+    await this.store.write({
+      ...state,
+      workspaces,
+      projects: [project, ...state.projects],
+      knowledge: [projectSummary, ...state.knowledge]
+    });
     return project;
   }
 
@@ -197,7 +214,14 @@ export class RepoHelmService {
       updatedAt: now()
     };
     const projects = state.projects.map((item) => (item.id === projectId ? updatedProject : item));
-    await this.store.write({ ...state, projects });
+    const workspace = state.workspaces.find((item) => item.id === project.workspaceId);
+    const projectSummary = workspace
+      ? await this.knowledgeFileStore.writeProjectSummary(workspace, updatedProject, now())
+      : undefined;
+    const knowledge = projectSummary
+      ? [projectSummary, ...state.knowledge.filter((item) => item.id !== projectSummary.id)]
+      : state.knowledge;
+    await this.store.write({ ...state, projects, knowledge });
     return updatedProject;
   }
 
@@ -261,7 +285,8 @@ export class RepoHelmService {
         : workspace.projectIds;
     const timestamp = now();
     const questId = id("quest");
-    const spec = this.generateSpec(input.requirement);
+    const relatedKnowledge = this.searchKnowledgeItems(state.knowledge, input.workspaceId, input.requirement).slice(0, 3);
+    const spec = this.generateSpec(input.requirement, relatedKnowledge);
     const quest: Quest = {
       id: questId,
       workspaceId: input.workspaceId,
@@ -281,8 +306,17 @@ export class RepoHelmService {
     const events = [
       this.event(questId, "quest.created", "Quest 已创建", "用户需求已进入 Quest 工作流。", "Lead Agent"),
       this.event(questId, "spec.generated", "轻量 Spec 已生成", "Spec Agent 根据需求生成了初版目标、范围和验收标准。", "Spec Agent"),
-      this.event(questId, "plan.created", "实施计划已生成", "Lead Agent 已将 Quest 推进到规划阶段，等待准备 worktree。", "Lead Agent")
-    ];
+      this.event(questId, "plan.created", "实施计划已生成", "Lead Agent 已将 Quest 推进到规划阶段，等待准备 worktree。", "Lead Agent"),
+      relatedKnowledge.length > 0
+        ? this.event(
+            questId,
+            "knowledge.retrieved",
+            "知识库已引用",
+            `Agent 读取了 ${relatedKnowledge.length} 条相关知识。`,
+            "Knowledge Agent"
+          )
+        : undefined
+    ].filter(Boolean) as AgentEvent[];
 
     await this.store.write({
       ...state,
@@ -390,6 +424,10 @@ export class RepoHelmService {
       createdAt: now(),
       updatedAt: now()
     };
+    const persistedMemory: KnowledgeItem = {
+      ...memory,
+      sourcePath: await this.knowledgeFileStore.writeKnowledgeItem(memory)
+    };
 
     const events = [
       ...backendResult.events.map((event) => this.event(questId, event.type, event.title, event.detail, event.agent)),
@@ -412,14 +450,22 @@ export class RepoHelmService {
       ...state,
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
       events: [...events, ...state.events],
-      knowledge: [memory, ...state.knowledge]
+      knowledge: [persistedMemory, ...state.knowledge]
     });
     return updatedQuest;
   }
 
-  private generateSpec(requirement: string): QuestSpec {
+  async searchKnowledge(workspaceId: string, query = ""): Promise<KnowledgeItem[]> {
+    const state = await this.getState();
+    return this.searchKnowledgeItems(state.knowledge, workspaceId, query).slice(0, 20);
+  }
+
+  private generateSpec(requirement: string, relatedKnowledge: KnowledgeItem[] = []): QuestSpec {
     return {
-      background: "用户创建了一个需要进入 Quest 工作流的软件研发任务。",
+      background:
+        relatedKnowledge.length > 0
+          ? `用户创建了一个需要进入 Quest 工作流的软件研发任务。Agent 已参考 ${relatedKnowledge.length} 条 workspace 知识。`
+          : "用户创建了一个需要进入 Quest 工作流的软件研发任务。",
       userGoal: requirement,
       functionalRequirements: [
         "明确任务目标和受影响项目。",
@@ -439,6 +485,45 @@ export class RepoHelmService {
       ],
       openQuestions: ["是否需要为该 Quest 接入真实模型或外部 coding agent backend？"]
     };
+  }
+
+  private searchKnowledgeItems(knowledge: KnowledgeItem[], workspaceId: string, query: string): KnowledgeItem[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    return knowledge
+      .filter((item) => item.workspaceId === workspaceId)
+      .filter((item) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        const haystack = [item.title, item.body, ...item.tags].join("\n").toLowerCase();
+        return normalizedQuery
+          .split(/\s+/)
+          .filter(Boolean)
+          .some((token) => haystack.includes(token));
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private async ensureKnowledgeFiles(state: RepoHelmState): Promise<RepoHelmState> {
+    const knowledge: KnowledgeItem[] = [];
+    let changed = false;
+    for (const item of state.knowledge) {
+      if (item.sourcePath) {
+        try {
+          await access(item.sourcePath);
+          knowledge.push(item);
+          continue;
+        } catch {
+          // Rehydrate the Markdown knowledge file if the metadata survived but the file was removed.
+        }
+      }
+      knowledge.push({
+        ...item,
+        sourcePath: await this.knowledgeFileStore.writeKnowledgeItem(item)
+      });
+      changed = true;
+    }
+    return changed ? { ...state, knowledge } : state;
   }
 
   private normalizeState(state: RepoHelmState): RepoHelmState {

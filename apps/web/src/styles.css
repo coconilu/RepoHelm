@@ -1067,6 +1067,13 @@ code {
   padding: 12px;
 }
 
+.knowledge-search {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .knowledge-row div {
   display: flex;
   flex-wrap: wrap;

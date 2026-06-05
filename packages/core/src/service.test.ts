@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { RepoHelmService } from "./service.js";
-import { JsonStateStore } from "./store.js";
+import { JsonStateStore, SqliteStateStore } from "./store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,7 +13,7 @@ async function createService() {
   const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-test-"));
   return {
     rootDir,
-    service: new RepoHelmService(new JsonStateStore(rootDir), rootDir)
+    service: new RepoHelmService(new SqliteStateStore(rootDir), rootDir)
   };
 }
 
@@ -27,7 +27,7 @@ async function createGitRepoService() {
   });
   return {
     rootDir,
-    service: new RepoHelmService(new JsonStateStore(rootDir), rootDir)
+    service: new RepoHelmService(new SqliteStateStore(rootDir), rootDir)
   };
 }
 
@@ -36,17 +36,35 @@ describe("RepoHelmService", () => {
     const { rootDir, service } = await createService();
 
     const state = await service.bootstrap();
-    const persisted = JSON.parse(await readFile(join(rootDir, ".repohelm", "state.json"), "utf8"));
+    const persisted = await new RepoHelmService(new SqliteStateStore(rootDir), rootDir).getState();
 
     expect(state.workspaces).toHaveLength(1);
     expect(state.projects).toHaveLength(1);
-    expect(state.knowledge).toHaveLength(1);
+    expect(state.knowledge).toHaveLength(2);
     expect(state.workspaces[0]?.projectIds).toEqual([state.projects[0]?.id]);
     expect(state.workspaces[0]?.worktreeRoot).toContain(join(rootDir, ".repohelm", "worktrees"));
     expect(state.projects[0]?.path).toBe(rootDir);
     expect(state.projects[0]?.validationCommand).toBe("pnpm test:all");
     expect(state.projects[0]?.health.status).toBe("unknown");
-    expect(persisted.workspaces[0].id).toBe(state.workspaces[0]?.id);
+    expect(state.knowledge.every((item) => item.sourcePath)).toBe(true);
+    await expect(access(state.knowledge[0]!.sourcePath!)).resolves.toBeUndefined();
+    await expect(access(join(rootDir, ".repohelm", "state.sqlite"))).resolves.toBeUndefined();
+    expect(persisted.workspaces[0]?.id).toBe(state.workspaces[0]?.id);
+  });
+
+  it("persists state through SQLite and migrates legacy JSON state", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-legacy-test-"));
+    const legacyService = new RepoHelmService(new JsonStateStore(rootDir), rootDir);
+    await legacyService.bootstrap();
+
+    const sqliteService = new RepoHelmService(new SqliteStateStore(rootDir), rootDir);
+    const sqliteState = await sqliteService.getState();
+    const secondSqliteService = new RepoHelmService(new SqliteStateStore(rootDir), rootDir);
+    const persistedState = await secondSqliteService.getState();
+
+    expect(sqliteState.workspaces[0]?.name).toBe("RepoHelm Demo Workspace");
+    expect(persistedState.workspaces[0]?.id).toBe(sqliteState.workspaces[0]?.id);
+    await expect(access(join(rootDir, ".repohelm", "state.sqlite"))).resolves.toBeUndefined();
   });
 
   it("updates workspace and project configuration with health checks", async () => {
@@ -119,7 +137,7 @@ describe("RepoHelmService", () => {
     const quest = await service.createQuest({
       workspaceId: workspace.id,
       title: "Add worktree execution",
-      requirement: "为每个受影响项目创建隔离 worktree。"
+      requirement: "为 RepoHelm 的每个受影响项目创建隔离 worktree。"
     });
     const nextState = await service.getState();
 
@@ -128,7 +146,9 @@ describe("RepoHelmService", () => {
     expect(quest.affectedProjectIds).toEqual(workspace.projectIds);
     expect(quest.spec.userGoal).toContain("隔离 worktree");
     expect(quest.spec.acceptanceCriteria).toHaveLength(3);
-    expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(3);
+    expect(quest.spec.background).toContain("workspace 知识");
+    expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(4);
+    expect(await service.searchKnowledge(workspace.id, "RepoHelm")).not.toHaveLength(0);
   });
 
   it("lists available agent backends with mock enabled by default", async () => {
@@ -173,9 +193,11 @@ describe("RepoHelmService", () => {
     expect(completedQuest.changedFiles[0]?.status).toBe("untracked");
     expect(completedQuest.changedFiles[0]?.diff).toContain("MVP mock Implementation Agent");
     expect(completedQuest.agentSummary).toContain("Mock backend");
-    expect(questEvents).toHaveLength(10);
+    expect(questEvents).toHaveLength(11);
     expect(questMemory?.type).toBe("memory");
     expect(questMemory?.body).toContain("1 个可 review 变更");
+    expect(questMemory?.sourcePath).toContain(join(rootDir, ".repohelm", "knowledge"));
+    await expect(readFile(questMemory!.sourcePath!, "utf8")).resolves.toContain(`Quest Memory: ${quest.title}`);
   });
 
   it("blocks a quest when the affected project is not a git repository", async () => {

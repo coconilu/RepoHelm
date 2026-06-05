@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RepoHelmState } from "./types.js";
@@ -10,7 +11,12 @@ const emptyState = (): RepoHelmState => ({
   knowledge: []
 });
 
-export class JsonStateStore {
+export interface StateStore {
+  read(): Promise<RepoHelmState>;
+  write(state: RepoHelmState): Promise<void>;
+}
+
+export class JsonStateStore implements StateStore {
   readonly statePath: string;
 
   constructor(rootDir: string) {
@@ -35,3 +41,51 @@ export class JsonStateStore {
   }
 }
 
+export class SqliteStateStore implements StateStore {
+  readonly dbPath: string;
+  private db?: DatabaseSync;
+
+  constructor(private readonly rootDir: string) {
+    this.dbPath = join(rootDir, ".repohelm", "state.sqlite");
+  }
+
+  async read(): Promise<RepoHelmState> {
+    const db = await this.database();
+    const row = db.prepare("SELECT payload FROM state WHERE id = ?").get("current") as { payload?: string } | undefined;
+    if (row?.payload) {
+      return JSON.parse(row.payload) as RepoHelmState;
+    }
+
+    const legacyState = await new JsonStateStore(this.rootDir).read();
+    if (legacyState.workspaces.length > 0) {
+      await this.write(legacyState);
+      return legacyState;
+    }
+    return emptyState();
+  }
+
+  async write(state: RepoHelmState): Promise<void> {
+    const db = await this.database();
+    db.prepare(
+      `INSERT INTO state (id, payload, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
+    ).run("current", JSON.stringify(state), new Date().toISOString());
+  }
+
+  private async database(): Promise<DatabaseSync> {
+    if (this.db) {
+      return this.db;
+    }
+    await mkdir(dirname(this.dbPath), { recursive: true });
+    this.db = new DatabaseSync(this.dbPath);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS state (
+        id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    return this.db;
+  }
+}
