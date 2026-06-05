@@ -287,22 +287,26 @@
 
 ## M7：安全执行和权限模型
 
-状态：Planned
+状态：Done
 
 目标：
 
 让 RepoHelm 可以安全地执行本地命令、Agent 任务和 MCP 能力。
 
-计划做：
+已完成：
 
-- Tool permission model。
-- 命令审批策略。
-- 文件访问 scope。
-- 网络访问 scope。
-- secrets 访问策略。
-- 执行审计日志。
-- sandbox runtime 抽象。
-- 评估 CubeSandbox 或其他隔离执行方案。
+- Tool permission model 已进入本地 state。
+- 命令审批策略支持 allowlist 和 manual 两种模式。
+- 外部 Agent backend 执行前会检查命令 allowlist。
+- 交付前 validation command 执行前会检查命令 allowlist。
+- 文件访问 scope 已记录 workspace、worktree、knowledge。
+- 网络访问 scope 已记录 localhost。
+- secrets 访问策略支持 redact-env/deny 声明。
+- 执行审计日志记录 command、capability、sandbox 等事件。
+- UI Inspector 新增“安全”页，展示 permission model 和 audit log。
+- sandbox runtime 抽象记录 local/external，当前默认 local。
+- 单元测试覆盖 deny 未授权外部命令和 audit log。
+- e2e 覆盖安全页和 Codex CLI allowlist 审计。
 
 暂不做：
 

@@ -63,6 +63,15 @@ const projectSchema = z.object({
 
 const updateProjectSchema = projectSchema.omit({ workspaceId: true }).partial();
 
+const securityPolicySchema = z.object({
+  commandApprovalMode: z.enum(["allowlist", "manual"]).optional(),
+  allowedCommands: z.array(z.string()).optional(),
+  fileScopes: z.array(z.string()).optional(),
+  networkScopes: z.array(z.string()).optional(),
+  secretsPolicy: z.enum(["redact-env", "deny"]).optional(),
+  sandboxRuntime: z.enum(["local", "external"]).optional()
+});
+
 const questSchema = z.object({
   workspaceId: z.string().min(1),
   title: z.string().min(1),
@@ -95,6 +104,22 @@ app.get("/api/agent-backends", async (context) => {
 app.get("/api/capabilities", async (context) => {
   const capabilities = await service.listCapabilities();
   return context.json(capabilities);
+});
+
+app.get("/api/security-policy", async (context) => {
+  const policy = await service.getSecurityPolicy();
+  return context.json(policy);
+});
+
+app.patch("/api/security-policy", async (context) => {
+  const input = securityPolicySchema.parse(await context.req.json());
+  const policy = await service.updateSecurityPolicy(input);
+  return context.json(policy);
+});
+
+app.get("/api/audit-log", async (context) => {
+  const auditLog = await service.listAuditLog();
+  return context.json(auditLog);
 });
 
 app.get("/api/workspaces/:id/knowledge", async (context) => {

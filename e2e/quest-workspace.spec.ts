@@ -131,4 +131,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(codexChangedFileRow).toBeVisible();
   await codexChangedFileRow.click();
   await expect(page.getByText("e2e Codex CLI backend fixture")).toBeVisible();
+
+  await page.locator(".inspector-tabs").getByRole("button", { name: "安全" }).click();
+  await expect(page.getByText("Permission Model")).toBeVisible();
+  await expect(page.getByText("Command approval")).toBeVisible();
+  await expect(page.getByText("node").first()).toBeVisible();
+  await expect(page.locator(".audit-row").filter({ hasText: "Codex CLI" }).filter({ hasText: "allowed" })).toBeVisible();
 });

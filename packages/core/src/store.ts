@@ -9,7 +9,17 @@ const emptyState = (): RepoHelmState => ({
   quests: [],
   events: [],
   knowledge: [],
-  capabilities: []
+  capabilities: [],
+  securityPolicy: {
+    commandApprovalMode: "allowlist",
+    allowedCommands: ["mock", "node", "git", "pnpm"],
+    fileScopes: ["workspace", "worktree", "knowledge"],
+    networkScopes: ["localhost"],
+    secretsPolicy: "redact-env",
+    sandboxRuntime: "local",
+    updatedAt: new Date().toISOString()
+  },
+  auditLog: []
 });
 
 export interface StateStore {

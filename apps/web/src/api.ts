@@ -113,6 +113,25 @@ export interface CapabilityRecommendation {
   createdAt: string;
 }
 
+export interface SecurityPolicy {
+  commandApprovalMode: "allowlist" | "manual";
+  allowedCommands: string[];
+  fileScopes: string[];
+  networkScopes: string[];
+  secretsPolicy: "redact-env" | "deny";
+  sandboxRuntime: "local" | "external";
+  updatedAt: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  type: "command" | "file" | "network" | "secrets" | "capability" | "sandbox";
+  decision: "allowed" | "denied" | "recorded";
+  subject: string;
+  detail: string;
+  createdAt: string;
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -163,6 +182,8 @@ export interface RepoHelmState {
   events: AgentEvent[];
   knowledge: KnowledgeItem[];
   capabilities: CapabilityDefinition[];
+  securityPolicy: SecurityPolicy;
+  auditLog: AuditLogEntry[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -184,6 +205,13 @@ export const api = {
   state: () => request<RepoHelmState>("/api/state"),
   agentBackends: () => request<AgentBackendInfo[]>("/api/agent-backends"),
   capabilities: () => request<CapabilityDefinition[]>("/api/capabilities"),
+  securityPolicy: () => request<SecurityPolicy>("/api/security-policy"),
+  auditLog: () => request<AuditLogEntry[]>("/api/audit-log"),
+  updateSecurityPolicy: (input: Partial<Omit<SecurityPolicy, "updatedAt">>) =>
+    request<SecurityPolicy>("/api/security-policy", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   searchKnowledge: (workspaceId: string, query: string) =>
     request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
   createQuest: (input: {

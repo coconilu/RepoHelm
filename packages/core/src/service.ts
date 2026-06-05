@@ -6,6 +6,7 @@ import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
 import type {
   AgentEvent,
+  AuditLogEntry,
   CapabilityDefinition,
   CapabilityRecommendation,
   CreateProjectInput,
@@ -18,6 +19,7 @@ import type {
   Quest,
   QuestSpec,
   RepoHelmState,
+  SecurityPolicy,
   UpdateProjectInput,
   UpdateWorkspaceInput,
   Workspace,
@@ -388,7 +390,32 @@ export class RepoHelmService {
     const createdWorktrees = worktrees.filter((worktree) => worktree.status === "created");
     const failedWorktrees = worktrees.filter((worktree) => worktree.status === "failed");
     const backend = this.agentBackendRegistry.get(quest.agentBackendId ?? "mock");
-    const backendResult = await backend.run({ quest, worktrees });
+    const backendAvailability = await backend.getAvailability();
+    const backendPermission = this.evaluateCommandPermission(
+      state.securityPolicy,
+      backend.id,
+      backendAvailability.command ?? backend.id
+    );
+    const backendAudit = this.audit(
+      "command",
+      backendPermission.allowed ? "allowed" : "denied",
+      backend.name,
+      backendPermission.detail
+    );
+    const backendResult = backendPermission.allowed
+      ? await backend.run({ quest, worktrees })
+      : {
+          status: "blocked" as const,
+          summary: backendPermission.detail,
+          events: [
+            {
+              type: "security.command.denied",
+              title: "命令执行被安全策略阻止",
+              detail: backendPermission.detail,
+              agent: "Security Agent"
+            }
+          ]
+        };
     const changedFiles = (
       await Promise.all(
         createdWorktrees.map((worktree) =>
@@ -467,7 +494,8 @@ export class RepoHelmService {
       ...state,
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
       events: [...events, ...state.events],
-      knowledge: [persistedMemory, ...state.knowledge]
+      knowledge: [persistedMemory, ...state.knowledge],
+      auditLog: [backendAudit, ...state.auditLog]
     });
     return updatedQuest;
   }
@@ -542,6 +570,7 @@ export class RepoHelmService {
     }
     const createdWorktrees = quest.worktrees.filter((worktree) => worktree.status === "created");
     const commitMessage = this.generateCommitMessage(quest);
+    const auditEntries: AuditLogEntry[] = [];
     const deliveryResults = await Promise.all(
       createdWorktrees.map(async (worktree): Promise<DeliveryState> => {
         const project = state.projects.find((item) => item.id === worktree.projectId);
@@ -552,6 +581,24 @@ export class RepoHelmService {
             status: "failed",
             commitMessage,
             note: "Project not found",
+            createdAt: now()
+          };
+        }
+        const permission = this.evaluateCommandPermission(
+          state.securityPolicy,
+          `validation:${project.id}`,
+          project.validationCommand || "validation:skipped"
+        );
+        auditEntries.push(
+          this.audit("command", permission.allowed ? "allowed" : "denied", project.validationCommand || "validation:skipped", permission.detail)
+        );
+        if (!permission.allowed) {
+          return {
+            projectId: project.id,
+            worktreePath: worktree.worktreePath,
+            status: "failed",
+            commitMessage,
+            note: permission.detail,
             createdAt: now()
           };
         }
@@ -630,7 +677,8 @@ export class RepoHelmService {
     await this.store.write({
       ...state,
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
-      events: [...events, ...state.events]
+      events: [...events, ...state.events],
+      auditLog: [...auditEntries, ...state.auditLog]
     });
     return updatedQuest;
   }
@@ -643,6 +691,34 @@ export class RepoHelmService {
   async listCapabilities(): Promise<CapabilityDefinition[]> {
     const state = await this.getState();
     return state.capabilities;
+  }
+
+  async getSecurityPolicy(): Promise<SecurityPolicy> {
+    const state = await this.getState();
+    return state.securityPolicy;
+  }
+
+  async updateSecurityPolicy(input: Partial<Omit<SecurityPolicy, "updatedAt">>): Promise<SecurityPolicy> {
+    const state = await this.getState();
+    const securityPolicy: SecurityPolicy = {
+      ...state.securityPolicy,
+      ...input,
+      updatedAt: now()
+    };
+    await this.store.write({
+      ...state,
+      securityPolicy,
+      auditLog: [
+        this.audit("sandbox", "recorded", "security-policy", "安全执行策略已更新。"),
+        ...state.auditLog
+      ]
+    });
+    return securityPolicy;
+  }
+
+  async listAuditLog(): Promise<AuditLogEntry[]> {
+    const state = await this.getState();
+    return state.auditLog.slice(0, 100);
   }
 
   async acceptCapabilityRecommendation(questId: string, capabilityId: string): Promise<Quest> {
@@ -741,7 +817,9 @@ export class RepoHelmService {
         deliveryResults: quest.deliveryResults ?? [],
         capabilityRecommendations: quest.capabilityRecommendations ?? []
       })),
-      capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now())
+      capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now()),
+      securityPolicy: state.securityPolicy ?? this.seedSecurityPolicy(now()),
+      auditLog: state.auditLog ?? []
     };
   }
 
@@ -792,7 +870,16 @@ export class RepoHelmService {
       ...state,
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
       capabilities,
-      events: [...events, ...state.events]
+      events: [...events, ...state.events],
+      auditLog: [
+        this.audit(
+          "capability",
+          "recorded",
+          capability.name,
+          status === "accepted" ? "用户确认启用能力。" : "用户忽略能力推荐。"
+        ),
+        ...state.auditLog
+      ]
     });
     return updatedQuest;
   }
@@ -848,6 +935,52 @@ export class RepoHelmService {
         updatedAt: timestamp
       }
     ];
+  }
+
+  private seedSecurityPolicy(timestamp: string): SecurityPolicy {
+    return {
+      commandApprovalMode: "allowlist",
+      allowedCommands: ["mock", "node", "git", "pnpm"],
+      fileScopes: ["workspace", "worktree", "knowledge"],
+      networkScopes: ["localhost"],
+      secretsPolicy: "redact-env",
+      sandboxRuntime: "local",
+      updatedAt: timestamp
+    };
+  }
+
+  private evaluateCommandPermission(policy: SecurityPolicy, subject: string, command: string) {
+    if (!command.trim()) {
+      return {
+        allowed: true,
+        detail: `${subject} 没有配置命令，按跳过处理。`
+      };
+    }
+    if (policy.commandApprovalMode === "manual") {
+      return {
+        allowed: false,
+        detail: `${subject} 需要人工审批，当前安全策略不允许自动执行。`
+      };
+    }
+    const commandName = command.trim().split(/\s+/)[0] ?? command;
+    const allowed = policy.allowedCommands.includes(commandName) || policy.allowedCommands.includes(subject);
+    return {
+      allowed,
+      detail: allowed
+        ? `${subject} 命令 "${commandName}" 命中 allowlist。`
+        : `${subject} 命令 "${commandName}" 不在 allowlist 中。`
+    };
+  }
+
+  private audit(type: AuditLogEntry["type"], decision: AuditLogEntry["decision"], subject: string, detail: string): AuditLogEntry {
+    return {
+      id: id("audit"),
+      type,
+      decision,
+      subject,
+      detail,
+      createdAt: now()
+    };
   }
 
   private recommendCapabilities(

@@ -241,6 +241,41 @@ describe("RepoHelmService", () => {
     }
   });
 
+  it("blocks an external backend command that is not allowed by the security policy", async () => {
+    const previousCommand = process.env.REPOHELM_CODEX_COMMAND;
+    process.env.REPOHELM_CODEX_COMMAND = "python -c \"print('not allowed')\"";
+    try {
+      const { service } = await createGitRepoService();
+      const state = await service.bootstrap();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Blocked backend",
+        requirement: "尝试运行不在 allowlist 中的外部命令。",
+        agentBackendId: "codex-cli",
+        affectedProjectIds: [project.id]
+      });
+
+      const completedQuest = await service.runQuest(quest.id);
+      const auditLog = await service.listAuditLog();
+
+      expect(completedQuest.status).toBe("blocked");
+      expect(completedQuest.agentSummary).toContain("不在 allowlist");
+      expect(auditLog[0]).toMatchObject({
+        type: "command",
+        decision: "denied",
+        subject: "Codex CLI"
+      });
+    } finally {
+      if (previousCommand === undefined) {
+        delete process.env.REPOHELM_CODEX_COMMAND;
+      } else {
+        process.env.REPOHELM_CODEX_COMMAND = previousCommand;
+      }
+    }
+  });
+
   it("runs a quest into ready state with a real git worktree, validation, review, and memory", async () => {
     const { rootDir, service } = await createGitRepoService();
     const state = await service.bootstrap();

@@ -26,12 +26,14 @@ import {
   AgentBackendInfo,
   AgentEvent,
   api,
+  AuditLogEntry,
   ChangedFile,
   CapabilityDefinition,
   KnowledgeItem,
   Project,
   Quest,
   RepoHelmState,
+  SecurityPolicy,
   Workspace
 } from "./api";
 
@@ -56,7 +58,7 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "overview" | "capabilities" | "files" | "diff" | "logs";
+type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "files" | "diff" | "logs";
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
@@ -437,11 +439,13 @@ export function App() {
           onRequirementChange={setQuestRequirement}
         />
         <Inspector
+          auditLog={state.auditLog}
           capabilities={state.capabilities}
           changedFiles={changedFiles}
           events={questEvents}
           projects={projects}
           quest={selectedQuest}
+          securityPolicy={state.securityPolicy}
           selectedChangedFile={selectedChangedFile}
           tab={inspectorTab}
           onAcceptCapability={acceptCapability}
@@ -723,11 +727,13 @@ function QuestStage({
 }
 
 function Inspector({
+  auditLog,
   capabilities,
   changedFiles,
   events,
   projects,
   quest,
+  securityPolicy,
   selectedChangedFile,
   tab,
   onAcceptCapability,
@@ -735,11 +741,13 @@ function Inspector({
   onFileSelect,
   onTabChange
 }: {
+  auditLog: AuditLogEntry[];
   capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
   events: AgentEvent[];
   projects: Project[];
   quest?: Quest;
+  securityPolicy: SecurityPolicy;
   selectedChangedFile?: ChangedFile;
   tab: InspectorTab;
   onAcceptCapability: (capabilityId: string) => void;
@@ -752,6 +760,7 @@ function Inspector({
     { id: "spec", label: "Spec" },
     { id: "overview", label: "概要" },
     { id: "capabilities", label: "能力" },
+    { id: "security", label: "安全" },
     { id: "files", label: "文件" },
     { id: "diff", label: "Diff" },
     { id: "logs", label: "日志" }
@@ -785,6 +794,7 @@ function Inspector({
             onDismissCapability={onDismissCapability}
           />
         ) : null}
+        {tab === "security" ? <SecurityPanel auditLog={auditLog} policy={securityPolicy} /> : null}
         {tab === "files" ? (
           <FilesPanel changedFiles={changedFiles} projectById={projectById} onFileSelect={onFileSelect} />
         ) : null}
@@ -948,6 +958,45 @@ function CapabilitiesPanel({
             <span>{capability.kind} · {capability.source}</span>
             <em className={capability.installed ? "badge green" : "badge"}>{capability.installed ? "enabled" : "available"}</em>
           </div>
+        ))}
+      </InspectorSection>
+    </div>
+  );
+}
+
+function SecurityPanel({ auditLog, policy }: { auditLog: AuditLogEntry[]; policy: SecurityPolicy }) {
+  return (
+    <div className="inspector-stack">
+      <InspectorSection title="Permission Model">
+        <div className="security-policy-grid">
+          <div>
+            <span>Command approval</span>
+            <strong>{policy.commandApprovalMode}</strong>
+          </div>
+          <div>
+            <span>Secrets</span>
+            <strong>{policy.secretsPolicy}</strong>
+          </div>
+          <div>
+            <span>Sandbox runtime</span>
+            <strong>{policy.sandboxRuntime}</strong>
+          </div>
+        </div>
+        <SpecBlock title="命令 allowlist" items={policy.allowedCommands} />
+        <SpecBlock title="文件 scope" items={policy.fileScopes} />
+        <SpecBlock title="网络 scope" items={policy.networkScopes} />
+      </InspectorSection>
+      <InspectorSection title="Audit Log">
+        {auditLog.length === 0 ? <p className="muted">暂无审计日志。</p> : null}
+        {auditLog.slice(0, 12).map((entry) => (
+          <article className="audit-row" key={entry.id}>
+            <div className="worktree-title">
+              <strong>{entry.subject}</strong>
+              <em className={entry.decision === "denied" ? "badge red" : "badge green"}>{entry.decision}</em>
+            </div>
+            <span>{entry.type}</span>
+            <p>{entry.detail}</p>
+          </article>
         ))}
       </InspectorSection>
     </div>
