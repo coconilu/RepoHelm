@@ -97,6 +97,11 @@ app.get("/api/workspaces/:id/knowledge", async (context) => {
   return context.json(knowledge);
 });
 
+app.get("/api/worktrees", async (context) => {
+  const worktrees = await service.listWorktrees(context.req.query("workspaceId"));
+  return context.json(worktrees);
+});
+
 app.post("/api/workspaces", async (context) => {
   const input = workspaceSchema.parse(await context.req.json());
   const workspace = await service.createWorkspace(input);
@@ -139,6 +144,21 @@ app.post("/api/quests", async (context) => {
 
 app.post("/api/quests/:id/run", async (context) => {
   const quest = await service.runQuest(context.req.param("id"));
+  return context.json(quest);
+});
+
+app.post("/api/quests/:id/retry", async (context) => {
+  const quest = await service.retryQuest(context.req.param("id"));
+  return context.json(quest);
+});
+
+app.post("/api/quests/:id/cleanup", async (context) => {
+  const quest = await service.cleanupQuestWorktrees(context.req.param("id"));
+  return context.json(quest);
+});
+
+app.post("/api/quests/:id/deliver", async (context) => {
+  const quest = await service.deliverQuest(context.req.param("id"));
   return context.json(quest);
 });
 

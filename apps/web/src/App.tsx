@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Circle,
   FileText,
+  GitPullRequest,
   ListChecks,
   MoreHorizontal,
   Play,
@@ -16,6 +17,7 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Trash2,
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -171,6 +173,57 @@ export function App() {
     }
   }
 
+  async function retryQuest() {
+    if (!selectedQuest) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.retryQuest(selectedQuest.id);
+      await load();
+      setInspectorTab("files");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cleanupQuest() {
+    if (!selectedQuest) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.cleanupQuest(selectedQuest.id);
+      await load();
+      setInspectorTab("overview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deliverQuest() {
+    if (!selectedQuest) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.deliverQuest(selectedQuest.id);
+      await load();
+      setInspectorTab("overview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveWorkspaceConfig(input: { name: string; description: string; worktreeRoot: string }) {
     if (!configWorkspace) {
       return;
@@ -280,6 +333,18 @@ export function App() {
             <Bot size={14} />
             {activeBackend?.name ?? "Backend"}
           </span>
+          <button className="toolbar-action secondary" disabled={busy || !selectedQuest} onClick={retryQuest} type="button">
+            <RefreshCw size={15} />
+            <span>重试</span>
+          </button>
+          <button className="toolbar-action secondary" disabled={busy || !selectedQuest} onClick={cleanupQuest} type="button">
+            <Trash2 size={15} />
+            <span>清理</span>
+          </button>
+          <button className="toolbar-action delivery" disabled={busy || !selectedQuest} onClick={deliverQuest} type="button">
+            <GitPullRequest size={15} />
+            <span>交付</span>
+          </button>
           <button className="toolbar-action" disabled={busy || !selectedQuest} onClick={runQuest} type="button">
             <Play size={15} />
             <span>{selectedQuest?.status === "ready" ? "重新运行" : "运行 Request"}</span>
@@ -747,6 +812,24 @@ function OverviewPanel({
       <InspectorSection title="Review">
         <SpecBlock title="验证" items={quest?.validationResults ?? []} empty="暂无验证结果。" />
         <SpecBlock title="风险" items={quest?.reviewNotes ?? []} empty="暂无 Review 记录。" />
+      </InspectorSection>
+      <InspectorSection title="Delivery">
+        {quest?.deliveryResults?.length ? (
+          quest.deliveryResults.map((delivery) => (
+            <div className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
+              <div className="worktree-title">
+                <strong>{projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId}</strong>
+                <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
+              </div>
+              <code>{delivery.commitMessage}</code>
+              {delivery.commitSha ? <span>commit {delivery.commitSha.slice(0, 12)}</span> : null}
+              {delivery.prUrl ? <span>{delivery.prUrl}</span> : null}
+              <p>{delivery.note}</p>
+            </div>
+          ))
+        ) : (
+          <p className="muted">暂无交付记录。</p>
+        )}
       </InspectorSection>
     </div>
   );

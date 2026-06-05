@@ -79,6 +79,18 @@ export interface ChangedFile {
   worktreePath: string;
 }
 
+export interface DeliveryState {
+  projectId: string;
+  worktreePath: string;
+  status: "validated" | "committed" | "pr_ready" | "pr_created" | "failed";
+  commitMessage: string;
+  note: string;
+  validationOutput?: string;
+  commitSha?: string;
+  prUrl?: string;
+  createdAt: string;
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -92,6 +104,7 @@ export interface Quest {
   changedFiles: Array<ChangedFile | string>;
   validationResults: string[];
   reviewNotes: string[];
+  deliveryResults: DeliveryState[];
   createdAt: string;
   updatedAt: string;
 }
@@ -161,6 +174,18 @@ export const api = {
     }),
   runQuest: (questId: string) =>
     request<Quest>(`/api/quests/${questId}/run`, {
+      method: "POST"
+    }),
+  retryQuest: (questId: string) =>
+    request<Quest>(`/api/quests/${questId}/retry`, {
+      method: "POST"
+    }),
+  cleanupQuest: (questId: string) =>
+    request<Quest>(`/api/quests/${questId}/cleanup`, {
+      method: "POST"
+    }),
+  deliverQuest: (questId: string) =>
+    request<Quest>(`/api/quests/${questId}/deliver`, {
       method: "POST"
     }),
   updateWorkspace: (workspaceId: string, input: { name?: string; description?: string; worktreeRoot?: string }) =>

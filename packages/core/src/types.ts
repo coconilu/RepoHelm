@@ -59,7 +59,7 @@ export interface WorktreeState {
   projectId: string;
   branchName: string;
   worktreePath: string;
-  status: "not_created" | "planned" | "created" | "failed";
+  status: "not_created" | "planned" | "created" | "failed" | "cleaned";
   note: string;
   repoRoot?: string;
 }
@@ -84,6 +84,18 @@ export interface AgentEvent {
   createdAt: string;
 }
 
+export interface DeliveryState {
+  projectId: string;
+  worktreePath: string;
+  status: "validated" | "committed" | "pr_ready" | "pr_created" | "failed";
+  commitMessage: string;
+  note: string;
+  validationOutput?: string;
+  commitSha?: string;
+  prUrl?: string;
+  createdAt: string;
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -97,6 +109,7 @@ export interface Quest {
   changedFiles: ChangedFile[];
   validationResults: string[];
   reviewNotes: string[];
+  deliveryResults: DeliveryState[];
   agentSummary?: string;
   createdAt: string;
   updatedAt: string;

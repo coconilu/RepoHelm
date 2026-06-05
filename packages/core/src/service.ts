@@ -9,6 +9,7 @@ import type {
   CreateProjectInput,
   CreateQuestInput,
   CreateWorkspaceInput,
+  DeliveryState,
   KnowledgeItem,
   Project,
   ProjectHealth,
@@ -300,6 +301,7 @@ export class RepoHelmService {
       changedFiles: [],
       validationResults: [],
       reviewNotes: [],
+      deliveryResults: [],
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -390,6 +392,7 @@ export class RepoHelmService {
       worktrees,
       changedFiles,
       agentSummary: backendResult.summary,
+      deliveryResults: [],
       validationResults: [
         `Agent backend: ${backend.name} (${backendResult.status})。`,
         "Spec validation: Spec 覆盖了用户目标、受影响项目和验收标准。",
@@ -451,6 +454,169 @@ export class RepoHelmService {
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
       events: [...events, ...state.events],
       knowledge: [persistedMemory, ...state.knowledge]
+    });
+    return updatedQuest;
+  }
+
+  async listWorktrees(workspaceId?: string): Promise<Array<WorktreeState & { questId: string; questTitle: string }>> {
+    const state = await this.getState();
+    return state.quests
+      .filter((quest) => !workspaceId || quest.workspaceId === workspaceId)
+      .flatMap((quest) =>
+        quest.worktrees.map((worktree) => ({
+          ...worktree,
+          questId: quest.id,
+          questTitle: quest.title
+        }))
+      );
+  }
+
+  async cleanupQuestWorktrees(questId: string): Promise<Quest> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+
+    const worktrees = await Promise.all(
+      quest.worktrees.map(async (worktree) => {
+        const project = state.projects.find((item) => item.id === worktree.projectId);
+        if (!project || worktree.status !== "created") {
+          return worktree;
+        }
+        const result = await this.gitWorktreeManager.removeWorktree(project.path, worktree.worktreePath, worktree.branchName);
+        return {
+          ...worktree,
+          status: result.status === "ok" ? "cleaned" : "failed",
+          note: result.note
+        } satisfies WorktreeState;
+      })
+    );
+    const updatedQuest: Quest = {
+      ...quest,
+      worktrees,
+      status: quest.status === "delivered" ? quest.status : "ready",
+      updatedAt: now()
+    };
+    const events = [
+      this.event(
+        questId,
+        "worktree.cleaned",
+        "Worktree 已清理",
+        `Worktree Manager 已处理 ${worktrees.length} 个 worktree。`,
+        "Worktree Manager"
+      )
+    ];
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      events: [...events, ...state.events]
+    });
+    return updatedQuest;
+  }
+
+  async retryQuest(questId: string): Promise<Quest> {
+    await this.cleanupQuestWorktrees(questId);
+    return this.runQuest(questId);
+  }
+
+  async deliverQuest(questId: string): Promise<Quest> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    const createdWorktrees = quest.worktrees.filter((worktree) => worktree.status === "created");
+    const commitMessage = this.generateCommitMessage(quest);
+    const deliveryResults = await Promise.all(
+      createdWorktrees.map(async (worktree): Promise<DeliveryState> => {
+        const project = state.projects.find((item) => item.id === worktree.projectId);
+        if (!project) {
+          return {
+            projectId: worktree.projectId,
+            worktreePath: worktree.worktreePath,
+            status: "failed",
+            commitMessage,
+            note: "Project not found",
+            createdAt: now()
+          };
+        }
+        const validation = await this.gitWorktreeManager.runValidation(worktree.worktreePath, project.validationCommand);
+        if (validation.status === "failed") {
+          return {
+            projectId: project.id,
+            worktreePath: worktree.worktreePath,
+            status: "failed",
+            commitMessage,
+            note: validation.note,
+            validationOutput: validation.output,
+            createdAt: now()
+          };
+        }
+        const commit = await this.gitWorktreeManager.commitAll(worktree.worktreePath, commitMessage);
+        if (commit.status !== "ok") {
+          return {
+            projectId: project.id,
+            worktreePath: worktree.worktreePath,
+            status: "failed",
+            commitMessage,
+            note: commit.note,
+            validationOutput: validation.output,
+            createdAt: now()
+          };
+        }
+        const pr = await this.gitWorktreeManager.createPullRequest(
+          worktree.worktreePath,
+          commitMessage,
+          `RepoHelm Quest: ${quest.title}\n\n${quest.requirement}`
+        );
+        return {
+          projectId: project.id,
+          worktreePath: worktree.worktreePath,
+          status: pr.status === "ok" ? "pr_created" : "pr_ready",
+          commitMessage,
+          note: pr.note,
+          validationOutput: validation.output,
+          commitSha: commit.commitSha,
+          prUrl: pr.prUrl,
+          createdAt: now()
+        };
+      })
+    );
+    const failed = deliveryResults.filter((result) => result.status === "failed");
+    const updatedQuest: Quest = {
+      ...quest,
+      status: deliveryResults.length > 0 && failed.length === 0 ? "delivered" : "ready",
+      deliveryResults,
+      validationResults: [
+        ...quest.validationResults,
+        deliveryResults.length > 0
+          ? `Delivery validation: ${deliveryResults.length - failed.length}/${deliveryResults.length} 个项目完成交付准备。`
+          : "Delivery validation: 没有可交付的 worktree。"
+      ],
+      reviewNotes: [
+        ...quest.reviewNotes,
+        failed.length > 0
+          ? "Delivery Agent: 部分项目交付失败，请查看 delivery results。"
+          : "Delivery Agent: 交付前验证和 commit 已完成，可进入 PR handoff。"
+      ],
+      updatedAt: now()
+    };
+    const events = [
+      this.event(
+        questId,
+        "delivery.completed",
+        failed.length === 0 ? "交付准备完成" : "交付准备部分失败",
+        deliveryResults.length > 0
+          ? `${deliveryResults.length - failed.length}/${deliveryResults.length} 个项目已完成验证、commit 和 PR handoff。`
+          : "没有可交付的 worktree。",
+        "Delivery Agent"
+      )
+    ];
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      events: [...events, ...state.events]
     });
     return updatedQuest;
   }
@@ -542,8 +708,16 @@ export class RepoHelmService {
         validationCommand: project.validationCommand ?? "",
         health: project.health ?? unknownHealth(),
         updatedAt: project.updatedAt ?? project.createdAt ?? now()
+      })),
+      quests: state.quests.map((quest) => ({
+        ...quest,
+        deliveryResults: quest.deliveryResults ?? []
       }))
     };
+  }
+
+  private generateCommitMessage(quest: Quest): string {
+    return `RepoHelm: ${quest.title}`.slice(0, 72);
   }
 
   private event(questId: string, type: string, title: string, detail: string, agent: string): AgentEvent {

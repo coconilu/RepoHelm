@@ -246,6 +246,62 @@ describe("RepoHelmService", () => {
     await expect(readFile(questMemory!.sourcePath!, "utf8")).resolves.toContain(`Quest Memory: ${quest.title}`);
   });
 
+  it("delivers a ready quest by validating and committing each created worktree", async () => {
+    const { service } = await createGitRepoService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const project = state.projects[0]!;
+    await service.updateProject(project.id, {
+      validationCommand: "node --version"
+    });
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Deliver worktree",
+      requirement: "提交 worktree 中的 Agent 产物并生成 PR handoff。",
+      affectedProjectIds: [project.id]
+    });
+    await service.runQuest(quest.id);
+
+    const deliveredQuest = await service.deliverQuest(quest.id);
+    const nextState = await service.getState();
+    const deliveryEvent = nextState.events.find((event) => event.questId === quest.id && event.type === "delivery.completed");
+
+    expect(deliveredQuest.status).toBe("delivered");
+    expect(deliveredQuest.deliveryResults).toHaveLength(1);
+    expect(deliveredQuest.deliveryResults[0]).toMatchObject({
+      projectId: project.id,
+      status: "pr_ready",
+      commitMessage: "RepoHelm: Deliver worktree"
+    });
+    expect(deliveredQuest.deliveryResults[0]?.commitSha).toMatch(/[a-f0-9]{40}/);
+    expect(deliveredQuest.deliveryResults[0]?.validationOutput).toContain("v");
+    expect(deliveryEvent?.title).toBe("交付准备完成");
+  });
+
+  it("cleans up quest worktrees and can retry the quest into a fresh worktree", async () => {
+    const { service } = await createGitRepoService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const project = state.projects[0]!;
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Retry worktree",
+      requirement: "清理 worktree 后重新运行 Quest。",
+      affectedProjectIds: [project.id]
+    });
+    const readyQuest = await service.runQuest(quest.id);
+    const worktreePath = readyQuest.worktrees[0]!.worktreePath;
+
+    const cleanedQuest = await service.cleanupQuestWorktrees(quest.id);
+    await expect(access(worktreePath)).rejects.toBeTruthy();
+    const retriedQuest = await service.retryQuest(quest.id);
+
+    expect(cleanedQuest.worktrees[0]?.status).toBe("cleaned");
+    expect(retriedQuest.status).toBe("ready");
+    expect(retriedQuest.worktrees[0]?.status).toBe("created");
+    await expect(access(retriedQuest.worktrees[0]!.worktreePath)).resolves.toBeUndefined();
+  });
+
   it("blocks a quest when the affected project is not a git repository", async () => {
     const { service } = await createService();
     const state = await service.bootstrap();

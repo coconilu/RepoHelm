@@ -228,23 +228,27 @@
 
 ## M5：Worktree 生命周期和交付
 
-状态：Planned
+状态：Done
 
 目标：
 
 把 worktree 从“能创建和展示 diff”推进到“可交付变更”。
 
-计划做：
+已完成：
 
-- Worktree 列表和详情。
-- Worktree 清理。
-- Worktree 重试。
-- 已存在 worktree/branch 冲突处理。
-- Diff review 体验增强。
-- 按 project commit。
-- 生成 commit message。
-- PR 创建能力。
-- 交付前验证命令。
+- API 支持列出 workspace/Quest worktree，并在 Inspector 概要中展示详情。
+- UI 支持 Quest 级重试、清理和交付操作。
+- Worktree 清理支持 `git worktree remove --force` 和本地分支删除。
+- Worktree 重试会先清理既有 worktree，再重新运行 Quest。
+- 已存在 worktree 会复用，已存在非 Git 目录会标记失败，避免覆盖用户文件。
+- Diff review 保留交付前变更和 artifact 内容。
+- 支持按 project 运行交付前验证命令。
+- 支持按 project commit worktree 中的全部变更。
+- Commit message 会根据 Quest 标题生成。
+- 支持 PR handoff；设置 `REPOHELM_ENABLE_GH_PR=1` 后可通过 `gh pr create` 创建 PR。
+- Delivery results 会记录 validation output、commit sha、PR URL 或 handoff note。
+- 单元测试覆盖交付验证、commit、PR handoff、worktree 清理和重试。
+- e2e 覆盖 UI 交付、delivery results 展示和 worktree 清理。
 
 暂不做：
 

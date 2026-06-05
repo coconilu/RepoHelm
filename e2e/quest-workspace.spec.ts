@@ -45,6 +45,8 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await configDialog.getByRole("button", { name: "检查状态" }).first().click();
   await expect(configDialog.locator(".health-pill.ok").first()).toBeVisible();
+  await configDialog.getByRole("textbox", { name: "验证命令" }).first().fill("node --version");
+  await configDialog.getByRole("button", { name: "保存项目" }).first().click();
 
   const addProjectForm = configDialog.locator(".add-project-form");
   await addProjectForm.getByRole("textbox", { name: "项目名称" }).fill(tempProjectName);
@@ -95,6 +97,15 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(changedFileRow).toBeVisible();
   await changedFileRow.click();
   await expect(page.getByText("MVP mock Implementation Agent")).toBeVisible();
+
+  await page.getByRole("button", { name: "交付", exact: true }).click();
+  await expect(page.locator("strong").filter({ hasText: "交付准备完成" })).toBeVisible();
+  await expect(page.getByText("pr_ready").first()).toBeVisible();
+  await expect(page.getByText("RepoHelm: E2E Worktree Quest").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "清理", exact: true }).click();
+  await expect(page.locator("strong").filter({ hasText: "Worktree 已清理" })).toBeVisible();
+  await expect(page.locator(".badge").filter({ hasText: "cleaned" }).first()).toBeVisible();
 
   await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
   await page

@@ -20,6 +20,14 @@ export interface CreateWorktreeResult {
   repoRoot?: string;
 }
 
+export interface GitOperationResult {
+  status: "ok" | "failed" | "skipped";
+  note: string;
+  output?: string;
+  commitSha?: string;
+  prUrl?: string;
+}
+
 export class GitWorktreeManager {
   async inspectRepository(path: string, defaultBranch: string): Promise<ProjectHealth> {
     try {
@@ -110,6 +118,115 @@ export class GitWorktreeManager {
         worktreePath
       }))
     );
+  }
+
+  async removeWorktree(repoPath: string, worktreePath: string, branchName: string): Promise<GitOperationResult> {
+    try {
+      const repoRoot = await this.getRepoRoot(repoPath);
+      await this.git(repoRoot, ["worktree", "remove", "--force", worktreePath]).catch(() => "");
+      await this.git(repoRoot, ["branch", "-D", branchName]).catch(() => "");
+      return {
+        status: "ok",
+        note: "Worktree 和对应分支已清理。"
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        note: this.formatError(error)
+      };
+    }
+  }
+
+  async runValidation(worktreePath: string, command: string): Promise<GitOperationResult> {
+    if (!command.trim()) {
+      return {
+        status: "skipped",
+        note: "项目未配置交付前验证命令。"
+      };
+    }
+    try {
+      const { stdout, stderr } = await execFileAsync("sh", ["-lc", command], {
+        cwd: worktreePath,
+        timeout: Number(process.env.REPOHELM_DELIVERY_TIMEOUT_MS ?? 120_000),
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0"
+        }
+      });
+      return {
+        status: "ok",
+        note: "交付前验证命令通过。",
+        output: [stdout, stderr].filter(Boolean).join("\n").trim()
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        note: this.formatError(error),
+        output: this.formatError(error)
+      };
+    }
+  }
+
+  async commitAll(worktreePath: string, message: string): Promise<GitOperationResult> {
+    try {
+      const changedFiles = await this.getChangedFiles("delivery", worktreePath);
+      if (changedFiles.length === 0) {
+        return {
+          status: "skipped",
+          note: "没有可提交的文件变更。"
+        };
+      }
+      await this.git(worktreePath, ["add", "-A"]);
+      await this.git(worktreePath, [
+        "-c",
+        "user.name=RepoHelm",
+        "-c",
+        "user.email=repohelm@example.com",
+        "commit",
+        "-m",
+        message
+      ]);
+      const commitSha = (await this.git(worktreePath, ["rev-parse", "HEAD"])).trim();
+      return {
+        status: "ok",
+        note: "Worktree 变更已提交。",
+        commitSha
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        note: this.formatError(error)
+      };
+    }
+  }
+
+  async createPullRequest(worktreePath: string, title: string, body: string): Promise<GitOperationResult> {
+    if (process.env.REPOHELM_ENABLE_GH_PR !== "1") {
+      return {
+        status: "skipped",
+        note: `PR handoff 已生成。设置 REPOHELM_ENABLE_GH_PR=1 后可使用 gh 创建 PR。\nTitle: ${title}\nBody: ${body}`
+      };
+    }
+    try {
+      const { stdout } = await execFileAsync("gh", ["pr", "create", "--title", title, "--body", body], {
+        cwd: worktreePath,
+        timeout: Number(process.env.REPOHELM_DELIVERY_TIMEOUT_MS ?? 120_000),
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: "0"
+        }
+      });
+      return {
+        status: "ok",
+        note: "Pull request 已创建。",
+        prUrl: stdout.trim()
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        note: this.formatError(error)
+      };
+    }
   }
 
   private parseStatusLine(line: string): { path: string; status: ChangeKind } {
