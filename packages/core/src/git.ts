@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { ChangedFile, ChangeKind } from "./types.js";
+import type { ChangedFile, ChangeKind, ProjectHealth } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +21,35 @@ export interface CreateWorktreeResult {
 }
 
 export class GitWorktreeManager {
+  async inspectRepository(path: string, defaultBranch: string): Promise<ProjectHealth> {
+    try {
+      await access(path);
+    } catch {
+      return {
+        status: "missing",
+        message: "项目路径不存在。"
+      };
+    }
+
+    try {
+      const repoRoot = await this.getRepoRoot(path);
+      const currentBranch = (await this.git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+      const branchNote =
+        currentBranch === defaultBranch
+          ? `当前分支为 ${currentBranch}。`
+          : `当前分支为 ${currentBranch}，默认分支配置为 ${defaultBranch}。`;
+      return {
+        status: "ok",
+        message: `Git 仓库可用。${branchNote}`
+      };
+    } catch (error) {
+      return {
+        status: "not_git",
+        message: this.formatError(error)
+      };
+    }
+  }
+
   async createWorktree(input: CreateWorktreeInput): Promise<CreateWorktreeResult> {
     try {
       const repoRoot = await this.getRepoRoot(input.repoPath);

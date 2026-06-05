@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { AgentBackendRegistry } from "./agent.js";
 import { GitWorktreeManager } from "./git.js";
@@ -9,9 +9,12 @@ import type {
   CreateWorkspaceInput,
   KnowledgeItem,
   Project,
+  ProjectHealth,
   Quest,
   QuestSpec,
   RepoHelmState,
+  UpdateProjectInput,
+  UpdateWorkspaceInput,
   Workspace,
   WorktreeState
 } from "./types.js";
@@ -19,6 +22,10 @@ import { JsonStateStore } from "./store.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
+const unknownHealth = (): ProjectHealth => ({
+  status: "unknown",
+  message: "尚未检查项目状态。"
+});
 
 const slugify = (value: string) =>
   value
@@ -43,7 +50,11 @@ export class RepoHelmService {
   async bootstrap(): Promise<RepoHelmState> {
     const state = await this.store.read();
     if (state.workspaces.length > 0) {
-      return state;
+      const normalized = this.normalizeState(state);
+      if (JSON.stringify(normalized) !== JSON.stringify(state)) {
+        await this.store.write(normalized);
+      }
+      return normalized;
     }
 
     const timestamp = now();
@@ -52,6 +63,7 @@ export class RepoHelmService {
       name: "RepoHelm Demo Workspace",
       description: "一个用于体验 Quest 工作流的虚拟 workspace。",
       projectIds: ["project_repohelm"],
+      worktreeRoot: this.worktreeRootDir,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -62,7 +74,10 @@ export class RepoHelmService {
       path: this.rootDir,
       role: "unknown",
       defaultBranch: "main",
-      createdAt: timestamp
+      validationCommand: "pnpm test:all",
+      health: unknownHealth(),
+      createdAt: timestamp,
+      updatedAt: timestamp
     };
     const knowledge: KnowledgeItem = {
       id: "knowledge_architecture_seed",
@@ -102,11 +117,31 @@ export class RepoHelmService {
       name: input.name,
       description: input.description ?? "",
       projectIds: [],
+      worktreeRoot: input.worktreeRoot ?? this.worktreeRootDir,
       createdAt: timestamp,
       updatedAt: timestamp
     };
     await this.store.write({ ...state, workspaces: [workspace, ...state.workspaces] });
     return workspace;
+  }
+
+  async updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput): Promise<Workspace> {
+    const state = await this.getState();
+    const workspace = state.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) {
+      throw new Error("Workspace not found");
+    }
+
+    const updatedWorkspace: Workspace = {
+      ...workspace,
+      name: input.name ?? workspace.name,
+      description: input.description ?? workspace.description,
+      worktreeRoot: input.worktreeRoot ?? workspace.worktreeRoot,
+      updatedAt: now()
+    };
+    const workspaces = state.workspaces.map((item) => (item.id === workspaceId ? updatedWorkspace : item));
+    await this.store.write({ ...state, workspaces });
+    return updatedWorkspace;
   }
 
   async createProject(input: CreateProjectInput): Promise<Project> {
@@ -123,7 +158,10 @@ export class RepoHelmService {
       path: input.path,
       role: input.role ?? "unknown",
       defaultBranch: input.defaultBranch ?? "main",
-      createdAt: now()
+      validationCommand: input.validationCommand ?? "",
+      health: unknownHealth(),
+      createdAt: now(),
+      updatedAt: now()
     };
     const workspaces = state.workspaces.map((item) =>
       item.id === input.workspaceId
@@ -133,6 +171,81 @@ export class RepoHelmService {
 
     await this.store.write({ ...state, workspaces, projects: [project, ...state.projects] });
     return project;
+  }
+
+  async updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
+    const state = await this.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+
+    const updatedProject: Project = {
+      ...project,
+      name: input.name ?? project.name,
+      path: input.path ?? project.path,
+      role: input.role ?? project.role,
+      defaultBranch: input.defaultBranch ?? project.defaultBranch,
+      validationCommand: input.validationCommand ?? project.validationCommand,
+      health:
+        input.path || input.defaultBranch
+          ? {
+              status: "unknown",
+              message: "项目配置已变更，等待重新检查。"
+            }
+          : project.health,
+      updatedAt: now()
+    };
+    const projects = state.projects.map((item) => (item.id === projectId ? updatedProject : item));
+    await this.store.write({ ...state, projects });
+    return updatedProject;
+  }
+
+  async removeProject(projectId: string): Promise<RepoHelmState> {
+    const state = await this.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+
+    const projects = state.projects.filter((item) => item.id !== projectId);
+    const workspaces = state.workspaces.map((workspace) =>
+      workspace.id === project.workspaceId
+        ? {
+            ...workspace,
+            projectIds: workspace.projectIds.filter((id) => id !== projectId),
+            updatedAt: now()
+          }
+        : workspace
+    );
+    const quests = state.quests.map((quest) => ({
+      ...quest,
+      affectedProjectIds: quest.affectedProjectIds.filter((id) => id !== projectId)
+    }));
+    const nextState = { ...state, projects, workspaces, quests };
+    await this.store.write(nextState);
+    return nextState;
+  }
+
+  async checkProjectHealth(projectId: string): Promise<Project> {
+    const state = await this.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+
+    const health = await this.gitWorktreeManager.inspectRepository(project.path, project.defaultBranch);
+    const updatedProject: Project = {
+      ...project,
+      health: {
+        ...health,
+        checkedAt: now()
+      },
+      updatedAt: now()
+    };
+    const projects = state.projects.map((item) => (item.id === projectId ? updatedProject : item));
+    await this.store.write({ ...state, projects });
+    return updatedProject;
   }
 
   async createQuest(input: CreateQuestInput): Promise<Quest> {
@@ -196,7 +309,8 @@ export class RepoHelmService {
       quest.affectedProjectIds.map<Promise<WorktreeState>>(async (projectId) => {
         const project = state.projects.find((item) => item.id === projectId);
         const projectName = project?.name ?? projectId;
-        const worktreePath = join(this.worktreeRootDir, slugify(quest.title), slugify(projectName));
+        const worktreeRoot = workspace.worktreeRoot ? resolve(workspace.worktreeRoot) : this.worktreeRootDir;
+        const worktreePath = join(worktreeRoot, slugify(quest.title), slugify(projectName));
         if (!project) {
           return {
             projectId,
@@ -324,6 +438,26 @@ export class RepoHelmService {
         "执行结束后生成 validation、review 和 knowledge memory。"
       ],
       openQuestions: ["是否需要为该 Quest 接入真实模型或外部 coding agent backend？"]
+    };
+  }
+
+  private normalizeState(state: RepoHelmState): RepoHelmState {
+    return {
+      ...state,
+      workspaces: state.workspaces.map((workspace) => ({
+        ...workspace,
+        projectIds: workspace.projectIds ?? [],
+        worktreeRoot: workspace.worktreeRoot ?? this.worktreeRootDir,
+        updatedAt: workspace.updatedAt ?? workspace.createdAt ?? now()
+      })),
+      projects: state.projects.map((project) => ({
+        ...project,
+        role: project.role ?? "unknown",
+        defaultBranch: project.defaultBranch ?? "main",
+        validationCommand: project.validationCommand ?? "",
+        health: project.health ?? unknownHealth(),
+        updatedAt: project.updatedAt ?? project.createdAt ?? now()
+      }))
     };
   }
 

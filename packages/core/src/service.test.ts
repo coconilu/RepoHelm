@@ -42,8 +42,73 @@ describe("RepoHelmService", () => {
     expect(state.projects).toHaveLength(1);
     expect(state.knowledge).toHaveLength(1);
     expect(state.workspaces[0]?.projectIds).toEqual([state.projects[0]?.id]);
+    expect(state.workspaces[0]?.worktreeRoot).toContain(join(rootDir, ".repohelm", "worktrees"));
     expect(state.projects[0]?.path).toBe(rootDir);
+    expect(state.projects[0]?.validationCommand).toBe("pnpm test:all");
+    expect(state.projects[0]?.health.status).toBe("unknown");
     expect(persisted.workspaces[0].id).toBe(state.workspaces[0]?.id);
+  });
+
+  it("updates workspace and project configuration with health checks", async () => {
+    const { rootDir, service } = await createGitRepoService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const project = state.projects[0]!;
+    const nextWorktreeRoot = join(rootDir, ".repohelm", "custom-worktrees");
+
+    const updatedWorkspace = await service.updateWorkspace(workspace.id, {
+      name: "Configured Workspace",
+      description: "M2 workspace config",
+      worktreeRoot: nextWorktreeRoot
+    });
+    const updatedProject = await service.updateProject(project.id, {
+      name: "RepoHelm Core",
+      role: "library",
+      path: rootDir,
+      defaultBranch: "main",
+      validationCommand: "pnpm test"
+    });
+    const checkedProject = await service.checkProjectHealth(project.id);
+    const nextState = await service.getState();
+
+    expect(updatedWorkspace).toMatchObject({
+      name: "Configured Workspace",
+      description: "M2 workspace config",
+      worktreeRoot: nextWorktreeRoot
+    });
+    expect(updatedProject).toMatchObject({
+      name: "RepoHelm Core",
+      role: "library",
+      validationCommand: "pnpm test"
+    });
+    expect(checkedProject.health.status).toBe("ok");
+    expect(checkedProject.health.message).toContain("Git 仓库可用");
+    expect(nextState.workspaces[0]?.name).toBe("Configured Workspace");
+    expect(nextState.projects[0]?.health.status).toBe("ok");
+  });
+
+  it("adds and removes projects from a workspace", async () => {
+    const { service } = await createService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+
+    const project = await service.createProject({
+      workspaceId: workspace.id,
+      name: "Docs",
+      path: "/tmp/repohelm-docs",
+      role: "documentation",
+      defaultBranch: "main",
+      validationCommand: "npm test"
+    });
+    const withProject = await service.getState();
+
+    expect(withProject.workspaces[0]?.projectIds).toContain(project.id);
+    expect(withProject.projects.find((item) => item.id === project.id)?.validationCommand).toBe("npm test");
+
+    const withoutProject = await service.removeProject(project.id);
+
+    expect(withoutProject.workspaces[0]?.projectIds).not.toContain(project.id);
+    expect(withoutProject.projects.some((item) => item.id === project.id)).toBe(false);
   });
 
   it("creates a quest with a lightweight spec and planning events", async () => {

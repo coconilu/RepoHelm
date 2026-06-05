@@ -13,12 +13,20 @@ export type QuestStatus =
 
 export type ProjectRole = "frontend" | "backend" | "documentation" | "library" | "infra" | "unknown";
 export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode";
+export type ProjectHealthStatus = "unknown" | "ok" | "missing" | "not_git" | "invalid";
+
+export interface ProjectHealth {
+  status: ProjectHealthStatus;
+  message: string;
+  checkedAt?: string;
+}
 
 export interface Workspace {
   id: string;
   name: string;
   description: string;
   projectIds: string[];
+  worktreeRoot: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -30,7 +38,10 @@ export interface Project {
   path: string;
   role: ProjectRole;
   defaultBranch: string;
+  validationCommand: string;
+  health: ProjectHealth;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface QuestSpec {
@@ -115,6 +126,7 @@ export interface RepoHelmState {
 export interface CreateWorkspaceInput {
   name: string;
   description?: string;
+  worktreeRoot?: string;
 }
 
 export interface CreateProjectInput {
@@ -123,6 +135,21 @@ export interface CreateProjectInput {
   path: string;
   role?: ProjectRole;
   defaultBranch?: string;
+  validationCommand?: string;
+}
+
+export interface UpdateWorkspaceInput {
+  name?: string;
+  description?: string;
+  worktreeRoot?: string;
+}
+
+export interface UpdateProjectInput {
+  name?: string;
+  path?: string;
+  role?: ProjectRole;
+  defaultBranch?: string;
+  validationCommand?: string;
 }
 
 export interface CreateQuestInput {

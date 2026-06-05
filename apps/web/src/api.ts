@@ -27,8 +27,15 @@ export interface Workspace {
   name: string;
   description: string;
   projectIds: string[];
+  worktreeRoot: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProjectHealth {
+  status: "unknown" | "ok" | "missing" | "not_git" | "invalid";
+  message: string;
+  checkedAt?: string;
 }
 
 export interface Project {
@@ -38,7 +45,10 @@ export interface Project {
   path: string;
   role: string;
   defaultBranch: string;
+  validationCommand: string;
+  health: ProjectHealth;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface QuestSpec {
@@ -150,9 +160,37 @@ export const api = {
     request<Quest>(`/api/quests/${questId}/run`, {
       method: "POST"
     }),
-  createProject: (input: { workspaceId: string; name: string; path: string; role: string; defaultBranch: string }) =>
+  updateWorkspace: (workspaceId: string, input: { name?: string; description?: string; worktreeRoot?: string }) =>
+    request<Workspace>(`/api/workspaces/${workspaceId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  createProject: (input: {
+    workspaceId: string;
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand?: string;
+  }) =>
     request<Project>("/api/projects", {
       method: "POST",
       body: JSON.stringify(input)
+    }),
+  updateProject: (
+    projectId: string,
+    input: { name?: string; path?: string; role?: string; defaultBranch?: string; validationCommand?: string }
+  ) =>
+    request<Project>(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  removeProject: (projectId: string) =>
+    request<RepoHelmState>(`/api/projects/${projectId}`, {
+      method: "DELETE"
+    }),
+  checkProject: (projectId: string) =>
+    request<Project>(`/api/projects/${projectId}/check`, {
+      method: "POST"
     })
 };

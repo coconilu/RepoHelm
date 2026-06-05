@@ -66,6 +66,7 @@ export function App() {
   const [selectedChangedFileKey, setSelectedChangedFileKey] = useState("");
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
   const [workspaceConfigOpen, setWorkspaceConfigOpen] = useState(false);
+  const [workspaceConfigId, setWorkspaceConfigId] = useState("");
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -87,9 +88,17 @@ export function App() {
     () => state?.workspaces.find((item) => item.id === selectedWorkspaceId) ?? state?.workspaces[0],
     [selectedWorkspaceId, state?.workspaces]
   );
+  const configWorkspace = useMemo(
+    () => state?.workspaces.find((item) => item.id === workspaceConfigId) ?? workspace,
+    [state?.workspaces, workspace, workspaceConfigId]
+  );
   const projects = useMemo(
     () => state?.projects.filter((project) => project.workspaceId === workspace?.id) ?? [],
     [state?.projects, workspace?.id]
+  );
+  const configProjects = useMemo(
+    () => state?.projects.filter((project) => project.workspaceId === configWorkspace?.id) ?? [],
+    [configWorkspace?.id, state?.projects]
   );
   const quests = useMemo(
     () => state?.quests.filter((quest) => quest.workspaceId === workspace?.id) ?? [],
@@ -162,6 +171,89 @@ export function App() {
     }
   }
 
+  async function saveWorkspaceConfig(input: { name: string; description: string; worktreeRoot: string }) {
+    if (!configWorkspace) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.updateWorkspace(configWorkspace.id, input);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addProject(input: {
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand: string;
+  }) {
+    if (!configWorkspace) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.createProject({ workspaceId: configWorkspace.id, ...input });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateProject(projectId: string, input: {
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand: string;
+  }) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.updateProject(projectId, input);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeProject(projectId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.removeProject(projectId);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function checkProject(projectId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.checkProject(projectId);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!state || !workspace) {
     return (
       <main className="loading">
@@ -205,7 +297,10 @@ export function App() {
           selectedWorkspaceId={workspace.id}
           workspaces={state.workspaces}
           expandedWorkspaceIds={expandedWorkspaceIds}
-          onConfigWorkspace={() => setWorkspaceConfigOpen(true)}
+          onConfigWorkspace={(workspaceId) => {
+            setWorkspaceConfigId(workspaceId);
+            setWorkspaceConfigOpen(true);
+          }}
           onKnowledgeOpen={() => setKnowledgeOpen(true)}
           onNewQuest={() => {
             setSelectedQuestId("");
@@ -256,11 +351,17 @@ export function App() {
         />
       </section>
 
-      {workspaceConfigOpen ? (
+      {workspaceConfigOpen && configWorkspace ? (
         <WorkspaceConfigDialog
-          projects={projects}
-          workspace={workspace}
+          busy={busy}
+          projects={configProjects}
+          workspace={configWorkspace}
+          onAddProject={addProject}
+          onCheckProject={checkProject}
           onClose={() => setWorkspaceConfigOpen(false)}
+          onRemoveProject={removeProject}
+          onSaveWorkspace={saveWorkspaceConfig}
+          onUpdateProject={updateProject}
         />
       ) : null}
 
@@ -294,7 +395,7 @@ function Sidebar({
   selectedQuest?: Quest;
   selectedWorkspaceId: string;
   workspaces: Workspace[];
-  onConfigWorkspace: () => void;
+  onConfigWorkspace: (workspaceId: string) => void;
   onKnowledgeOpen: () => void;
   onNewQuest: () => void;
   onSelectQuest: (questId: string) => void;
@@ -333,7 +434,7 @@ function Sidebar({
                   <button
                     aria-label={`配置 ${item.name}`}
                     className="icon-button"
-                    onClick={() => onConfigWorkspace()}
+                    onClick={() => onConfigWorkspace(item.id)}
                     type="button"
                   >
                     <MoreHorizontal size={16} />
@@ -708,14 +809,87 @@ function KnowledgePanel({ knowledge }: { knowledge: KnowledgeItem[] }) {
 }
 
 function WorkspaceConfigDialog({
+  busy,
   projects,
   workspace,
-  onClose
+  onAddProject,
+  onCheckProject,
+  onClose,
+  onRemoveProject,
+  onSaveWorkspace,
+  onUpdateProject
 }: {
+  busy: boolean;
   projects: Project[];
   workspace: Workspace;
+  onAddProject: (input: {
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand: string;
+  }) => Promise<void>;
+  onCheckProject: (projectId: string) => Promise<void>;
   onClose: () => void;
+  onRemoveProject: (projectId: string) => Promise<void>;
+  onSaveWorkspace: (input: { name: string; description: string; worktreeRoot: string }) => Promise<void>;
+  onUpdateProject: (
+    projectId: string,
+    input: {
+      name: string;
+      path: string;
+      role: string;
+      defaultBranch: string;
+      validationCommand: string;
+    }
+  ) => Promise<void>;
 }) {
+  const [workspaceDraft, setWorkspaceDraft] = useState({
+    name: workspace.name,
+    description: workspace.description,
+    worktreeRoot: workspace.worktreeRoot
+  });
+  const [newProject, setNewProject] = useState({
+    name: "",
+    path: "",
+    role: "unknown",
+    defaultBranch: "main",
+    validationCommand: ""
+  });
+
+  useEffect(() => {
+    setWorkspaceDraft({
+      name: workspace.name,
+      description: workspace.description,
+      worktreeRoot: workspace.worktreeRoot
+    });
+  }, [workspace.description, workspace.name, workspace.worktreeRoot]);
+
+  async function submitWorkspace(event: FormEvent) {
+    event.preventDefault();
+    await onSaveWorkspace(workspaceDraft);
+  }
+
+  async function submitNewProject(event: FormEvent) {
+    event.preventDefault();
+    if (!newProject.name.trim() || !newProject.path.trim()) {
+      return;
+    }
+    await onAddProject({
+      ...newProject,
+      name: newProject.name.trim(),
+      path: newProject.path.trim(),
+      defaultBranch: newProject.defaultBranch.trim() || "main"
+    });
+    setNewProject({
+      name: "",
+      path: "",
+      role: "unknown",
+      defaultBranch: "main",
+      validationCommand: ""
+    });
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section aria-labelledby="workspace-config-title" className="modal-panel" role="dialog">
@@ -729,25 +903,212 @@ function WorkspaceConfigDialog({
           </button>
         </header>
         <div className="modal-body">
+          <form className="config-section" onSubmit={submitWorkspace}>
+            <h3>Workspace</h3>
+            <div className="config-grid">
+              <label>
+                <span>名称</span>
+                <input
+                  aria-label="Workspace 名称"
+                  value={workspaceDraft.name}
+                  onChange={(event) => setWorkspaceDraft((draft) => ({ ...draft, name: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>Worktree Root</span>
+                <input
+                  aria-label="Worktree Root"
+                  value={workspaceDraft.worktreeRoot}
+                  onChange={(event) => setWorkspaceDraft((draft) => ({ ...draft, worktreeRoot: event.target.value }))}
+                />
+              </label>
+            </div>
+            <label>
+              <span>描述</span>
+              <textarea
+                aria-label="Workspace 描述"
+                className="compact-textarea"
+                value={workspaceDraft.description}
+                onChange={(event) => setWorkspaceDraft((draft) => ({ ...draft, description: event.target.value }))}
+              />
+            </label>
+            <button className="secondary-action" disabled={busy || !workspaceDraft.name.trim()} type="submit">
+              保存 Workspace
+            </button>
+          </form>
+
           <section className="config-section">
             <h3>关联项目</h3>
+            {projects.length === 0 ? <p className="muted">暂无关联项目。</p> : null}
             {projects.map((project) => (
-              <label className="project-config-row" key={project.id}>
-                <input checked readOnly type="checkbox" />
-                <FileText size={15} />
-                <span>
-                  <strong>{project.name}</strong>
-                  <em>{project.path}</em>
-                </span>
-              </label>
+              <ProjectConfigForm
+                busy={busy}
+                key={project.id}
+                project={project}
+                onCheckProject={onCheckProject}
+                onRemoveProject={onRemoveProject}
+                onUpdateProject={onUpdateProject}
+              />
             ))}
           </section>
-          <section className="config-section">
-            <h3>后续配置项</h3>
-            <p className="muted">M2 会补齐新增/移除项目、默认分支、验证命令和 worktree root 配置。</p>
-          </section>
+
+          <form className="config-section add-project-form" onSubmit={submitNewProject}>
+            <h3>新增项目</h3>
+            <ProjectFields draft={newProject} onDraftChange={setNewProject} />
+            <button className="secondary-action" disabled={busy || !newProject.name.trim() || !newProject.path.trim()} type="submit">
+              添加项目
+            </button>
+          </form>
         </div>
       </section>
+    </div>
+  );
+}
+
+function ProjectConfigForm({
+  busy,
+  project,
+  onCheckProject,
+  onRemoveProject,
+  onUpdateProject
+}: {
+  busy: boolean;
+  project: Project;
+  onCheckProject: (projectId: string) => Promise<void>;
+  onRemoveProject: (projectId: string) => Promise<void>;
+  onUpdateProject: (
+    projectId: string,
+    input: {
+      name: string;
+      path: string;
+      role: string;
+      defaultBranch: string;
+      validationCommand: string;
+    }
+  ) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({
+    name: project.name,
+    path: project.path,
+    role: project.role,
+    defaultBranch: project.defaultBranch,
+    validationCommand: project.validationCommand
+  });
+
+  useEffect(() => {
+    setDraft({
+      name: project.name,
+      path: project.path,
+      role: project.role,
+      defaultBranch: project.defaultBranch,
+      validationCommand: project.validationCommand
+    });
+  }, [project.defaultBranch, project.name, project.path, project.role, project.validationCommand]);
+
+  async function submitProject(event: FormEvent) {
+    event.preventDefault();
+    await onUpdateProject(project.id, {
+      ...draft,
+      name: draft.name.trim(),
+      path: draft.path.trim(),
+      defaultBranch: draft.defaultBranch.trim() || "main"
+    });
+  }
+
+  return (
+    <form className="project-config-card" onSubmit={submitProject}>
+      <div className="project-config-heading">
+        <div>
+          <strong>{project.name}</strong>
+          <span className={`health-pill ${project.health.status}`}>{project.health.status}</span>
+        </div>
+        <p>{project.health.message}</p>
+      </div>
+      <ProjectFields draft={draft} onDraftChange={setDraft} />
+      <div className="project-config-actions">
+        <button className="secondary-action" disabled={busy || !draft.name.trim() || !draft.path.trim()} type="submit">
+          保存项目
+        </button>
+        <button className="ghost-action" disabled={busy} onClick={() => onCheckProject(project.id)} type="button">
+          检查状态
+        </button>
+        <button className="danger-action" disabled={busy} onClick={() => onRemoveProject(project.id)} type="button">
+          移除
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ProjectFields({
+  draft,
+  onDraftChange
+}: {
+  draft: {
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand: string;
+  };
+  onDraftChange: (draft: {
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand: string;
+  }) => void;
+}) {
+  return (
+    <div className="project-fields">
+      <label>
+        <span>名称</span>
+        <input
+          aria-label="项目名称"
+          value={draft.name}
+          onChange={(event) => onDraftChange({ ...draft, name: event.target.value })}
+        />
+      </label>
+      <label>
+        <span>路径</span>
+        <input
+          aria-label="项目路径"
+          value={draft.path}
+          onChange={(event) => onDraftChange({ ...draft, path: event.target.value })}
+        />
+      </label>
+      <label>
+        <span>角色</span>
+        <select
+          aria-label="项目角色"
+          value={draft.role}
+          onChange={(event) => onDraftChange({ ...draft, role: event.target.value })}
+        >
+          <option value="unknown">unknown</option>
+          <option value="frontend">frontend</option>
+          <option value="backend">backend</option>
+          <option value="documentation">documentation</option>
+          <option value="library">library</option>
+          <option value="infra">infra</option>
+        </select>
+      </label>
+      <label>
+        <span>默认分支</span>
+        <input
+          aria-label="默认分支"
+          value={draft.defaultBranch}
+          onChange={(event) => onDraftChange({ ...draft, defaultBranch: event.target.value })}
+        />
+      </label>
+      <label className="full-field">
+        <span>验证命令</span>
+        <input
+          aria-label="验证命令"
+          placeholder="pnpm test"
+          value={draft.validationCommand}
+          onChange={(event) => onDraftChange({ ...draft, validationCommand: event.target.value })}
+        />
+      </label>
     </div>
   );
 }

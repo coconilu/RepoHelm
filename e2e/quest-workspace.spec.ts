@@ -1,10 +1,14 @@
 import { expect, test } from "@playwright/test";
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const questTitle = `E2E Worktree Quest ${Date.now()}`;
 const questSlug = questTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)+/g, "");
+const repoRoot = process.cwd();
+const e2eWorktreeRoot = join(repoRoot, ".repohelm", "e2e", "configured-worktrees");
+const tempProjectName = `Temporary E2E Project ${Date.now()}`;
 
 test.afterAll(async () => {
   const response = await fetch("http://127.0.0.1:4300/api/state");
@@ -29,8 +33,27 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await expect(page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
   await page.getByRole("button", { name: "配置 RepoHelm Demo Workspace" }).click();
-  await expect(page.getByRole("dialog", { name: "RepoHelm Demo Workspace" })).toBeVisible();
-  await expect(page.getByText("关联项目")).toBeVisible();
+  const configDialog = page.getByRole("dialog", { name: "RepoHelm Demo Workspace" });
+  await expect(configDialog).toBeVisible();
+  await expect(configDialog.getByText("关联项目")).toBeVisible();
+  await configDialog.getByRole("textbox", { name: "Workspace 描述" }).fill("E2E configured workspace");
+  await configDialog.getByRole("textbox", { name: "Worktree Root" }).fill(e2eWorktreeRoot);
+  await configDialog.getByRole("button", { name: "保存 Workspace" }).click();
+  await expect(configDialog.getByRole("textbox", { name: "Worktree Root" })).toHaveValue(e2eWorktreeRoot);
+
+  await configDialog.getByRole("button", { name: "检查状态" }).first().click();
+  await expect(configDialog.locator(".health-pill.ok").first()).toBeVisible();
+
+  const addProjectForm = configDialog.locator(".add-project-form");
+  await addProjectForm.getByRole("textbox", { name: "项目名称" }).fill(tempProjectName);
+  await addProjectForm.getByRole("textbox", { name: "项目路径" }).fill(join(repoRoot, "docs"));
+  await addProjectForm.getByRole("combobox", { name: "项目角色" }).selectOption("documentation");
+  await addProjectForm.getByRole("textbox", { name: "验证命令" }).fill("pnpm test");
+  await addProjectForm.getByRole("button", { name: "添加项目" }).click();
+  const tempProjectCard = configDialog.locator(".project-config-card").filter({ hasText: tempProjectName });
+  await expect(tempProjectCard).toBeVisible();
+  await tempProjectCard.getByRole("button", { name: "移除" }).click();
+  await expect(tempProjectCard).toBeHidden();
   await page.getByRole("button", { name: "关闭 workspace 配置" }).click();
 
   await page

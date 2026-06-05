@@ -142,21 +142,24 @@
 
 ## M2：Workspace 和项目配置
 
-状态：Planned
+状态：Done
 
 目标：
 
 让 RepoHelm 从 demo workspace 进入真实 workspace 配置阶段。
 
-计划做：
+已完成：
 
-- Workspace 配置文件。
-- 一个 workspace 关联多个本地项目。
-- Project role、路径、默认分支、验证命令。
-- Workspace 切换。
-- 项目健康检查。
-- Worktree root 配置。
-- UI 支持查看和管理 workspace projects。
+- Workspace 配置已进入本地状态文件 `.repohelm/state.json`，并支持旧状态自动补齐新字段。
+- Workspace 支持名称、描述、worktree root 配置。
+- 一个 workspace 可以关联多个本地项目。
+- Project 支持 role、路径、默认分支、验证命令。
+- Workspace 切换沿用左侧 workspace 树。
+- 项目健康检查已接入，支持识别路径缺失、非 Git repo 和 Git repo 可用状态。
+- Quest worktree 创建使用 workspace 自己的 worktree root。
+- UI 支持查看、编辑、新增、移除 workspace projects。
+- API 支持 workspace/project 更新、项目移除和项目健康检查。
+- 单元测试和 e2e 已覆盖 M2 主流程。
 
 暂不做：
 

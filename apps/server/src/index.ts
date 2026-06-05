@@ -34,23 +34,29 @@ app.use(
   "*",
   cors({
     origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type"]
   })
 );
 
 const workspaceSchema = z.object({
   name: z.string().min(1),
-  description: z.string().optional()
+  description: z.string().optional(),
+  worktreeRoot: z.string().optional()
 });
+
+const updateWorkspaceSchema = workspaceSchema.partial();
 
 const projectSchema = z.object({
   workspaceId: z.string().min(1),
   name: z.string().min(1),
   path: z.string().min(1),
   role: z.enum(["frontend", "backend", "documentation", "library", "infra", "unknown"]).optional(),
-  defaultBranch: z.string().optional()
+  defaultBranch: z.string().optional(),
+  validationCommand: z.string().optional()
 });
+
+const updateProjectSchema = projectSchema.omit({ workspaceId: true }).partial();
 
 const questSchema = z.object({
   workspaceId: z.string().min(1),
@@ -86,10 +92,32 @@ app.post("/api/workspaces", async (context) => {
   return context.json(workspace, 201);
 });
 
+app.patch("/api/workspaces/:id", async (context) => {
+  const input = updateWorkspaceSchema.parse(await context.req.json());
+  const workspace = await service.updateWorkspace(context.req.param("id"), input);
+  return context.json(workspace);
+});
+
 app.post("/api/projects", async (context) => {
   const input = projectSchema.parse(await context.req.json());
   const project = await service.createProject(input);
   return context.json(project, 201);
+});
+
+app.patch("/api/projects/:id", async (context) => {
+  const input = updateProjectSchema.parse(await context.req.json());
+  const project = await service.updateProject(context.req.param("id"), input);
+  return context.json(project);
+});
+
+app.delete("/api/projects/:id", async (context) => {
+  const state = await service.removeProject(context.req.param("id"));
+  return context.json(state);
+});
+
+app.post("/api/projects/:id/check", async (context) => {
+  const project = await service.checkProjectHealth(context.req.param("id"));
+  return context.json(project);
 });
 
 app.post("/api/quests", async (context) => {
