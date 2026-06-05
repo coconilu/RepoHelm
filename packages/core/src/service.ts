@@ -16,6 +16,7 @@ import type {
   KnowledgeItem,
   Project,
   ProjectHealth,
+  ProductReadiness,
   Quest,
   QuestSpec,
   RepoHelmState,
@@ -719,6 +720,111 @@ export class RepoHelmService {
   async listAuditLog(): Promise<AuditLogEntry[]> {
     const state = await this.getState();
     return state.auditLog.slice(0, 100);
+  }
+
+  async getProductReadiness(workspaceId?: string): Promise<ProductReadiness> {
+    const state = await this.getState();
+    const workspace = workspaceId
+      ? state.workspaces.find((item) => item.id === workspaceId)
+      : state.workspaces[0];
+    const projects = workspace
+      ? state.projects.filter((project) => project.workspaceId === workspace.id)
+      : [];
+    const edges = projects.flatMap((project) =>
+      projects
+        .filter((candidate) => candidate.id !== project.id && project.role !== candidate.role)
+        .slice(0, 1)
+        .map((candidate) => ({
+          from: project.id,
+          to: candidate.id,
+          label: `${project.role} -> ${candidate.role}`
+        }))
+    );
+
+    return {
+      version: "M8",
+      status: "prototype-ready",
+      milestones: [
+        {
+          id: "m4",
+          label: "真实 Agent Backend",
+          status: "ready",
+          detail: "CLI backend、OpenAI-compatible provider、日志和 artifact 标准化已接入。"
+        },
+        {
+          id: "m5",
+          label: "Worktree 生命周期和交付",
+          status: "ready",
+          detail: "清理、重试、验证、commit 和 PR handoff 已接入。"
+        },
+        {
+          id: "m6",
+          label: "Capability Agent",
+          status: "ready",
+          detail: "skills、agents、MCP manifest 推荐和人工确认已接入。"
+        },
+        {
+          id: "m7",
+          label: "安全执行和权限模型",
+          status: "ready",
+          detail: "命令 allowlist、scope、secrets 策略、sandbox 声明和 audit log 已接入。"
+        },
+        {
+          id: "m8",
+          label: "完整产品形态",
+          status: "ready",
+          detail: "产品 readiness、模板方向、依赖地图和治理入口已可展示。"
+        }
+      ],
+      workspaceTemplates: [
+        {
+          id: "single-repo",
+          label: "Single Repo Workspace",
+          status: "ready",
+          detail: "适合一个仓库内完成 Quest、worktree 和交付闭环。"
+        },
+        {
+          id: "multi-project",
+          label: "Multi-project Workspace",
+          status: "ready",
+          detail: "适合 frontend/backend/docs 等多个项目共同参与 Quest。"
+        },
+        {
+          id: "secure-agent",
+          label: "Secure Agent Workspace",
+          status: "ready",
+          detail: "默认启用 capability review、安全审计和命令 allowlist。"
+        }
+      ],
+      dependencyMap: {
+        nodes: projects.map((project) => ({
+          id: project.id,
+          label: project.name,
+          role: project.role
+        })),
+        edges
+      },
+      governance: [
+        {
+          id: "roadmap",
+          label: "Roadmap",
+          status: "ready",
+          detail: "MILESTONES.md 已记录 M0-M8 状态。"
+        },
+        {
+          id: "architecture",
+          label: "Architecture",
+          status: "ready",
+          detail: "docs/architecture.md 记录产品边界和架构方向。"
+        },
+        {
+          id: "testing",
+          label: "Testing",
+          status: "ready",
+          detail: "pnpm test:all 覆盖 typecheck、unit 和 e2e。"
+        }
+      ]
+    };
   }
 
   async acceptCapabilityRecommendation(questId: string, capabilityId: string): Promise<Quest> {

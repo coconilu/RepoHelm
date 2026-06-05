@@ -137,4 +137,11 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.getByText("Command approval")).toBeVisible();
   await expect(page.getByText("node").first()).toBeVisible();
   await expect(page.locator(".audit-row").filter({ hasText: "Codex CLI" }).filter({ hasText: "allowed" })).toBeVisible();
+
+  await page.locator(".inspector-tabs").getByRole("button", { name: "产品" }).click();
+  await expect(page.getByRole("heading", { name: "完整产品形态" })).toBeVisible();
+  await expect(page.getByText("M8", { exact: true })).toBeVisible();
+  await expect(page.getByText("prototype-ready")).toBeVisible();
+  await expect(page.getByText("Secure Agent Workspace")).toBeVisible();
+  await expect(page.getByText("Testing")).toBeVisible();
 });

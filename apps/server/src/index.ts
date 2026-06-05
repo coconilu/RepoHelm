@@ -122,6 +122,11 @@ app.get("/api/audit-log", async (context) => {
   return context.json(auditLog);
 });
 
+app.get("/api/product-readiness", async (context) => {
+  const readiness = await service.getProductReadiness(context.req.query("workspaceId"));
+  return context.json(readiness);
+});
+
 app.get("/api/workspaces/:id/knowledge", async (context) => {
   const knowledge = await service.searchKnowledge(context.req.param("id"), context.req.query("q") ?? "");
   return context.json(knowledge);

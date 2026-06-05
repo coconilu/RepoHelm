@@ -183,6 +183,29 @@ describe("RepoHelmService", () => {
     expect(nextState.events.find((event) => event.questId === quest.id && event.type === "capability.accepted")).toBeTruthy();
   });
 
+  it("reports M8 product readiness with templates and a workspace dependency map", async () => {
+    const { service } = await createService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    await service.createProject({
+      workspaceId: workspace.id,
+      name: "API",
+      path: "/tmp/repohelm-api",
+      role: "backend"
+    });
+
+    const readiness = await service.getProductReadiness(workspace.id);
+
+    expect(readiness.version).toBe("M8");
+    expect(readiness.status).toBe("prototype-ready");
+    expect(readiness.milestones.find((item) => item.id === "m8")).toMatchObject({
+      status: "ready"
+    });
+    expect(readiness.workspaceTemplates.map((item) => item.id)).toContain("secure-agent");
+    expect(readiness.dependencyMap.nodes.length).toBeGreaterThanOrEqual(2);
+    expect(readiness.governance.find((item) => item.id === "testing")?.status).toBe("ready");
+  });
+
   it("lists available agent backends with mock enabled by default", async () => {
     const { service } = await createService();
 

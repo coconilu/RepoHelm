@@ -31,6 +31,7 @@ import {
   CapabilityDefinition,
   KnowledgeItem,
   Project,
+  ProductReadiness,
   Quest,
   RepoHelmState,
   SecurityPolicy,
@@ -58,7 +59,7 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "files" | "diff" | "logs";
+type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
@@ -67,6 +68,7 @@ export function App() {
   const [questRequirement, setQuestRequirement] = useState("");
   const [agentBackendId, setAgentBackendId] = useState<AgentBackendId>("mock");
   const [agentBackends, setAgentBackends] = useState<AgentBackendInfo[]>([]);
+  const [productReadiness, setProductReadiness] = useState<ProductReadiness | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("spec");
   const [selectedChangedFileKey, setSelectedChangedFileKey] = useState("");
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
@@ -77,9 +79,14 @@ export function App() {
   const [error, setError] = useState("");
 
   const load = async () => {
-    const [nextState, nextBackends] = await Promise.all([api.state(), api.agentBackends()]);
+    const [nextState, nextBackends, nextReadiness] = await Promise.all([
+      api.state(),
+      api.agentBackends(),
+      api.productReadiness()
+    ]);
     setState(nextState);
     setAgentBackends(nextBackends);
+    setProductReadiness(nextReadiness);
     setSelectedWorkspaceId((current) => current || nextState.workspaces[0]?.id || "");
     setSelectedQuestId((current) => current || nextState.quests[0]?.id || "");
     setExpandedWorkspaceIds((current) => (current.length > 0 ? current : nextState.workspaces[0] ? [nextState.workspaces[0].id] : []));
@@ -444,6 +451,7 @@ export function App() {
           changedFiles={changedFiles}
           events={questEvents}
           projects={projects}
+          productReadiness={productReadiness}
           quest={selectedQuest}
           securityPolicy={state.securityPolicy}
           selectedChangedFile={selectedChangedFile}
@@ -732,6 +740,7 @@ function Inspector({
   changedFiles,
   events,
   projects,
+  productReadiness,
   quest,
   securityPolicy,
   selectedChangedFile,
@@ -746,6 +755,7 @@ function Inspector({
   changedFiles: ChangedFile[];
   events: AgentEvent[];
   projects: Project[];
+  productReadiness: ProductReadiness | null;
   quest?: Quest;
   securityPolicy: SecurityPolicy;
   selectedChangedFile?: ChangedFile;
@@ -761,6 +771,7 @@ function Inspector({
     { id: "overview", label: "概要" },
     { id: "capabilities", label: "能力" },
     { id: "security", label: "安全" },
+    { id: "product", label: "产品" },
     { id: "files", label: "文件" },
     { id: "diff", label: "Diff" },
     { id: "logs", label: "日志" }
@@ -795,6 +806,7 @@ function Inspector({
           />
         ) : null}
         {tab === "security" ? <SecurityPanel auditLog={auditLog} policy={securityPolicy} /> : null}
+        {tab === "product" ? <ProductPanel readiness={productReadiness} /> : null}
         {tab === "files" ? (
           <FilesPanel changedFiles={changedFiles} projectById={projectById} onFileSelect={onFileSelect} />
         ) : null}
@@ -1000,6 +1012,60 @@ function SecurityPanel({ auditLog, policy }: { auditLog: AuditLogEntry[]; policy
         ))}
       </InspectorSection>
     </div>
+  );
+}
+
+function ProductPanel({ readiness }: { readiness: ProductReadiness | null }) {
+  if (!readiness) {
+    return <p className="muted">正在加载产品状态。</p>;
+  }
+  return (
+    <div className="inspector-stack">
+      <InspectorSection title="完整产品形态">
+        <div className="product-status">
+          <strong>{readiness.version}</strong>
+          <span>{readiness.status}</span>
+        </div>
+        {readiness.milestones.map((item) => (
+          <ReadinessRow item={item} key={item.id} />
+        ))}
+      </InspectorSection>
+      <InspectorSection title="Workspace Templates">
+        {readiness.workspaceTemplates.map((item) => (
+          <ReadinessRow item={item} key={item.id} />
+        ))}
+      </InspectorSection>
+      <InspectorSection title="Dependency Map">
+        {readiness.dependencyMap.nodes.length === 0 ? <p className="muted">暂无项目节点。</p> : null}
+        {readiness.dependencyMap.nodes.map((node) => (
+          <div className="manifest-row" key={node.id}>
+            <strong>{node.label}</strong>
+            <span>{node.role}</span>
+            <em className="badge green">node</em>
+          </div>
+        ))}
+        {readiness.dependencyMap.edges.map((edge) => (
+          <code key={`${edge.from}-${edge.to}`}>{edge.label}</code>
+        ))}
+      </InspectorSection>
+      <InspectorSection title="Governance">
+        {readiness.governance.map((item) => (
+          <ReadinessRow item={item} key={item.id} />
+        ))}
+      </InspectorSection>
+    </div>
+  );
+}
+
+function ReadinessRow({ item }: { item: { label: string; status: string; detail: string } }) {
+  return (
+    <article className="readiness-row">
+      <div className="worktree-title">
+        <strong>{item.label}</strong>
+        <em className={item.status === "ready" ? "badge green" : "badge"}>{item.status}</em>
+      </div>
+      <p>{item.detail}</p>
+    </article>
   );
 }
 

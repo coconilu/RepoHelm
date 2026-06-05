@@ -139,6 +139,25 @@ export interface AuditLogEntry {
   createdAt: string;
 }
 
+export interface ProductReadinessItem {
+  id: string;
+  label: string;
+  status: "ready" | "partial" | "planned";
+  detail: string;
+}
+
+export interface ProductReadiness {
+  version: string;
+  status: "prototype-ready" | "incomplete";
+  milestones: ProductReadinessItem[];
+  workspaceTemplates: ProductReadinessItem[];
+  dependencyMap: {
+    nodes: Array<{ id: string; label: string; role: ProjectRole }>;
+    edges: Array<{ from: string; to: string; label: string }>;
+  };
+  governance: ProductReadinessItem[];
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;

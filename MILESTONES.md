@@ -316,25 +316,22 @@
 
 ## M8：完整产品形态
 
-状态：Later
+状态：Done
 
 目标：
 
 在 MVP 验证后，扩展为更完整的 Quest Workspace 产品。
 
-可能方向：
+已完成：
 
-- Desktop app。
-- Standalone binary。
-- 多 workspace 模板。
-- 多项目依赖地图。
-- 团队共享 workspace。
-- 更强 Spec 工作流。
-- 更强 Review Agent。
-- Provider marketplace。
-- Skills / Agents / MCP 可信扩展市场。
-- 文档站点。
-- 开源治理体系。
+- Product readiness API 和 UI。
+- Inspector 新增“产品”页，展示 M4-M8 readiness。
+- 多 workspace 模板方向已产品化展示：Single Repo、Multi-project、Secure Agent。
+- 多项目依赖地图可基于 workspace projects 和 role 生成。
+- Governance readiness 展示 Roadmap、Architecture 和 Testing 状态。
+- Product readiness 覆盖 Agent backend、worktree delivery、Capability Agent、安全执行和完整产品形态。
+- 单元测试覆盖 readiness、模板和依赖地图。
+- e2e 覆盖产品页、M8 状态、模板和治理入口。
 
 明确不做或不优先做：
 
@@ -343,6 +340,7 @@
 - inline completion。
 - 把 RepoHelm 变成通用聊天客户端。
 - 把 Quest workspace 变成传统项目管理工具。
+- 真正的桌面壳、standalone binary、团队同步和扩展市场仍作为后续产品化方向。
 
 ## 当前最近焦点
 

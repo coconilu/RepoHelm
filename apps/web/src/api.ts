@@ -132,6 +132,25 @@ export interface AuditLogEntry {
   createdAt: string;
 }
 
+export interface ProductReadinessItem {
+  id: string;
+  label: string;
+  status: "ready" | "partial" | "planned";
+  detail: string;
+}
+
+export interface ProductReadiness {
+  version: string;
+  status: "prototype-ready" | "incomplete";
+  milestones: ProductReadinessItem[];
+  workspaceTemplates: ProductReadinessItem[];
+  dependencyMap: {
+    nodes: Array<{ id: string; label: string; role: string }>;
+    edges: Array<{ from: string; to: string; label: string }>;
+  };
+  governance: ProductReadinessItem[];
+}
+
 export interface Quest {
   id: string;
   workspaceId: string;
@@ -212,6 +231,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  productReadiness: (workspaceId?: string) =>
+    request<ProductReadiness>(
+      `/api/product-readiness${workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ""}`
+    ),
   searchKnowledge: (workspaceId: string, query: string) =>
     request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
   createQuest: (input: {
