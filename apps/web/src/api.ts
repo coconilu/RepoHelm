@@ -11,7 +11,7 @@ export type QuestStatus =
   | "blocked"
   | "cancelled";
 
-export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode";
+export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode" | "openai-compatible";
 
 export interface AgentBackendInfo {
   id: AgentBackendId;

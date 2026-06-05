@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const questTitle = `E2E Worktree Quest ${Date.now()}`;
+const codexQuestTitle = `E2E Codex Backend Quest ${Date.now()}`;
 const questSlug = questTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)+/g, "");
 const repoRoot = process.cwd();
 const e2eWorktreeRoot = join(repoRoot, ".repohelm", "e2e", "configured-worktrees");
@@ -13,7 +14,8 @@ const tempProjectName = `Temporary E2E Project ${Date.now()}`;
 test.afterAll(async () => {
   const response = await fetch("http://127.0.0.1:4300/api/state");
   const state = await response.json();
-  const targetQuests = state.quests.filter((quest: { title: string }) => quest.title === questTitle);
+  const targetTitles = new Set([questTitle, codexQuestTitle]);
+  const targetQuests = state.quests.filter((quest: { title: string }) => targetTitles.has(quest.title));
   for (const targetQuest of targetQuests) {
     for (const worktree of targetQuest.worktrees ?? []) {
       const project = state.projects.find((item: { id: string }) => item.id === worktree.projectId);
@@ -93,4 +95,23 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(changedFileRow).toBeVisible();
   await changedFileRow.click();
   await expect(page.getByText("MVP mock Implementation Agent")).toBeVisible();
+
+  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
+  await page
+    .getByRole("textbox", { name: "需求" })
+    .fill(`${codexQuestTitle}\n从浏览器选择 Codex CLI backend，并验证外部 CLI fixture 写入产物。`);
+  await page.getByRole("combobox", { name: "Agent Backend" }).selectOption("codex-cli");
+  await page.getByRole("button", { name: "发送给 Agent" }).click();
+  await expect(page.getByRole("heading", { name: codexQuestTitle })).toBeVisible();
+  await expect(page.locator(".run-context").filter({ hasText: "Codex CLI" })).toBeVisible();
+
+  await page.getByRole("button", { name: "运行 Request" }).click();
+  await expect(page.locator("strong").filter({ hasText: "Codex CLI 已启动" })).toBeVisible();
+  await expect(page.locator("strong").filter({ hasText: "Agent 输出已标准化" })).toBeVisible();
+
+  await page.locator(".inspector-tabs").getByRole("button", { name: "文件" }).click();
+  const codexChangedFileRow = page.locator(".changed-file-row").filter({ hasText: "repohelm-quest-output/codex-cli-fixture.md" });
+  await expect(codexChangedFileRow).toBeVisible();
+  await codexChangedFileRow.click();
+  await expect(page.getByText("e2e Codex CLI backend fixture")).toBeVisible();
 });

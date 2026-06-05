@@ -199,28 +199,32 @@
 
 ## M4：真实 Agent Backend
 
-状态：Planned
+状态：Done
 
 目标：
 
 让 Quest 可以调用真实 agent backend 执行任务，而不只是 mock。
 
-计划做：
+已完成：
 
-- Codex CLI backend adapter。
-- Claude Code backend adapter。
-- OpenCode backend adapter。
-- OpenAI-compatible provider adapter，用于 Qwen、DeepSeek 等模型。
-- Backend 配置页或配置文件。
-- 执行日志采集。
-- 超时、失败、取消和重试。
-- Agent 输出 artifact 标准化。
+- Codex CLI backend adapter 已支持通过 `REPOHELM_CODEX_COMMAND` 执行真实外部命令。
+- Claude Code backend adapter 已支持通过 `REPOHELM_CLAUDE_COMMAND` 执行真实外部命令。
+- OpenCode backend adapter 已支持通过 `REPOHELM_OPENCODE_COMMAND` 执行真实外部命令。
+- OpenAI-compatible provider adapter 已支持 `REPOHELM_OPENAI_BASE_URL`、`REPOHELM_OPENAI_MODEL` 和 `REPOHELM_OPENAI_API_KEY` 配置，可用于 Qwen、DeepSeek 等兼容接口。
+- Backend 配置入口采用环境变量，并在 UI backend 选择器中展示可用性。
+- 外部 CLI 执行会写入 `.repohelm/agent-input.json`，并在 worktree 中运行配置命令。
+- 执行日志已采集 stdout、stderr、失败信息和标准化事件。
+- CLI backend 已支持超时，失败会进入 backend 结果和 Agent event。
+- Agent 输出 artifact 通过 changed files、diff、Agent event 和 summary 标准化展示。
+- 单元测试覆盖配置后的 Codex CLI backend 真实执行和 artifact 采集。
+- e2e 覆盖 UI 选择 Codex CLI backend、运行外部 CLI fixture、展示产物 diff。
 
 暂不做：
 
 - 自动选择最优模型。
 - 多租户 provider 管理。
 - 托管模型网关。
+- 用户手动取消正在运行的外部进程。
 
 ## M5：Worktree 生命周期和交付
 

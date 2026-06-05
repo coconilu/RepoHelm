@@ -1250,7 +1250,8 @@ function composerBackendLabel(backend: AgentBackendInfo) {
     mock: "智能体",
     "codex-cli": "Codex",
     "claude-code": "Claude Code",
-    opencode: "OpenCode"
+    opencode: "OpenCode",
+    "openai-compatible": "OpenAI-compatible"
   };
   return labels[backend.id] ?? backend.name;
 }

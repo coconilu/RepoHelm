@@ -12,7 +12,7 @@ export type QuestStatus =
   | "cancelled";
 
 export type ProjectRole = "frontend" | "backend" | "documentation" | "library" | "infra" | "unknown";
-export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode";
+export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode" | "openai-compatible";
 export type ProjectHealthStatus = "unknown" | "ok" | "missing" | "not_git" | "invalid";
 
 export interface ProjectHealth {

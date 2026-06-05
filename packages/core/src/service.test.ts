@@ -160,7 +160,53 @@ describe("RepoHelmService", () => {
       available: true,
       configured: true
     });
-    expect(backends.map((backend) => backend.id)).toEqual(["mock", "codex-cli", "claude-code", "opencode"]);
+    expect(backends.map((backend) => backend.id)).toEqual([
+      "mock",
+      "codex-cli",
+      "claude-code",
+      "opencode",
+      "openai-compatible"
+    ]);
+  });
+
+  it("runs a configured Codex CLI backend command and captures its artifact output", async () => {
+    const previousCommand = process.env.REPOHELM_CODEX_COMMAND;
+    process.env.REPOHELM_CODEX_COMMAND =
+      "node -e \"const fs=require('node:fs');fs.mkdirSync('repohelm-quest-output',{recursive:true});fs.writeFileSync('repohelm-quest-output/codex-cli-fixture.md', 'Codex CLI fixture for '+process.env.REPOHELM_QUEST_TITLE+'\\n');console.log('fixture backend wrote artifact')\"";
+    try {
+      const { service } = await createGitRepoService();
+      const state = await service.bootstrap();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Run real backend",
+        requirement: "通过配置的 Codex CLI backend 写入实现产物。",
+        agentBackendId: "codex-cli",
+        affectedProjectIds: [project.id]
+      });
+
+      const completedQuest = await service.runQuest(quest.id);
+      const nextState = await service.getState();
+      const questEvents = nextState.events.filter((event) => event.questId === quest.id);
+
+      expect(completedQuest.status).toBe("ready");
+      expect(completedQuest.agentSummary).toContain("Codex CLI executed 1/1");
+      expect(completedQuest.changedFiles.find((file) => file.path === ".repohelm/agent-input.json")).toBeTruthy();
+      expect(completedQuest.changedFiles.find((file) => file.path === "repohelm-quest-output/codex-cli-fixture.md")).toMatchObject({
+        status: "untracked"
+      });
+      expect(
+        questEvents.find((event) => event.type === "agent.backend.completed")?.detail
+      ).toContain("fixture backend wrote artifact");
+      expect(questEvents.find((event) => event.type === "agent.artifacts.standardized")).toBeTruthy();
+    } finally {
+      if (previousCommand === undefined) {
+        delete process.env.REPOHELM_CODEX_COMMAND;
+      } else {
+        process.env.REPOHELM_CODEX_COMMAND = previousCommand;
+      }
+    }
   });
 
   it("runs a quest into ready state with a real git worktree, validation, review, and memory", async () => {

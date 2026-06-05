@@ -67,7 +67,7 @@ const questSchema = z.object({
   workspaceId: z.string().min(1),
   title: z.string().min(1),
   requirement: z.string().min(1),
-  agentBackendId: z.enum(["mock", "codex-cli", "claude-code", "opencode"]).optional(),
+  agentBackendId: z.enum(["mock", "codex-cli", "claude-code", "opencode", "openai-compatible"]).optional(),
   affectedProjectIds: z.array(z.string()).optional()
 });
 
