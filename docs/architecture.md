@@ -54,6 +54,8 @@ RepoHelm 的长期产品定位是：
 
 Workspace 是一个由项目维护的虚拟研发空间，类似 VS Code workspace 的思想。它可以关联多个项目，这些项目共同组成一个产品、服务、系统或工程域。
 
+RepoHelm 应用本身应该先绑定若干真实本地仓库，Workspace 创建时从这些已绑定项目中选择关联范围。UI 应提供 checkbox 让用户选择哪些项目进入该 Workspace；默认可以全选应用已绑定项目，但用户必须能按 Workspace 收窄范围。
+
 示例：
 
 ```yaml
@@ -75,7 +77,7 @@ workspace:
       role: documentation
 ```
 
-Workspace 不是目录，而是配置边界、任务边界和知识边界。
+Workspace 不是目录，而是配置边界、任务边界和知识边界。Workspace 创建后应为关联项目准备默认 worktree 运行上下文。具体实现可以延迟到第一次 Quest 执行时物化 worktree，但产品语义上，Workspace 从创建开始就拥有一组可用于 Quest 的项目关联和隔离执行边界。
 
 ### 3.3 先 Spec，后实现
 
@@ -190,6 +192,10 @@ Project 是 workspace 中关联的本地仓库或目录。
 
 Quest 是持久化任务对象。
 
+Quest 在 UI 中对应 Claude Code session 一类的会话概念。一个 Quest 由多轮对话、Agent 事件、文件变更和交付结果组成；Quest 级别不应该暴露“重试/清理/重新运行”这类全局按钮。重试、编辑和 fork 应该是会话内单条对话或某个分支点的操作。
+
+当用户对某条对话执行重试或编辑时，系统需要删除该对话之后的后续对话、Agent 事件和衍生结果，并在执行前明确 warning 用户。Fork 应从某条对话或状态快照创建新的 Quest 分支，保留原 Quest 历史。
+
 主要字段：
 
 - id
@@ -214,6 +220,8 @@ draft -> specifying -> planning -> preparing -> executing -> validating -> revie
                                              \-> blocked
                                              \-> cancelled
 ```
+
+Quest 顶部的主要全局动作应保持克制。MVP 中只保留“交付”作为 Quest 级操作；运行应由提交新需求或继续对话触发，清理和重试应下沉到会话消息、分支或开发者设置中。
 
 ### 4.4 Spec
 
@@ -251,6 +259,8 @@ Agent Run 是一次 Agent 执行的结构化记录。
 ### 4.6 Knowledge Item
 
 Knowledge Item 是挂载到 workspace、project 或 Quest 上的持久化知识。
+
+Project 级知识库应该和项目主干分支关联，而不是和某个 Quest worktree 绑定。Quest 执行可以读取主干知识，并在完成后沉淀 Quest memory；这些 memory 需要标注来源 Quest、关联项目和生成时的主干上下文，后续可再合并或提升为项目知识。
 
 类型包括：
 

@@ -34,6 +34,13 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "清理" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "运行 Request" })).toHaveCount(0);
+  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
+  await expect(page.locator(".request-list")).toBeHidden();
+  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
+  await expect(page.locator(".request-list")).toBeVisible();
   await page.getByRole("button", { name: "创建 Workspace" }).click();
   const workspaceCreateDialog = page.getByRole("dialog", { name: "创建 Workspace" });
   await expect(workspaceCreateDialog).toBeVisible();
@@ -85,6 +92,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await expect(page.getByRole("button", { name: new RegExp(questTitle) }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
+  await expect(page.locator(".chat-header").getByRole("button", { name: "交付" })).toBeVisible();
   await expect(page.locator(".run-context").filter({ hasText: "Mock Implementation Agent" })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "从浏览器创建 Quest" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agent Spec" })).toBeVisible();
@@ -95,8 +103,6 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(securityCapability.getByText("read:changed-files")).toBeVisible();
   await securityCapability.getByRole("button", { name: "确认启用" }).click();
   await expect(securityCapability.getByText("accepted")).toBeVisible();
-
-  await page.getByRole("button", { name: "运行 Request" }).click();
 
   await expect(page.locator("strong").filter({ hasText: "Worktree 已创建" })).toBeVisible();
   await expect(page.locator("strong").filter({ hasText: "验证完成" })).toBeVisible();
@@ -125,10 +131,6 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.getByText("pr_ready").first()).toBeVisible();
   await expect(page.getByText("RepoHelm: E2E Worktree Quest").first()).toBeVisible();
 
-  await page.getByRole("button", { name: "清理", exact: true }).click();
-  await expect(page.locator("strong").filter({ hasText: "Worktree 已清理" })).toBeVisible();
-  await expect(page.locator(".badge").filter({ hasText: "cleaned" }).first()).toBeVisible();
-
   await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
   await page
     .getByRole("textbox", { name: "需求" })
@@ -138,7 +140,6 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.getByRole("heading", { name: codexQuestTitle })).toBeVisible();
   await expect(page.locator(".run-context").filter({ hasText: "Codex CLI" })).toBeVisible();
 
-  await page.getByRole("button", { name: "运行 Request" }).click();
   await expect(page.locator("strong").filter({ hasText: "Codex CLI 已启动" })).toBeVisible();
   await expect(page.locator("strong").filter({ hasText: "Agent 输出已标准化" })).toBeVisible();
 

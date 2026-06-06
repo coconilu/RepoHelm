@@ -10,14 +10,12 @@ import {
   GitPullRequest,
   ListChecks,
   MoreHorizontal,
-  Play,
   Plus,
   RefreshCw,
   Route,
   Send,
   ShieldCheck,
   Sparkles,
-  Trash2,
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -193,62 +191,12 @@ export function App() {
         agentBackendId,
         affectedProjectIds: projects.map((project) => project.id)
       });
+      await api.runQuest(quest.id);
       await load();
       setSelectedQuestId(quest.id);
       setDraftWorkspaceId("");
       setQuestRequirement("");
       setInspectorTab("spec");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runQuest() {
-    if (!selectedQuest) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api.runQuest(selectedQuest.id);
-      await load();
-      setInspectorTab("files");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function retryQuest() {
-    if (!selectedQuest) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api.retryQuest(selectedQuest.id);
-      await load();
-      setInspectorTab("files");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function cleanupQuest() {
-    if (!selectedQuest) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api.cleanupQuest(selectedQuest.id);
-      await load();
-      setInspectorTab("overview");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -475,22 +423,6 @@ export function App() {
             <Bot size={14} />
             {activeBackend?.name ?? "Backend"}
           </span>
-          <button className="toolbar-action secondary" disabled={busy || !selectedQuest} onClick={retryQuest} type="button">
-            <RefreshCw size={15} />
-            <span>重试</span>
-          </button>
-          <button className="toolbar-action secondary" disabled={busy || !selectedQuest} onClick={cleanupQuest} type="button">
-            <Trash2 size={15} />
-            <span>清理</span>
-          </button>
-          <button className="toolbar-action delivery" disabled={busy || !selectedQuest} onClick={deliverQuest} type="button">
-            <GitPullRequest size={15} />
-            <span>交付</span>
-          </button>
-          <button className="toolbar-action" disabled={busy || !selectedQuest} onClick={runQuest} type="button">
-            <Play size={15} />
-            <span>{selectedQuest?.status === "ready" ? "重新运行" : "运行 Request"}</span>
-          </button>
         </div>
       </header>
 
@@ -562,6 +494,7 @@ export function App() {
           workspace={workspace}
           onBackendChange={setAgentBackendId}
           onCreateQuest={createQuest}
+          onDeliverQuest={deliverQuest}
           onRequirementChange={setQuestRequirement}
         />
         <div
@@ -680,7 +613,14 @@ function Sidebar({
                   >
                     {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                   </button>
-                  <button className="workspace-title-button" onClick={() => onSelectWorkspace(item.id)} type="button">
+                  <button
+                    className="workspace-title-button"
+                    onClick={() => {
+                      onSelectWorkspace(item.id);
+                      onToggleWorkspace(item.id);
+                    }}
+                    type="button"
+                  >
                     <Boxes size={15} />
                     <span>{item.name}</span>
                   </button>
@@ -757,6 +697,7 @@ function QuestStage({
   workspace,
   onBackendChange,
   onCreateQuest,
+  onDeliverQuest,
   onRequirementChange
 }: {
   agentBackendId: AgentBackendId;
@@ -769,6 +710,7 @@ function QuestStage({
   workspace: Workspace;
   onBackendChange: (backend: AgentBackendId) => void;
   onCreateQuest: (event: FormEvent) => void;
+  onDeliverQuest: () => void;
   onRequirementChange: (value: string) => void;
 }) {
   const questBackend = agentBackends.find((backend) => backend.id === quest?.agentBackendId);
@@ -809,6 +751,12 @@ function QuestStage({
             <span>{projects.length} project{projects.length === 1 ? "" : "s"}</span>
           </div>
         </div>
+        {quest ? (
+          <button className="request-delivery-action" disabled={busy} onClick={onDeliverQuest} type="button">
+            <GitPullRequest size={15} />
+            <span>交付</span>
+          </button>
+        ) : null}
       </header>
 
       <div className="chat-thread" ref={chatThreadRef}>

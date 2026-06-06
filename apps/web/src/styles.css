@@ -145,7 +145,8 @@ button {
 
 .toolbar-select,
 .backend-pill,
-.toolbar-action {
+.toolbar-action,
+.request-delivery-action {
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -196,6 +197,7 @@ button {
 }
 
 .toolbar-action:disabled,
+.request-delivery-action:disabled,
 .send-button:disabled,
 .run-action:disabled {
   cursor: wait;
@@ -718,6 +720,14 @@ kbd {
   letter-spacing: 0;
   line-height: 1.18;
   margin: 3px 0 8px;
+}
+
+.request-delivery-action {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 850;
+  margin-top: 2px;
 }
 
 .chat-thread {
