@@ -20,7 +20,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AgentBackendId,
   AgentBackendInfo,
@@ -60,23 +60,54 @@ const statusClass: Record<string, string> = {
 };
 
 type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
+type ResizeDivider = "sidebar" | "inspector";
+
+const defaultColumnWidths = {
+  sidebar: 280,
+  inspector: 440
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("");
   const [selectedQuestId, setSelectedQuestId] = useState<string>("");
   const [questRequirement, setQuestRequirement] = useState("");
+  const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [agentBackendId, setAgentBackendId] = useState<AgentBackendId>("mock");
   const [agentBackends, setAgentBackends] = useState<AgentBackendInfo[]>([]);
   const [productReadiness, setProductReadiness] = useState<ProductReadiness | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("spec");
   const [selectedChangedFileKey, setSelectedChangedFileKey] = useState("");
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
+  const [workspaceCreateOpen, setWorkspaceCreateOpen] = useState(false);
   const [workspaceConfigOpen, setWorkspaceConfigOpen] = useState(false);
   const [workspaceConfigId, setWorkspaceConfigId] = useState("");
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [columnWidths, setColumnWidths] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("repohelm:column-widths");
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths>;
+        return {
+          sidebar: clamp(parsed.sidebar ?? defaultColumnWidths.sidebar, 220, 380),
+          inspector: clamp(parsed.inspector ?? defaultColumnWidths.inspector, 360, 560)
+        };
+      }
+    } catch {
+      // Ignore malformed local UI preferences.
+    }
+    return defaultColumnWidths;
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const resizeStartRef = useRef<{
+    divider: ResizeDivider;
+    pointerX: number;
+    sidebar: number;
+    inspector: number;
+  } | null>(null);
 
   const load = async () => {
     const [nextState, nextBackends, nextReadiness] = await Promise.all([
@@ -95,6 +126,10 @@ export function App() {
   useEffect(() => {
     load().catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+  }, [columnWidths]);
 
   const workspace = useMemo(
     () => state?.workspaces.find((item) => item.id === selectedWorkspaceId) ?? state?.workspaces[0],
@@ -116,7 +151,7 @@ export function App() {
     () => state?.quests.filter((quest) => quest.workspaceId === workspace?.id) ?? [],
     [state?.quests, workspace?.id]
   );
-  const selectedQuest = quests.find((quest) => quest.id === selectedQuestId) ?? quests[0];
+  const selectedQuest = draftWorkspaceId === workspace?.id ? undefined : quests.find((quest) => quest.id === selectedQuestId) ?? quests[0];
   const questEvents = state?.events.filter((event) => event.questId === selectedQuest?.id) ?? [];
   const knowledge = state?.knowledge.filter((item) => item.workspaceId === workspace?.id) ?? [];
   const changedFiles = selectedQuest?.changedFiles.map((file) => normalizeChangedFile(file)) ?? [];
@@ -125,10 +160,13 @@ export function App() {
   const activeBackend = agentBackends.find((backend) => backend.id === agentBackendId);
 
   useEffect(() => {
+    if (draftWorkspaceId === workspace?.id) {
+      return;
+    }
     if (!selectedQuestId && quests[0]) {
       setSelectedQuestId(quests[0].id);
     }
-  }, [quests, selectedQuestId]);
+  }, [draftWorkspaceId, quests, selectedQuestId, workspace?.id]);
 
   useEffect(() => {
     if (changedFiles.length > 0 && !changedFiles.some((file) => changedFileKey(file) === selectedChangedFileKey)) {
@@ -157,6 +195,7 @@ export function App() {
       });
       await load();
       setSelectedQuestId(quest.id);
+      setDraftWorkspaceId("");
       setQuestRequirement("");
       setInspectorTab("spec");
     } catch (err) {
@@ -268,6 +307,41 @@ export function App() {
     }
   }
 
+  function startColumnResize(divider: ResizeDivider, event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    resizeStartRef.current = {
+      divider,
+      pointerX: event.clientX,
+      sidebar: columnWidths.sidebar,
+      inspector: columnWidths.inspector
+    };
+    document.body.classList.add("is-resizing-columns");
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const start = resizeStartRef.current;
+      if (!start) {
+        return;
+      }
+      const delta = moveEvent.clientX - start.pointerX;
+      setColumnWidths({
+        sidebar: start.divider === "sidebar" ? clamp(start.sidebar + delta, 220, 380) : start.sidebar,
+        inspector: start.divider === "inspector" ? clamp(start.inspector - delta, 360, 560) : start.inspector
+      });
+    };
+
+    const stopResize = () => {
+      resizeStartRef.current = null;
+      document.body.classList.remove("is-resizing-columns");
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
   async function saveWorkspaceConfig(input: { name: string; description: string; worktreeRoot: string }) {
     if (!configWorkspace) {
       return;
@@ -277,6 +351,30 @@ export function App() {
     try {
       await api.updateWorkspace(configWorkspace.id, input);
       await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createWorkspace(input: { name: string; description: string; worktreeRoot: string }) {
+    setBusy(true);
+    setError("");
+    try {
+      const workspace = await api.createWorkspace({
+        name: input.name,
+        description: input.description,
+        worktreeRoot: input.worktreeRoot || undefined
+      });
+      await load();
+      setSelectedWorkspaceId(workspace.id);
+      setSelectedQuestId("");
+      setDraftWorkspaceId(workspace.id);
+      setQuestRequirement("");
+      setExpandedWorkspaceIds((current) => [...new Set([workspace.id, ...current])]);
+      setWorkspaceCreateOpen(false);
+      setInspectorTab("spec");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -398,7 +496,15 @@ export function App() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="quest-workbench">
+      <section
+        className="quest-workbench"
+        style={
+          {
+            "--sidebar-width": `${columnWidths.sidebar}px`,
+            "--inspector-width": `${columnWidths.inspector}px`
+          } as React.CSSProperties
+        }
+      >
         <Sidebar
           knowledgeCount={knowledge.length}
           quests={quests}
@@ -410,19 +516,25 @@ export function App() {
             setWorkspaceConfigId(workspaceId);
             setWorkspaceConfigOpen(true);
           }}
+          onCreateWorkspace={() => setWorkspaceCreateOpen(true)}
           onKnowledgeOpen={() => setKnowledgeOpen(true)}
-          onNewQuest={() => {
+          onNewQuest={(workspaceId) => {
+            setSelectedWorkspaceId(workspaceId);
             setSelectedQuestId("");
+            setDraftWorkspaceId(workspaceId);
             setQuestRequirement("");
+            setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
             setInspectorTab("spec");
           }}
           onSelectQuest={(questId) => {
             setSelectedQuestId(questId);
+            setDraftWorkspaceId("");
             setInspectorTab("spec");
           }}
           onSelectWorkspace={(workspaceId) => {
             setSelectedWorkspaceId(workspaceId);
             setSelectedQuestId("");
+            setDraftWorkspaceId("");
             setQuestRequirement("");
             setInspectorTab("spec");
           }}
@@ -431,6 +543,12 @@ export function App() {
               current.includes(workspaceId) ? current.filter((id) => id !== workspaceId) : [...current, workspaceId]
             );
           }}
+        />
+        <div
+          aria-label="调整左侧栏宽度"
+          className="resize-handle resize-handle-left"
+          onPointerDown={(event) => startColumnResize("sidebar", event)}
+          role="separator"
         />
         <QuestStage
           agentBackendId={agentBackendId}
@@ -444,6 +562,12 @@ export function App() {
           onBackendChange={setAgentBackendId}
           onCreateQuest={createQuest}
           onRequirementChange={setQuestRequirement}
+        />
+        <div
+          aria-label="调整右侧栏宽度"
+          className="resize-handle resize-handle-right"
+          onPointerDown={(event) => startColumnResize("inspector", event)}
+          role="separator"
         />
         <Inspector
           auditLog={state.auditLog}
@@ -465,6 +589,14 @@ export function App() {
           onTabChange={setInspectorTab}
         />
       </section>
+
+      {workspaceCreateOpen ? (
+        <WorkspaceCreateDialog
+          busy={busy}
+          onClose={() => setWorkspaceCreateOpen(false)}
+          onCreateWorkspace={createWorkspace}
+        />
+      ) : null}
 
       {workspaceConfigOpen && configWorkspace ? (
         <WorkspaceConfigDialog
@@ -499,6 +631,7 @@ function Sidebar({
   selectedWorkspaceId,
   workspaces,
   onConfigWorkspace,
+  onCreateWorkspace,
   onKnowledgeOpen,
   onNewQuest,
   onSelectQuest,
@@ -512,18 +645,18 @@ function Sidebar({
   selectedWorkspaceId: string;
   workspaces: Workspace[];
   onConfigWorkspace: (workspaceId: string) => void;
+  onCreateWorkspace: () => void;
   onKnowledgeOpen: () => void;
-  onNewQuest: () => void;
+  onNewQuest: (workspaceId: string) => void;
   onSelectQuest: (questId: string) => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onToggleWorkspace: (workspaceId: string) => void;
 }) {
   return (
     <aside className="sidebar">
-      <button className="new-quest-button" onClick={onNewQuest} type="button">
+      <button className="new-quest-button" onClick={onCreateWorkspace} type="button">
         <Plus size={16} />
-        <span>创建 Request</span>
-        <kbd>N</kbd>
+        <span>创建 Workspace</span>
       </button>
 
       <section className="sidebar-section grow">
@@ -546,6 +679,14 @@ function Sidebar({
                   <button className="workspace-title-button" onClick={() => onSelectWorkspace(item.id)} type="button">
                     <Boxes size={15} />
                     <span>{item.name}</span>
+                  </button>
+                  <button
+                    aria-label={`为 ${item.name} 创建 Request`}
+                    className="icon-button"
+                    onClick={() => onNewQuest(item.id)}
+                    type="button"
+                  >
+                    <Plus size={15} />
                   </button>
                   <button
                     aria-label={`配置 ${item.name}`}
@@ -1123,6 +1264,82 @@ function KnowledgePanel({ knowledge }: { knowledge: KnowledgeItem[] }) {
           </div>
         </article>
       ))}
+    </div>
+  );
+}
+
+function WorkspaceCreateDialog({
+  busy,
+  onClose,
+  onCreateWorkspace
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onCreateWorkspace: (input: { name: string; description: string; worktreeRoot: string }) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState({
+    name: "",
+    description: "",
+    worktreeRoot: ""
+  });
+
+  async function submitWorkspace(event: FormEvent) {
+    event.preventDefault();
+    if (!draft.name.trim()) {
+      return;
+    }
+    await onCreateWorkspace({
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      worktreeRoot: draft.worktreeRoot.trim()
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="workspace-create-title" className="modal-panel compact-modal" role="dialog">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">Workspace</p>
+            <h2 id="workspace-create-title">创建 Workspace</h2>
+          </div>
+          <button aria-label="关闭 workspace 创建" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <form className="modal-body config-section" onSubmit={submitWorkspace}>
+          <label>
+            <span>名称</span>
+            <input
+              aria-label="Workspace 名称"
+              placeholder="RepoHelm Product Workspace"
+              value={draft.name}
+              onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+            />
+          </label>
+          <label>
+            <span>描述</span>
+            <textarea
+              aria-label="Workspace 描述"
+              className="compact-textarea"
+              value={draft.description}
+              onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+            />
+          </label>
+          <label>
+            <span>Worktree Root</span>
+            <input
+              aria-label="Worktree Root"
+              placeholder="留空使用默认目录"
+              value={draft.worktreeRoot}
+              onChange={(event) => setDraft((current) => ({ ...current, worktreeRoot: event.target.value }))}
+            />
+          </label>
+          <button className="secondary-action" disabled={busy || !draft.name.trim()} type="submit">
+            创建 Workspace
+          </button>
+        </form>
+      </section>
     </div>
   );
 }

@@ -34,6 +34,15 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "创建 Workspace" }).click();
+  const workspaceCreateDialog = page.getByRole("dialog", { name: "创建 Workspace" });
+  await expect(workspaceCreateDialog).toBeVisible();
+  await expect(workspaceCreateDialog.getByRole("textbox", { name: "Workspace 名称" })).toBeVisible();
+  await page.getByRole("button", { name: "关闭 workspace 创建" }).click();
+  await page.getByRole("button", { name: "为 RepoHelm Demo Workspace 创建 Request" }).click();
+  await expect(page.getByRole("heading", { name: "把需求交给 Agent" })).toBeVisible();
+  await expect(page.locator(".quest-row.active")).toBeHidden();
+
   await page.getByRole("button", { name: "配置 RepoHelm Demo Workspace" }).click();
   const configDialog = page.getByRole("dialog", { name: "RepoHelm Demo Workspace" });
   await expect(configDialog).toBeVisible();
@@ -45,8 +54,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
 
   await configDialog.getByRole("button", { name: "检查状态" }).first().click();
   await expect(configDialog.locator(".health-pill.ok").first()).toBeVisible();
+  await expect(configDialog.getByRole("button", { name: "检查状态" }).first()).toBeEnabled();
   await configDialog.getByRole("textbox", { name: "验证命令" }).first().fill("node --version");
   await configDialog.getByRole("button", { name: "保存项目" }).first().click();
+  await expect(configDialog.getByRole("button", { name: "保存项目" }).first()).toBeEnabled();
 
   const addProjectForm = configDialog.locator(".add-project-form");
   await addProjectForm.getByRole("textbox", { name: "项目名称" }).fill(tempProjectName);

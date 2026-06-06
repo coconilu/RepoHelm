@@ -237,6 +237,11 @@ export const api = {
     ),
   searchKnowledge: (workspaceId: string, query: string) =>
     request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
+  createWorkspace: (input: { name: string; description?: string; worktreeRoot?: string }) =>
+    request<Workspace>("/api/workspaces", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   createQuest: (input: {
     workspaceId: string;
     title: string;
