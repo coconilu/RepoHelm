@@ -608,6 +608,10 @@ kbd {
   color: #225e55;
 }
 
+.quest-row.draft {
+  border: 1px dashed #b7d8cf;
+}
+
 .quest-row span {
   flex: 1;
   font-size: 13px;
@@ -877,11 +881,11 @@ textarea {
   border: 0;
   border-radius: 12px 12px 0 0;
   color: #262a2f;
-  font-size: 17px;
-  line-height: 1.55;
-  max-height: 220px;
-  min-height: 128px;
-  padding: 18px 20px 10px;
+  font-size: 16px;
+  line-height: 1.45;
+  max-height: 180px;
+  min-height: 56px;
+  padding: 12px 18px 6px;
   resize: none;
 }
 
@@ -893,8 +897,8 @@ textarea {
   color: #777c82;
   gap: 12px;
   justify-content: space-between;
-  min-height: 56px;
-  padding: 8px 12px 12px 16px;
+  min-height: 46px;
+  padding: 6px 12px 10px 16px;
 }
 
 .composer-tools {
@@ -1548,12 +1552,12 @@ code {
 
   .chat-stage textarea {
     max-height: 132px;
-    min-height: 92px;
-    padding: 14px 16px 8px;
+    min-height: 56px;
+    padding: 12px 16px 6px;
   }
 
   .composer-footer {
-    min-height: 48px;
+    min-height: 44px;
     padding: 6px 10px 10px 12px;
   }
 

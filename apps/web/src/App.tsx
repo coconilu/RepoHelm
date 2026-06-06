@@ -20,7 +20,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AgentBackendId,
   AgentBackendInfo,
@@ -508,6 +508,7 @@ export function App() {
         <Sidebar
           knowledgeCount={knowledge.length}
           quests={quests}
+          draftWorkspaceId={draftWorkspaceId}
           selectedQuest={selectedQuest}
           selectedWorkspaceId={workspace.id}
           workspaces={state.workspaces}
@@ -624,6 +625,7 @@ export function App() {
 }
 
 function Sidebar({
+  draftWorkspaceId,
   expandedWorkspaceIds,
   knowledgeCount,
   quests,
@@ -638,6 +640,7 @@ function Sidebar({
   onSelectWorkspace,
   onToggleWorkspace
 }: {
+  draftWorkspaceId: string;
   expandedWorkspaceIds: string[];
   knowledgeCount: number;
   quests: Quest[];
@@ -665,6 +668,7 @@ function Sidebar({
           {workspaces.map((item) => {
             const expanded = expandedWorkspaceIds.includes(item.id);
             const itemQuests = quests.filter((quest) => quest.workspaceId === item.id);
+            const hasDraftRequest = item.id === draftWorkspaceId;
             return (
               <div className="workspace-node" key={item.id}>
                 <div className={`workspace-row ${item.id === selectedWorkspaceId ? "active" : ""}`}>
@@ -700,7 +704,19 @@ function Sidebar({
 
                 {expanded ? (
                   <div className="request-list">
-                    {itemQuests.length === 0 ? <p className="muted request-empty">暂无 Request</p> : null}
+                    {itemQuests.length === 0 && !hasDraftRequest ? <p className="muted request-empty">暂无 Request</p> : null}
+                    {hasDraftRequest ? (
+                      <button
+                        aria-label="新 Request 草稿"
+                        className="quest-row draft active"
+                        onClick={() => onNewQuest(item.id)}
+                        type="button"
+                      >
+                        <Plus size={12} />
+                        <span>新 Request</span>
+                        <em className="badge">草稿</em>
+                      </button>
+                    ) : null}
                     {itemQuests.map((quest) => (
                       <button
                         className={`quest-row ${quest.id === selectedQuest?.id ? "active" : ""}`}
@@ -757,6 +773,27 @@ function QuestStage({
 }) {
   const questBackend = agentBackends.find((backend) => backend.id === quest?.agentBackendId);
   const backend = questBackend ?? agentBackends.find((item) => item.id === agentBackendId);
+  const chatThreadRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const chatThread = chatThreadRef.current;
+    if (!chatThread) {
+      return;
+    }
+    chatThread.scrollTop = chatThread.scrollHeight;
+  }, [events.length, quest?.id]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    const nextHeight = clamp(textarea.scrollHeight, 56, 180);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > 180 ? "auto" : "hidden";
+  }, [questRequirement]);
 
   return (
     <section className="quest-stage chat-stage">
@@ -774,7 +811,7 @@ function QuestStage({
         </div>
       </header>
 
-      <div className="chat-thread">
+      <div className="chat-thread" ref={chatThreadRef}>
         {!quest ? (
           <article className="chat-message assistant">
             <div className="chat-avatar">
@@ -824,6 +861,7 @@ function QuestStage({
         <textarea
           aria-label="需求"
           placeholder="描述计划，@ 引用上下文，/ 使用命令"
+          ref={textareaRef}
           value={questRequirement}
           onChange={(event) => onRequirementChange(event.target.value)}
         />

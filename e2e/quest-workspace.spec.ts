@@ -41,7 +41,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.getByRole("button", { name: "关闭 workspace 创建" }).click();
   await page.getByRole("button", { name: "为 RepoHelm Demo Workspace 创建 Request" }).click();
   await expect(page.getByRole("heading", { name: "把需求交给 Agent" })).toBeVisible();
-  await expect(page.locator(".quest-row.active")).toBeHidden();
+  await expect(page.getByRole("button", { name: "新 Request 草稿" })).toBeVisible();
+  await expect(page.locator(".quest-row.active")).toContainText("新 Request");
+  const defaultComposerHeight = (await page.getByRole("textbox", { name: "需求" }).boundingBox())?.height ?? 0;
+  expect(defaultComposerHeight).toBeLessThanOrEqual(70);
 
   await page.getByRole("button", { name: "配置 RepoHelm Demo Workspace" }).click();
   const configDialog = page.getByRole("dialog", { name: "RepoHelm Demo Workspace" });
@@ -74,6 +77,8 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page
     .getByRole("textbox", { name: "需求" })
     .fill(`${questTitle}\n从浏览器创建 Quest，生成 Spec，推荐 security skill 审查 MCP manifest，运行 mock agent，并展示 worktree、review 和 knowledge。`);
+  const expandedComposerHeight = (await page.getByRole("textbox", { name: "需求" }).boundingBox())?.height ?? 0;
+  expect(expandedComposerHeight).toBeGreaterThan(defaultComposerHeight);
   await expect(page.getByRole("combobox", { name: "Agent Backend" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "执行模式" })).toBeVisible();
   await page.getByRole("button", { name: "发送给 Agent" }).click();
