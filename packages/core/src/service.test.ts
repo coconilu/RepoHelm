@@ -105,28 +105,50 @@ describe("RepoHelmService", () => {
     expect(nextState.projects[0]?.health.status).toBe("ok");
   });
 
-  it("adds and removes projects from a workspace", async () => {
-    const { service } = await createService();
+  it("registers a global repo and links it to a workspace with a checked-out worktree", async () => {
+    const { rootDir, service } = await createGitRepoService();
     const state = await service.bootstrap();
     const workspace = state.workspaces[0]!;
 
     const project = await service.createProject({
-      workspaceId: workspace.id,
       name: "Docs",
-      path: "/tmp/repohelm-docs",
+      path: rootDir,
       role: "documentation",
       defaultBranch: "main",
       validationCommand: "npm test"
     });
-    const withProject = await service.getState();
+    const registered = await service.getState();
 
-    expect(withProject.workspaces[0]?.projectIds).toContain(project.id);
-    expect(withProject.projects.find((item) => item.id === project.id)?.validationCommand).toBe("npm test");
+    // Global repos are not bound to any workspace until explicitly linked.
+    expect(registered.projects.some((item) => item.id === project.id)).toBe(true);
+    expect(registered.workspaces[0]?.projectIds).not.toContain(project.id);
+
+    const linked = await service.linkProjectToWorkspace(workspace.id, project.id);
+    expect(linked.projectIds).toContain(project.id);
+    expect(linked.worktrees).toHaveLength(1);
+    expect(linked.worktrees[0]?.projectId).toBe(project.id);
+    expect(linked.worktrees[0]?.status).toBe("created");
+    expect(linked.worktrees[0]?.baseBranch).toBe("main");
+    await expect(access(linked.worktrees[0]!.worktreePath)).resolves.toBeUndefined();
+
+    const unlinked = await service.unlinkProjectFromWorkspace(workspace.id, project.id);
+    expect(unlinked.projectIds).not.toContain(project.id);
+    expect(unlinked.worktrees).toHaveLength(0);
+    await expect(access(linked.worktrees[0]!.worktreePath)).rejects.toThrow();
 
     const withoutProject = await service.removeProject(project.id);
-
-    expect(withoutProject.workspaces[0]?.projectIds).not.toContain(project.id);
     expect(withoutProject.projects.some((item) => item.id === project.id)).toBe(false);
+  });
+
+  it("lists branches of a repo path and detects the default branch", async () => {
+    const { rootDir, service } = await createGitRepoService();
+    await execFileAsync("git", ["branch", "feature/extra"], { cwd: rootDir });
+
+    const result = await service.listBranches(rootDir);
+
+    expect(result.branches).toContain("main");
+    expect(result.branches).toContain("feature/extra");
+    expect(result.defaultBranch).toBe("main");
   });
 
   it("creates a quest with a lightweight spec and planning events", async () => {
@@ -187,12 +209,12 @@ describe("RepoHelmService", () => {
     const { service } = await createService();
     const state = await service.bootstrap();
     const workspace = state.workspaces[0]!;
-    await service.createProject({
-      workspaceId: workspace.id,
+    const apiProject = await service.createProject({
       name: "API",
       path: "/tmp/repohelm-api",
       role: "backend"
     });
+    await service.linkProjectToWorkspace(workspace.id, apiProject.id);
 
     const readiness = await service.getProductReadiness(workspace.id);
 

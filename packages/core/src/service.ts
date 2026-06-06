@@ -24,6 +24,7 @@ import type {
   UpdateProjectInput,
   UpdateWorkspaceInput,
   Workspace,
+  WorkspaceWorktree,
   WorktreeState
 } from "./types.js";
 import type { StateStore } from "./store.js";
@@ -73,13 +74,13 @@ export class RepoHelmService {
       name: "RepoHelm Demo Workspace",
       description: "一个用于体验 Quest 工作流的虚拟 workspace。",
       projectIds: ["project_repohelm"],
+      worktrees: [],
       worktreeRoot: this.worktreeRootDir,
       createdAt: timestamp,
       updatedAt: timestamp
     };
     const project: Project = {
       id: "project_repohelm",
-      workspaceId: workspace.id,
       name: "RepoHelm",
       path: this.rootDir,
       role: "unknown",
@@ -105,7 +106,7 @@ export class RepoHelmService {
         ...architectureKnowledge,
         sourcePath: await this.knowledgeFileStore.writeKnowledgeItem(architectureKnowledge)
       },
-      await this.knowledgeFileStore.writeProjectSummary(workspace, project, timestamp)
+      await this.knowledgeFileStore.writeProjectSummary(project, timestamp)
     ];
 
     const nextState: RepoHelmState = {
@@ -135,6 +136,7 @@ export class RepoHelmService {
       name: input.name,
       description: input.description ?? "",
       projectIds: [],
+      worktrees: [],
       worktreeRoot: input.worktreeRoot ?? this.worktreeRootDir,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -164,14 +166,9 @@ export class RepoHelmService {
 
   async createProject(input: CreateProjectInput): Promise<Project> {
     const state = await this.getState();
-    const workspace = state.workspaces.find((item) => item.id === input.workspaceId);
-    if (!workspace) {
-      throw new Error("Workspace not found");
-    }
 
     const project: Project = {
       id: id("project"),
-      workspaceId: input.workspaceId,
       name: input.name,
       path: input.path,
       role: input.role ?? "unknown",
@@ -181,16 +178,10 @@ export class RepoHelmService {
       createdAt: now(),
       updatedAt: now()
     };
-    const workspaces = state.workspaces.map((item) =>
-      item.id === input.workspaceId
-        ? { ...item, projectIds: [...item.projectIds, project.id], updatedAt: now() }
-        : item
-    );
 
-    const projectSummary = await this.knowledgeFileStore.writeProjectSummary(workspace, project, now());
+    const projectSummary = await this.knowledgeFileStore.writeProjectSummary(project, now());
     await this.store.write({
       ...state,
-      workspaces,
       projects: [project, ...state.projects],
       knowledge: [projectSummary, ...state.knowledge]
     });
@@ -215,21 +206,88 @@ export class RepoHelmService {
         input.path || input.defaultBranch
           ? {
               status: "unknown",
-              message: "项目配置已变更，等待重新检查。"
+              message: "仓库配置已变更，等待重新检查。"
             }
           : project.health,
       updatedAt: now()
     };
     const projects = state.projects.map((item) => (item.id === projectId ? updatedProject : item));
-    const workspace = state.workspaces.find((item) => item.id === project.workspaceId);
-    const projectSummary = workspace
-      ? await this.knowledgeFileStore.writeProjectSummary(workspace, updatedProject, now())
-      : undefined;
-    const knowledge = projectSummary
-      ? [projectSummary, ...state.knowledge.filter((item) => item.id !== projectSummary.id)]
-      : state.knowledge;
+    const projectSummary = await this.knowledgeFileStore.writeProjectSummary(updatedProject, now());
+    const knowledge = [projectSummary, ...state.knowledge.filter((item) => item.id !== projectSummary.id)];
     await this.store.write({ ...state, projects, knowledge });
     return updatedProject;
+  }
+
+  async linkProjectToWorkspace(workspaceId: string, projectId: string): Promise<Workspace> {
+    const state = await this.getState();
+    const workspace = state.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) {
+      throw new Error("Workspace not found");
+    }
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+    if (workspace.worktrees.some((item) => item.projectId === projectId)) {
+      return workspace;
+    }
+
+    const worktreeRoot = workspace.worktreeRoot ? resolve(workspace.worktreeRoot) : this.worktreeRootDir;
+    const worktreePath = join(worktreeRoot, slugify(workspace.name), slugify(project.name));
+    const branchName = `repohelm/${slugify(workspace.name)}/${slugify(project.name)}`;
+    const result = await this.gitWorktreeManager.createWorktree({
+      repoPath: project.path,
+      branchName,
+      worktreePath,
+      baseBranch: project.defaultBranch
+    });
+
+    const timestamp = now();
+    const worktree: WorkspaceWorktree = {
+      projectId,
+      baseBranch: project.defaultBranch,
+      branchName: result.branchName,
+      worktreePath: result.worktreePath,
+      repoRoot: result.repoRoot,
+      status: result.status,
+      note: result.note,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const updatedWorkspace: Workspace = {
+      ...workspace,
+      projectIds: workspace.projectIds.includes(projectId)
+        ? workspace.projectIds
+        : [...workspace.projectIds, projectId],
+      worktrees: [...workspace.worktrees, worktree],
+      updatedAt: timestamp
+    };
+    const workspaces = state.workspaces.map((item) => (item.id === workspaceId ? updatedWorkspace : item));
+    await this.store.write({ ...state, workspaces });
+    return updatedWorkspace;
+  }
+
+  async unlinkProjectFromWorkspace(workspaceId: string, projectId: string): Promise<Workspace> {
+    const state = await this.getState();
+    const workspace = state.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) {
+      throw new Error("Workspace not found");
+    }
+    const project = state.projects.find((item) => item.id === projectId);
+    const worktree = workspace.worktrees.find((item) => item.projectId === projectId);
+    if (worktree && project && worktree.status === "created") {
+      await this.gitWorktreeManager.removeWorktree(project.path, worktree.worktreePath, worktree.branchName);
+    }
+
+    const updatedWorkspace: Workspace = {
+      ...workspace,
+      projectIds: workspace.projectIds.filter((item) => item !== projectId),
+      worktrees: workspace.worktrees.filter((item) => item.projectId !== projectId),
+      updatedAt: now()
+    };
+    const workspaces = state.workspaces.map((item) => (item.id === workspaceId ? updatedWorkspace : item));
+    await this.store.write({ ...state, workspaces });
+    return updatedWorkspace;
   }
 
   async removeProject(projectId: string): Promise<RepoHelmState> {
@@ -239,16 +297,26 @@ export class RepoHelmService {
       throw new Error("Project not found");
     }
 
+    // Cascade: drop the repo from every workspace and clean up its linked worktrees.
+    const workspaces: Workspace[] = [];
+    for (const workspace of state.workspaces) {
+      const worktree = workspace.worktrees.find((item) => item.projectId === projectId);
+      if (!worktree) {
+        workspaces.push(workspace);
+        continue;
+      }
+      if (worktree.status === "created") {
+        await this.gitWorktreeManager.removeWorktree(project.path, worktree.worktreePath, worktree.branchName);
+      }
+      workspaces.push({
+        ...workspace,
+        projectIds: workspace.projectIds.filter((item) => item !== projectId),
+        worktrees: workspace.worktrees.filter((item) => item.projectId !== projectId),
+        updatedAt: now()
+      });
+    }
+
     const projects = state.projects.filter((item) => item.id !== projectId);
-    const workspaces = state.workspaces.map((workspace) =>
-      workspace.id === project.workspaceId
-        ? {
-            ...workspace,
-            projectIds: workspace.projectIds.filter((id) => id !== projectId),
-            updatedAt: now()
-          }
-        : workspace
-    );
     const quests = state.quests.map((quest) => ({
       ...quest,
       affectedProjectIds: quest.affectedProjectIds.filter((id) => id !== projectId)
@@ -256,6 +324,10 @@ export class RepoHelmService {
     const nextState = { ...state, projects, workspaces, quests };
     await this.store.write(nextState);
     return nextState;
+  }
+
+  async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string }> {
+    return this.gitWorktreeManager.listBranches(path);
   }
 
   async checkProjectHealth(projectId: string): Promise<Project> {
@@ -728,7 +800,7 @@ export class RepoHelmService {
       ? state.workspaces.find((item) => item.id === workspaceId)
       : state.workspaces[0];
     const projects = workspace
-      ? state.projects.filter((project) => project.workspaceId === workspace.id)
+      ? state.projects.filter((project) => workspace.projectIds.includes(project.id))
       : [];
     const edges = projects.flatMap((project) =>
       projects
@@ -907,6 +979,7 @@ export class RepoHelmService {
       workspaces: state.workspaces.map((workspace) => ({
         ...workspace,
         projectIds: workspace.projectIds ?? [],
+        worktrees: workspace.worktrees ?? [],
         worktreeRoot: workspace.worktreeRoot ?? this.worktreeRootDir,
         updatedAt: workspace.updatedAt ?? workspace.createdAt ?? now()
       })),

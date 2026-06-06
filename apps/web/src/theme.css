@@ -1,0 +1,175 @@
+/* Self-hosted variable fonts (no external CDN — good for a local-first tool). */
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/*
+ * Tailwind v4, imported WITHOUT Preflight so it does not reset the existing
+ * hand-written component styles in styles.css. We pull in the theme layer
+ * (tokens) and the utilities layer (utility classes + dark: variant) only.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Drive the color scheme from a data attribute on <html>. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ----------------------------------------------------------------------------
+ * Design tokens — Linear-style: restrained, professional, depth + glow.
+ * Light is the default; dark overrides below.
+ * ------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f5f6f9;
+  --surface-3: #eceef1;
+  --surface-glass: rgba(255, 255, 255, 0.82);
+  --sidebar: #f1f3f5;
+
+  --border: #e6e8ec;
+  --border-strong: #d6dade;
+
+  --text: #16181d;
+  --text-muted: #5b626b;
+  --text-faint: #8c929b;
+
+  --accent: #5b5bd6;
+  --accent-hover: #4f4fce;
+  --accent-contrast: #ffffff;
+  --accent-soft: #ececfb;
+  --accent-border: #cfcff4;
+  --ring: rgba(91, 91, 214, 0.34);
+
+  --solid: #16181d;
+  --solid-hover: #25282e;
+  --solid-text: #ffffff;
+
+  --success: #1f9d57;
+  --success-soft: #e6f6ec;
+  --success-border: #b5dfc4;
+  --success-text: #1d7a44;
+
+  --danger: #e5484d;
+  --danger-soft: #ffece9;
+  --danger-border: #f3bdb6;
+  --danger-text: #b42318;
+
+  --warning: #d98a0b;
+  --warning-soft: #fbf0d3;
+  --warning-border: #f0d79a;
+  --warning-text: #855a0e;
+
+  --info-soft: #eef2fb;
+  --info-border: #d3ddf3;
+  --info-text: #3a5a9f;
+
+  --brand: #f2c84b;
+  --brand-text: #24312f;
+
+  --code-bg: #f1f3f5;
+  --code-border: #e2e6ea;
+  --code-text: #344048;
+
+  --diff-bg: #14161a;
+  --diff-text: #e7ecf1;
+
+  --overlay: rgba(20, 22, 28, 0.32);
+  --shadow-sm: 0 1px 2px rgba(16, 18, 22, 0.07);
+  --shadow-md: 0 10px 28px -10px rgba(16, 18, 22, 0.18);
+  --shadow-lg: 0 28px 70px -24px rgba(16, 18, 22, 0.32);
+  --glow: 0 0 0 transparent;
+
+  --radius: 9px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* Legacy aliases so the existing component CSS stays themeable. */
+  --panel: var(--surface);
+  --panel-muted: var(--surface-2);
+
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0a0b0d;
+  --surface: #131418;
+  --surface-2: #17191e;
+  --surface-3: #20232a;
+  --surface-glass: rgba(17, 18, 22, 0.72);
+  --sidebar: #0d0e11;
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+
+  --text: #ecedee;
+  --text-muted: #9aa1ab;
+  --text-faint: #6b727c;
+
+  --accent: #7c84ec;
+  --accent-hover: #8b92f0;
+  --accent-contrast: #0a0b0d;
+  --accent-soft: rgba(124, 132, 236, 0.16);
+  --accent-border: rgba(124, 132, 236, 0.38);
+  --ring: rgba(124, 132, 236, 0.45);
+
+  /* Inverted prominent button reads as "light on dark" in dark mode. */
+  --solid: #ecedee;
+  --solid-hover: #ffffff;
+  --solid-text: #0a0b0d;
+
+  --success: #3fb950;
+  --success-soft: rgba(63, 185, 80, 0.15);
+  --success-border: rgba(63, 185, 80, 0.32);
+  --success-text: #56d364;
+
+  --danger: #f0595e;
+  --danger-soft: rgba(240, 89, 94, 0.15);
+  --danger-border: rgba(240, 89, 94, 0.34);
+  --danger-text: #ff9492;
+
+  --warning: #e3a008;
+  --warning-soft: rgba(227, 160, 8, 0.15);
+  --warning-border: rgba(227, 160, 8, 0.32);
+  --warning-text: #f0c34a;
+
+  --info-soft: rgba(124, 150, 236, 0.15);
+  --info-border: rgba(124, 150, 236, 0.32);
+  --info-text: #adbcf0;
+
+  --brand: #f2c84b;
+  --brand-text: #1a1407;
+
+  --code-bg: #1a1c21;
+  --code-border: rgba(255, 255, 255, 0.1);
+  --code-text: #c8d0d9;
+
+  --diff-bg: #0d0e11;
+  --diff-text: #d3dbe3;
+
+  --overlay: rgba(0, 0, 0, 0.62);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 32px 80px -28px rgba(0, 0, 0, 0.78);
+  --glow: 0 0 24px -6px rgba(124, 132, 236, 0.5);
+}
+
+/* Expose the themeable tokens to Tailwind utilities (bg-surface, text-accent, ...). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --radius-card: var(--radius);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}

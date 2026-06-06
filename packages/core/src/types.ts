@@ -21,11 +21,24 @@ export interface ProjectHealth {
   checkedAt?: string;
 }
 
+export interface WorkspaceWorktree {
+  projectId: string;
+  baseBranch: string;
+  branchName: string;
+  worktreePath: string;
+  repoRoot?: string;
+  status: "created" | "failed";
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
   description: string;
   projectIds: string[];
+  worktrees: WorkspaceWorktree[];
   worktreeRoot: string;
   createdAt: string;
   updatedAt: string;
@@ -33,7 +46,6 @@ export interface Workspace {
 
 export interface Project {
   id: string;
-  workspaceId: string;
   name: string;
   path: string;
   role: ProjectRole;
@@ -210,7 +222,6 @@ export interface CreateWorkspaceInput {
 }
 
 export interface CreateProjectInput {
-  workspaceId: string;
   name: string;
   path: string;
   role?: ProjectRole;

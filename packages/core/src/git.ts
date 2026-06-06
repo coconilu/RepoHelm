@@ -10,6 +10,8 @@ export interface CreateWorktreeInput {
   repoPath: string;
   branchName: string;
   worktreePath: string;
+  /** Start point for the new branch. Defaults to HEAD when omitted. */
+  baseBranch?: string;
 }
 
 export interface CreateWorktreeResult {
@@ -58,6 +60,22 @@ export class GitWorktreeManager {
     }
   }
 
+  async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string }> {
+    const repoRoot = await this.getRepoRoot(path);
+    const output = await this.git(repoRoot, ["branch", "--format=%(refname:short)"]);
+    const branches = output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const currentBranch = (await this.git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "")).trim();
+    const defaultBranch = branches.includes("main")
+      ? "main"
+      : branches.includes("master")
+        ? "master"
+        : currentBranch || branches[0] || "main";
+    return { branches, defaultBranch };
+  }
+
   async createWorktree(input: CreateWorktreeInput): Promise<CreateWorktreeResult> {
     try {
       const repoRoot = await this.getRepoRoot(input.repoPath);
@@ -82,7 +100,8 @@ export class GitWorktreeManager {
       }
 
       await mkdir(dirname(input.worktreePath), { recursive: true });
-      await this.git(repoRoot, ["worktree", "add", "-b", input.branchName, input.worktreePath, "HEAD"]);
+      const startPoint = await this.resolveStartPoint(repoRoot, input.baseBranch);
+      await this.git(repoRoot, ["worktree", "add", "-b", input.branchName, input.worktreePath, startPoint]);
       return {
         status: "created",
         note: "Git worktree 已创建。",
@@ -260,6 +279,18 @@ export class GitWorktreeManager {
       return unstaged;
     }
     return this.git(worktreePath, ["diff", "--cached", "--", path]);
+  }
+
+  private async resolveStartPoint(repoRoot: string, baseBranch?: string): Promise<string> {
+    if (!baseBranch) {
+      return "HEAD";
+    }
+    try {
+      await this.git(repoRoot, ["rev-parse", "--verify", "--quiet", baseBranch]);
+      return baseBranch;
+    } catch {
+      return "HEAD";
+    }
   }
 
   private async getRepoRoot(path: string): Promise<string> {

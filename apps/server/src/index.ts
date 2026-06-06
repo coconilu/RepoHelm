@@ -3,9 +3,12 @@ import { RepoHelmService, SqliteStateStore } from "@repohelm/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { z } from "zod";
+
+const execFileAsync = promisify(execFile);
 
 function resolveRootDir() {
   if (process.env.REPOHELM_ROOT) {
@@ -54,7 +57,6 @@ const workspaceSchema = z.object({
 const updateWorkspaceSchema = workspaceSchema.partial();
 
 const projectSchema = z.object({
-  workspaceId: z.string().min(1),
   name: z.string().min(1),
   path: z.string().min(1),
   role: z.enum(["frontend", "backend", "documentation", "library", "infra", "unknown"]).optional(),
@@ -62,7 +64,11 @@ const projectSchema = z.object({
   validationCommand: z.string().optional()
 });
 
-const updateProjectSchema = projectSchema.omit({ workspaceId: true }).partial();
+const updateProjectSchema = projectSchema.partial();
+
+const workspaceLinkSchema = z.object({
+  projectId: z.string().min(1)
+});
 
 const securityPolicySchema = z.object({
   commandApprovalMode: z.enum(["allowlist", "manual"]).optional(),
@@ -156,6 +162,20 @@ app.post("/api/projects", async (context) => {
   return context.json(project, 201);
 });
 
+app.post("/api/workspaces/:id/links", async (context) => {
+  const input = workspaceLinkSchema.parse(await context.req.json());
+  const workspace = await service.linkProjectToWorkspace(context.req.param("id"), input.projectId);
+  return context.json(workspace, 201);
+});
+
+app.delete("/api/workspaces/:id/links/:projectId", async (context) => {
+  const workspace = await service.unlinkProjectFromWorkspace(
+    context.req.param("id"),
+    context.req.param("projectId")
+  );
+  return context.json(workspace);
+});
+
 app.patch("/api/projects/:id", async (context) => {
   const input = updateProjectSchema.parse(await context.req.json());
   const project = await service.updateProject(context.req.param("id"), input);
@@ -170,6 +190,39 @@ app.delete("/api/projects/:id", async (context) => {
 app.post("/api/projects/:id/check", async (context) => {
   const project = await service.checkProjectHealth(context.req.param("id"));
   return context.json(project);
+});
+
+app.post("/api/pick-directory", async (context) => {
+  if (process.platform !== "darwin") {
+    return context.json({ path: null, error: "目录选择器目前仅支持 macOS。" });
+  }
+  try {
+    const { stdout } = await execFileAsync("osascript", [
+      "-e",
+      "try",
+      "-e",
+      'POSIX path of (choose folder with prompt "选择仓库目录")',
+      "-e",
+      "end try"
+    ]);
+    const path = stdout.trim();
+    return context.json({ path: path ? path.replace(/\/+$/, "") : null });
+  } catch {
+    return context.json({ path: null });
+  }
+});
+
+app.get("/api/branches", async (context) => {
+  const path = context.req.query("path");
+  if (!path) {
+    return context.json({ branches: [], defaultBranch: "main" });
+  }
+  try {
+    const result = await service.listBranches(path);
+    return context.json(result);
+  } catch {
+    return context.json({ branches: [], defaultBranch: "main" });
+  }
 });
 
 app.post("/api/projects/:id/open-directory", async (context) => {

@@ -10,6 +10,7 @@ import {
   FolderOpen,
   GitPullRequest,
   ListChecks,
+  Moon,
   MoreHorizontal,
   Plus,
   RefreshCw,
@@ -18,6 +19,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Sun,
   Trash2,
   X
 } from "lucide-react";
@@ -88,6 +90,15 @@ export function App() {
   const [workspaceConfigId, setWorkspaceConfigId] = useState("");
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof document !== "undefined") {
+      const current = document.documentElement.getAttribute("data-theme");
+      if (current === "light" || current === "dark") {
+        return current;
+      }
+    }
+    return "dark";
+  });
   const [columnWidths, setColumnWidths] = useState(() => {
     try {
       const saved = window.localStorage.getItem("repohelm:column-widths");
@@ -134,6 +145,15 @@ export function App() {
     window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
   }, [columnWidths]);
 
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      window.localStorage.setItem("repohelm-theme", theme);
+    } catch {
+      // Ignore unavailable storage (private mode, etc.).
+    }
+  }, [theme]);
+
   const workspace = useMemo(
     () => state?.workspaces.find((item) => item.id === selectedWorkspaceId) ?? state?.workspaces[0],
     [selectedWorkspaceId, state?.workspaces]
@@ -143,12 +163,8 @@ export function App() {
     [state?.workspaces, workspace, workspaceConfigId]
   );
   const projects = useMemo(
-    () => state?.projects.filter((project) => project.workspaceId === workspace?.id) ?? [],
-    [state?.projects, workspace?.id]
-  );
-  const configProjects = useMemo(
-    () => state?.projects.filter((project) => project.workspaceId === configWorkspace?.id) ?? [],
-    [configWorkspace?.id, state?.projects]
+    () => state?.projects.filter((project) => workspace?.projectIds.includes(project.id)) ?? [],
+    [state?.projects, workspace?.projectIds]
   );
   const quests = useMemo(
     () => state?.quests.filter((quest) => quest.workspaceId === workspace?.id) ?? [],
@@ -335,20 +351,14 @@ export function App() {
     }
   }
 
-  async function addProject(input: {
-    name: string;
-    path: string;
-    role: string;
-    defaultBranch: string;
-    validationCommand: string;
-  }) {
+  async function linkProject(projectId: string) {
     if (!configWorkspace) {
       return;
     }
     setBusy(true);
     setError("");
     try {
-      await api.createProject({ workspaceId: configWorkspace.id, ...input });
+      await api.linkProject(configWorkspace.id, projectId);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -357,17 +367,14 @@ export function App() {
     }
   }
 
-  async function updateProject(projectId: string, input: {
-    name: string;
-    path: string;
-    role: string;
-    defaultBranch: string;
-    validationCommand: string;
-  }) {
+  async function unlinkProject(projectId: string) {
+    if (!configWorkspace) {
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      await api.updateProject(projectId, input);
+      await api.unlinkProject(configWorkspace.id, projectId);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -437,6 +444,14 @@ export function App() {
             <Bot size={14} />
             {activeBackend?.name ?? "Backend"}
           </span>
+          <button
+            aria-label={theme === "dark" ? "切换到浅色" : "切换到深色"}
+            className="toolbar-icon-button"
+            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+            type="button"
+          >
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
           <button aria-label="打开设置" className="toolbar-icon-button" onClick={() => setAppSettingsOpen(true)} type="button">
             <Settings size={16} />
           </button>
@@ -555,7 +570,6 @@ export function App() {
           busy={busy}
           projects={state.projects}
           securityPolicy={state.securityPolicy}
-          workspaces={state.workspaces}
           onAddProject={async (input) => {
             setBusy(true);
             setError("");
@@ -568,6 +582,7 @@ export function App() {
               setBusy(false);
             }
           }}
+          onCheckProject={checkProject}
           onClose={() => setAppSettingsOpen(false)}
           onOpenProjectDirectory={openProjectDirectory}
           onRemoveProject={removeProject}
@@ -577,14 +592,12 @@ export function App() {
       {workspaceConfigOpen && configWorkspace ? (
         <WorkspaceConfigDialog
           busy={busy}
-          projects={configProjects}
+          projects={state.projects}
           workspace={configWorkspace}
-          onAddProject={addProject}
-          onCheckProject={checkProject}
           onClose={() => setWorkspaceConfigOpen(false)}
-          onRemoveProject={removeProject}
+          onLinkProject={linkProject}
           onSaveWorkspace={saveWorkspaceConfig}
-          onUpdateProject={updateProject}
+          onUnlinkProject={unlinkProject}
         />
       ) : null}
 
@@ -1377,8 +1390,8 @@ function AppSettingsDialog({
   busy,
   projects,
   securityPolicy,
-  workspaces,
   onAddProject,
+  onCheckProject,
   onClose,
   onOpenProjectDirectory,
   onRemoveProject
@@ -1387,15 +1400,14 @@ function AppSettingsDialog({
   busy: boolean;
   projects: Project[];
   securityPolicy: SecurityPolicy;
-  workspaces: Workspace[];
   onAddProject: (input: {
-    workspaceId: string;
     name: string;
     path: string;
     role: string;
     defaultBranch: string;
     validationCommand: string;
   }) => Promise<void>;
+  onCheckProject: (projectId: string) => Promise<void>;
   onClose: () => void;
   onOpenProjectDirectory: (projectId: string) => Promise<void>;
   onRemoveProject: (projectId: string) => Promise<void>;
@@ -1409,38 +1421,32 @@ function AppSettingsDialog({
     model: "gpt-5.1-codex"
   });
   const [newProject, setNewProject] = useState({
-    workspaceId: workspaces[0]?.id ?? "",
     name: "",
     path: "",
     role: "unknown",
     defaultBranch: "main",
     validationCommand: ""
   });
-  const workspaceById = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
-
-  useEffect(() => {
-    setNewProject((current) => (current.workspaceId ? current : { ...current, workspaceId: workspaces[0]?.id ?? "" }));
-  }, [workspaces]);
 
   async function submitProject(event: FormEvent) {
     event.preventDefault();
-    if (!newProject.workspaceId || !newProject.name.trim() || !newProject.path.trim()) {
+    const path = newProject.path.trim();
+    if (!path) {
       return;
     }
     await onAddProject({
       ...newProject,
-      name: newProject.name.trim(),
-      path: newProject.path.trim(),
+      name: newProject.name.trim() || basenameFromPath(path),
+      path,
       defaultBranch: newProject.defaultBranch.trim() || "main"
     });
-    setNewProject((current) => ({
-      ...current,
+    setNewProject({
       name: "",
       path: "",
       role: "unknown",
       defaultBranch: "main",
       validationCommand: ""
-    }));
+    });
   }
 
   const providerOptions = [
@@ -1464,7 +1470,7 @@ function AppSettingsDialog({
         </header>
         <div className="settings-tabs" role="tablist" aria-label="设置分类">
           <button className={tab === "repositories" ? "active" : ""} onClick={() => setTab("repositories")} role="tab" type="button">
-            绑定仓库
+            仓库管理
           </button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")} role="tab" type="button">
             大模型接入
@@ -1474,65 +1480,51 @@ function AppSettingsDialog({
           {tab === "repositories" ? (
             <section className="config-section">
             <div className="settings-section-heading">
-              <h3>绑定仓库</h3>
-              <span>{projects.length} projects</span>
+              <h3>仓库管理</h3>
+              <span>{projects.length} repos</span>
             </div>
+            <p className="muted">仓库是全局的,可在任意 workspace 中关联使用。</p>
             <form className="settings-add-project" onSubmit={submitProject}>
-              <label>
-                <span>Workspace</span>
-                <select
-                  aria-label="绑定到 Workspace"
-                  value={newProject.workspaceId}
-                  onChange={(event) => setNewProject((current) => ({ ...current, workspaceId: event.target.value }))}
-                >
-                  {workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>
-                      {workspace.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
               <ProjectFields
                 draft={newProject}
                 onDraftChange={(draft) => setNewProject((current) => ({ ...current, ...draft }))}
               />
               <button
                 className="secondary-action"
-                disabled={busy || !newProject.workspaceId || !newProject.name.trim() || !newProject.path.trim()}
+                disabled={busy || !newProject.path.trim()}
                 type="submit"
               >
-                新增绑定仓库
+                添加目录
               </button>
             </form>
-            {projects.length === 0 ? <p className="muted">暂无绑定仓库。</p> : null}
+            {projects.length === 0 ? <p className="muted">暂无仓库。</p> : null}
             <div className="settings-project-list">
-              {projects.map((project) => {
-                const workspace = workspaceById.get(project.workspaceId);
-                return (
-                  <article className="settings-project-row" key={project.id}>
-                    <div>
-                      <strong>{project.name}</strong>
-                      <code>{project.path}</code>
-                    </div>
-                    <div className="settings-meta">
-                      <span>{workspace?.name ?? "Unknown Workspace"}</span>
-                      <span>{project.role}</span>
-                      <span>{project.defaultBranch}</span>
-                      <span className={`health-pill ${project.health.status}`}>{project.health.status}</span>
-                    </div>
-                    <div className="settings-row-actions">
-                      <button className="ghost-action" onClick={() => onOpenProjectDirectory(project.id)} type="button">
-                        <FolderOpen size={14} />
-                        <span>打开目录</span>
-                      </button>
-                      <button className="danger-action" disabled={busy} onClick={() => onRemoveProject(project.id)} type="button">
-                        <Trash2 size={14} />
-                        <span>删除</span>
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
+              {projects.map((project) => (
+                <article className="settings-project-row" key={project.id}>
+                  <div>
+                    <strong>{project.name}</strong>
+                    <code>{project.path}</code>
+                  </div>
+                  <div className="settings-meta">
+                    <span>{project.defaultBranch}</span>
+                    <span className={`health-pill ${project.health.status}`}>{project.health.status}</span>
+                  </div>
+                  <div className="settings-row-actions">
+                    <button className="ghost-action" disabled={busy} onClick={() => onCheckProject(project.id)} type="button">
+                      <RefreshCw size={14} />
+                      <span>检查状态</span>
+                    </button>
+                    <button className="ghost-action" onClick={() => onOpenProjectDirectory(project.id)} type="button">
+                      <FolderOpen size={14} />
+                      <span>打开目录</span>
+                    </button>
+                    <button className="danger-action" disabled={busy} onClick={() => onRemoveProject(project.id)} type="button">
+                      <Trash2 size={14} />
+                      <span>删除</span>
+                    </button>
+                  </div>
+                </article>
+              ))}
             </div>
           </section>
           ) : null}
@@ -1651,50 +1643,25 @@ function WorkspaceConfigDialog({
   busy,
   projects,
   workspace,
-  onAddProject,
-  onCheckProject,
   onClose,
-  onRemoveProject,
+  onLinkProject,
   onSaveWorkspace,
-  onUpdateProject
+  onUnlinkProject
 }: {
   busy: boolean;
   projects: Project[];
   workspace: Workspace;
-  onAddProject: (input: {
-    name: string;
-    path: string;
-    role: string;
-    defaultBranch: string;
-    validationCommand: string;
-  }) => Promise<void>;
-  onCheckProject: (projectId: string) => Promise<void>;
   onClose: () => void;
-  onRemoveProject: (projectId: string) => Promise<void>;
+  onLinkProject: (projectId: string) => Promise<void>;
   onSaveWorkspace: (input: { name: string; description: string; worktreeRoot: string }) => Promise<void>;
-  onUpdateProject: (
-    projectId: string,
-    input: {
-      name: string;
-      path: string;
-      role: string;
-      defaultBranch: string;
-      validationCommand: string;
-    }
-  ) => Promise<void>;
+  onUnlinkProject: (projectId: string) => Promise<void>;
 }) {
   const [workspaceDraft, setWorkspaceDraft] = useState({
     name: workspace.name,
     description: workspace.description,
     worktreeRoot: workspace.worktreeRoot
   });
-  const [newProject, setNewProject] = useState({
-    name: "",
-    path: "",
-    role: "unknown",
-    defaultBranch: "main",
-    validationCommand: ""
-  });
+  const [linkTarget, setLinkTarget] = useState("");
 
   useEffect(() => {
     setWorkspaceDraft({
@@ -1704,29 +1671,27 @@ function WorkspaceConfigDialog({
     });
   }, [workspace.description, workspace.name, workspace.worktreeRoot]);
 
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const linkedIds = new Set(workspace.projectIds);
+  const linkableProjects = projects.filter((project) => !linkedIds.has(project.id));
+
+  useEffect(() => {
+    setLinkTarget((current) =>
+      current && linkableProjects.some((project) => project.id === current) ? current : linkableProjects[0]?.id ?? ""
+    );
+  }, [linkableProjects]);
+
   async function submitWorkspace(event: FormEvent) {
     event.preventDefault();
     await onSaveWorkspace(workspaceDraft);
   }
 
-  async function submitNewProject(event: FormEvent) {
+  async function submitLink(event: FormEvent) {
     event.preventDefault();
-    if (!newProject.name.trim() || !newProject.path.trim()) {
+    if (!linkTarget) {
       return;
     }
-    await onAddProject({
-      ...newProject,
-      name: newProject.name.trim(),
-      path: newProject.path.trim(),
-      defaultBranch: newProject.defaultBranch.trim() || "main"
-    });
-    setNewProject({
-      name: "",
-      path: "",
-      role: "unknown",
-      defaultBranch: "main",
-      validationCommand: ""
-    });
+    await onLinkProject(linkTarget);
   }
 
   return (
@@ -1777,176 +1742,178 @@ function WorkspaceConfigDialog({
           </form>
 
           <section className="config-section">
-            <h3>关联项目</h3>
-            {projects.length === 0 ? <p className="muted">暂无关联项目。</p> : null}
-            {projects.map((project) => (
-              <ProjectConfigForm
-                busy={busy}
-                key={project.id}
-                project={project}
-                onCheckProject={onCheckProject}
-                onRemoveProject={onRemoveProject}
-                onUpdateProject={onUpdateProject}
-              />
-            ))}
-          </section>
+            <div className="settings-section-heading">
+              <h3>关联仓库</h3>
+              <span>{workspace.worktrees.length} worktrees</span>
+            </div>
+            <form className="settings-add-project" onSubmit={submitLink}>
+              <label>
+                <span>从仓库管理选择</span>
+                <select
+                  aria-label="选择要关联的仓库"
+                  disabled={linkableProjects.length === 0}
+                  value={linkTarget}
+                  onChange={(event) => setLinkTarget(event.target.value)}
+                >
+                  {linkableProjects.length === 0 ? (
+                    <option value="">没有可关联的仓库</option>
+                  ) : (
+                    linkableProjects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name} · {project.defaultBranch}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <button className="secondary-action" disabled={busy || !linkTarget} type="submit">
+                关联并 checkout worktree
+              </button>
+            </form>
 
-          <form className="config-section add-project-form" onSubmit={submitNewProject}>
-            <h3>新增项目</h3>
-            <ProjectFields draft={newProject} onDraftChange={setNewProject} />
-            <button className="secondary-action" disabled={busy || !newProject.name.trim() || !newProject.path.trim()} type="submit">
-              添加项目
-            </button>
-          </form>
+            {workspace.worktrees.length === 0 ? <p className="muted">暂无关联仓库。</p> : null}
+            <div className="settings-project-list">
+              {workspace.worktrees.map((worktree) => {
+                const project = projectById.get(worktree.projectId);
+                return (
+                  <article className="settings-project-row" key={worktree.projectId}>
+                    <div>
+                      <strong>{project?.name ?? worktree.projectId}</strong>
+                      <code>{worktree.worktreePath}</code>
+                    </div>
+                    <div className="settings-meta">
+                      <span>{worktree.branchName}</span>
+                      <span>base: {worktree.baseBranch}</span>
+                      <span className={`health-pill ${worktree.status === "created" ? "ok" : "invalid"}`}>
+                        {worktree.status}
+                      </span>
+                    </div>
+                    <div className="settings-row-actions">
+                      <button
+                        className="danger-action"
+                        disabled={busy}
+                        onClick={() => onUnlinkProject(worktree.projectId)}
+                        type="button"
+                      >
+                        <Trash2 size={14} />
+                        <span>删除</span>
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
         </div>
       </section>
     </div>
   );
 }
 
-function ProjectConfigForm({
-  busy,
-  project,
-  onCheckProject,
-  onRemoveProject,
-  onUpdateProject
-}: {
-  busy: boolean;
-  project: Project;
-  onCheckProject: (projectId: string) => Promise<void>;
-  onRemoveProject: (projectId: string) => Promise<void>;
-  onUpdateProject: (
-    projectId: string,
-    input: {
-      name: string;
-      path: string;
-      role: string;
-      defaultBranch: string;
-      validationCommand: string;
-    }
-  ) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState({
-    name: project.name,
-    path: project.path,
-    role: project.role,
-    defaultBranch: project.defaultBranch,
-    validationCommand: project.validationCommand
-  });
+function basenameFromPath(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ?? "";
+}
 
-  useEffect(() => {
-    setDraft({
-      name: project.name,
-      path: project.path,
-      role: project.role,
-      defaultBranch: project.defaultBranch,
-      validationCommand: project.validationCommand
-    });
-  }, [project.defaultBranch, project.name, project.path, project.role, project.validationCommand]);
-
-  async function submitProject(event: FormEvent) {
-    event.preventDefault();
-    await onUpdateProject(project.id, {
-      ...draft,
-      name: draft.name.trim(),
-      path: draft.path.trim(),
-      defaultBranch: draft.defaultBranch.trim() || "main"
-    });
-  }
-
-  return (
-    <form className="project-config-card" onSubmit={submitProject}>
-      <div className="project-config-heading">
-        <div>
-          <strong>{project.name}</strong>
-          <span className={`health-pill ${project.health.status}`}>{project.health.status}</span>
-        </div>
-        <p>{project.health.message}</p>
-      </div>
-      <ProjectFields draft={draft} onDraftChange={setDraft} />
-      <div className="project-config-actions">
-        <button className="secondary-action" disabled={busy || !draft.name.trim() || !draft.path.trim()} type="submit">
-          保存项目
-        </button>
-        <button className="ghost-action" disabled={busy} onClick={() => onCheckProject(project.id)} type="button">
-          检查状态
-        </button>
-        <button className="danger-action" disabled={busy} onClick={() => onRemoveProject(project.id)} type="button">
-          移除
-        </button>
-      </div>
-    </form>
-  );
+interface ProjectDraft {
+  name: string;
+  path: string;
+  role: string;
+  defaultBranch: string;
+  validationCommand: string;
 }
 
 function ProjectFields({
   draft,
   onDraftChange
 }: {
-  draft: {
-    name: string;
-    path: string;
-    role: string;
-    defaultBranch: string;
-    validationCommand: string;
-  };
-  onDraftChange: (draft: {
-    name: string;
-    path: string;
-    role: string;
-    defaultBranch: string;
-    validationCommand: string;
-  }) => void;
+  draft: ProjectDraft;
+  onDraftChange: (draft: ProjectDraft) => void;
 }) {
+  const [branches, setBranches] = useState<string[]>([]);
+  const [picking, setPicking] = useState(false);
+
+  useEffect(() => {
+    const path = draft.path.trim();
+    if (!path) {
+      setBranches([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listBranches(path)
+      .then((result) => {
+        if (!cancelled) {
+          setBranches(result.branches);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBranches([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.path]);
+
+  async function choosePath() {
+    setPicking(true);
+    try {
+      const result = await api.pickDirectory();
+      if (!result.path) {
+        return;
+      }
+      const path = result.path;
+      const branchInfo = await api
+        .listBranches(path)
+        .catch(() => ({ branches: [] as string[], defaultBranch: "main" }));
+      setBranches(branchInfo.branches);
+      onDraftChange({
+        ...draft,
+        path,
+        name: draft.name.trim() || basenameFromPath(path),
+        defaultBranch: branchInfo.defaultBranch || "main"
+      });
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  const branchOptions = Array.from(
+    new Set(["main", "master", draft.defaultBranch, ...branches].map((branch) => branch.trim()).filter(Boolean))
+  );
+
   return (
     <div className="project-fields">
-      <label>
-        <span>名称</span>
-        <input
-          aria-label="项目名称"
-          value={draft.name}
-          onChange={(event) => onDraftChange({ ...draft, name: event.target.value })}
-        />
-      </label>
-      <label>
+      <label className="full-field">
         <span>路径</span>
-        <input
-          aria-label="项目路径"
-          value={draft.path}
-          onChange={(event) => onDraftChange({ ...draft, path: event.target.value })}
-        />
+        <span className="path-field">
+          <input
+            aria-label="项目路径"
+            placeholder="点击选择仓库目录，或粘贴绝对路径"
+            value={draft.path}
+            onChange={(event) => onDraftChange({ ...draft, path: event.target.value })}
+          />
+          <button className="ghost-action" disabled={picking} onClick={choosePath} type="button">
+            <FolderOpen size={14} />
+            <span>{picking ? "选择中…" : "选择路径"}</span>
+          </button>
+        </span>
       </label>
-      <label>
-        <span>角色</span>
-        <select
-          aria-label="项目角色"
-          value={draft.role}
-          onChange={(event) => onDraftChange({ ...draft, role: event.target.value })}
-        >
-          <option value="unknown">unknown</option>
-          <option value="frontend">frontend</option>
-          <option value="backend">backend</option>
-          <option value="documentation">documentation</option>
-          <option value="library">library</option>
-          <option value="infra">infra</option>
-        </select>
-      </label>
-      <label>
+      <label className="full-field">
         <span>默认分支</span>
-        <input
+        <select
           aria-label="默认分支"
           value={draft.defaultBranch}
           onChange={(event) => onDraftChange({ ...draft, defaultBranch: event.target.value })}
-        />
-      </label>
-      <label className="full-field">
-        <span>验证命令</span>
-        <input
-          aria-label="验证命令"
-          placeholder="pnpm test"
-          value={draft.validationCommand}
-          onChange={(event) => onDraftChange({ ...draft, validationCommand: event.target.value })}
-        />
+        >
+          {branchOptions.map((branch) => (
+            <option key={branch} value={branch}>
+              {branch}
+            </option>
+          ))}
+        </select>
+        <span className="field-hint">默认分支会作为 worktree 和知识库的 base。</span>
       </label>
     </div>
   );

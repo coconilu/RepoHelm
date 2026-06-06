@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { KnowledgeItem, Project, Workspace } from "./types.js";
+import type { KnowledgeItem, Project } from "./types.js";
 
 const slugify = (value: string) =>
   value
@@ -20,21 +20,19 @@ export class KnowledgeFileStore {
     return filePath;
   }
 
-  async writeProjectSummary(workspace: Workspace, project: Project, timestamp: string): Promise<KnowledgeItem> {
+  async writeProjectSummary(project: Project, timestamp: string): Promise<KnowledgeItem> {
     const item: KnowledgeItem = {
       id: `knowledge_project_${project.id}`,
-      workspaceId: workspace.id,
+      workspaceId: "",
       projectId: project.id,
       type: "repo-wiki",
-      title: `Project Summary: ${project.name}`,
+      title: `Repo Summary: ${project.name}`,
       body: [
-        `Project ${project.name} is linked to workspace ${workspace.name}.`,
+        `Repo ${project.name} is registered in the global repository registry.`,
         `Path: ${project.path}`,
-        `Role: ${project.role}`,
-        `Default branch: ${project.defaultBranch}`,
-        project.validationCommand ? `Validation command: ${project.validationCommand}` : "Validation command: not configured"
+        `Default branch: ${project.defaultBranch}`
       ].join("\n"),
-      tags: ["project", "summary", project.role],
+      tags: ["repo", "summary"],
       createdAt: timestamp,
       updatedAt: timestamp
     };

@@ -22,11 +22,24 @@ export interface AgentBackendInfo {
   detail: string;
 }
 
+export interface WorkspaceWorktree {
+  projectId: string;
+  baseBranch: string;
+  branchName: string;
+  worktreePath: string;
+  repoRoot?: string;
+  status: "created" | "failed";
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
   description: string;
   projectIds: string[];
+  worktrees: WorkspaceWorktree[];
   worktreeRoot: string;
   createdAt: string;
   updatedAt: string;
@@ -40,7 +53,6 @@ export interface ProjectHealth {
 
 export interface Project {
   id: string;
-  workspaceId: string;
   name: string;
   path: string;
   role: string;
@@ -283,7 +295,6 @@ export const api = {
       body: JSON.stringify(input)
     }),
   createProject: (input: {
-    workspaceId: string;
     name: string;
     path: string;
     role: string;
@@ -293,6 +304,15 @@ export const api = {
     request<Project>("/api/projects", {
       method: "POST",
       body: JSON.stringify(input)
+    }),
+  linkProject: (workspaceId: string, projectId: string) =>
+    request<Workspace>(`/api/workspaces/${workspaceId}/links`, {
+      method: "POST",
+      body: JSON.stringify({ projectId })
+    }),
+  unlinkProject: (workspaceId: string, projectId: string) =>
+    request<Workspace>(`/api/workspaces/${workspaceId}/links/${projectId}`, {
+      method: "DELETE"
     }),
   updateProject: (
     projectId: string,
@@ -310,6 +330,12 @@ export const api = {
     request<{ ok: boolean }>(`/api/projects/${projectId}/open-directory`, {
       method: "POST"
     }),
+  pickDirectory: () =>
+    request<{ path: string | null; error?: string }>("/api/pick-directory", {
+      method: "POST"
+    }),
+  listBranches: (path: string) =>
+    request<{ branches: string[]; defaultBranch: string }>(`/api/branches?path=${encodeURIComponent(path)}`),
   checkProject: (projectId: string) =>
     request<Project>(`/api/projects/${projectId}/check`, {
       method: "POST"

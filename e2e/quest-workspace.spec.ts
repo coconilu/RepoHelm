@@ -9,8 +9,9 @@ const codexQuestTitle = `E2E Codex Backend Quest ${Date.now()}`;
 const questSlug = questTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)+/g, "");
 const repoRoot = process.cwd();
 const e2eWorktreeRoot = join(repoRoot, ".repohelm", "e2e", "configured-worktrees");
-const tempProjectName = `Temporary E2E Project ${Date.now()}`;
-const settingsProjectName = `Settings Bound Project ${Date.now()}`;
+const docsPath = join(repoRoot, "docs");
+// Repos are now added by directory; the name is auto-derived from the basename.
+const boundRepoName = "docs";
 
 test.afterAll(async () => {
   const response = await fetch("http://127.0.0.1:4300/api/state");
@@ -41,19 +42,17 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.getByRole("button", { name: "打开设置" }).click();
   const settingsDialog = page.getByRole("dialog", { name: "设置" });
   await expect(settingsDialog).toBeVisible();
-  await expect(settingsDialog.getByRole("tab", { name: "绑定仓库" })).toBeVisible();
+  await expect(settingsDialog.getByRole("tab", { name: "仓库管理" })).toBeVisible();
   await expect(settingsDialog.getByRole("tab", { name: "大模型接入" })).toBeVisible();
-  await expect(settingsDialog.getByRole("heading", { name: "绑定仓库" })).toBeVisible();
+  await expect(settingsDialog.getByRole("heading", { name: "仓库管理" })).toBeVisible();
   await expect(settingsDialog.getByText("RepoHelm").first()).toBeVisible();
-  await settingsDialog.getByRole("textbox", { name: "项目名称" }).fill(settingsProjectName);
-  await settingsDialog.getByRole("textbox", { name: "项目路径" }).fill(join(repoRoot, "docs"));
-  await settingsDialog.getByRole("combobox", { name: "项目角色" }).selectOption("documentation");
-  await settingsDialog.getByRole("button", { name: "新增绑定仓库" }).click();
-  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: settingsProjectName });
+  // Repos are global now: register the docs directory once, then link it from the workspace below.
+  await settingsDialog.getByRole("textbox", { name: "项目路径" }).fill(docsPath);
+  await settingsDialog.getByRole("button", { name: "添加目录" }).click();
+  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: docsPath });
   await expect(settingsProjectRow).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "打开目录" })).toBeVisible();
-  await settingsProjectRow.getByRole("button", { name: "删除" }).click();
-  await expect(settingsProjectRow).toBeHidden();
+  await expect(settingsProjectRow.getByRole("button", { name: "检查状态" })).toBeVisible();
   await settingsDialog.getByRole("tab", { name: "大模型接入" }).click();
   await expect(settingsDialog.getByRole("button", { name: "OpenAI" })).toBeVisible();
   await expect(settingsDialog.getByRole("textbox", { name: "API Key" })).toBeVisible();
@@ -80,29 +79,20 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.getByRole("button", { name: "配置 RepoHelm Demo Workspace" }).click();
   const configDialog = page.getByRole("dialog", { name: "RepoHelm Demo Workspace" });
   await expect(configDialog).toBeVisible();
-  await expect(configDialog.getByText("关联项目")).toBeVisible();
+  await expect(configDialog.getByRole("heading", { name: "关联仓库" })).toBeVisible();
   await configDialog.getByRole("textbox", { name: "Workspace 描述" }).fill("E2E configured workspace");
   await configDialog.getByRole("textbox", { name: "Worktree Root" }).fill(e2eWorktreeRoot);
   await configDialog.getByRole("button", { name: "保存 Workspace" }).click();
   await expect(configDialog.getByRole("textbox", { name: "Worktree Root" })).toHaveValue(e2eWorktreeRoot);
 
-  await configDialog.getByRole("button", { name: "检查状态" }).first().click();
-  await expect(configDialog.locator(".health-pill.ok").first()).toBeVisible();
-  await expect(configDialog.getByRole("button", { name: "检查状态" }).first()).toBeEnabled();
-  await configDialog.getByRole("textbox", { name: "验证命令" }).first().fill("node --version");
-  await configDialog.getByRole("button", { name: "保存项目" }).first().click();
-  await expect(configDialog.getByRole("button", { name: "保存项目" }).first()).toBeEnabled();
-
-  const addProjectForm = configDialog.locator(".add-project-form");
-  await addProjectForm.getByRole("textbox", { name: "项目名称" }).fill(tempProjectName);
-  await addProjectForm.getByRole("textbox", { name: "项目路径" }).fill(join(repoRoot, "docs"));
-  await addProjectForm.getByRole("combobox", { name: "项目角色" }).selectOption("documentation");
-  await addProjectForm.getByRole("textbox", { name: "验证命令" }).fill("pnpm test");
-  await addProjectForm.getByRole("button", { name: "添加项目" }).click();
-  const tempProjectCard = configDialog.locator(".project-config-card").filter({ hasText: tempProjectName });
-  await expect(tempProjectCard).toBeVisible();
-  await tempProjectCard.getByRole("button", { name: "移除" }).click();
-  await expect(tempProjectCard).toBeHidden();
+  // Link the global docs repo into the workspace; this checks out a real worktree.
+  await expect(configDialog.getByRole("combobox", { name: "选择要关联的仓库" })).toBeEnabled();
+  await configDialog.getByRole("button", { name: "关联并 checkout worktree" }).click();
+  const linkedRepoRow = configDialog.locator(".settings-project-row").filter({ hasText: boundRepoName });
+  await expect(linkedRepoRow).toBeVisible();
+  await expect(linkedRepoRow.locator(".health-pill.ok")).toBeVisible();
+  await linkedRepoRow.getByRole("button", { name: "删除" }).click();
+  await expect(linkedRepoRow).toBeHidden();
   await page.getByRole("button", { name: "关闭 workspace 配置" }).click();
 
   await page
