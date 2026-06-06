@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Circle,
   FileText,
+  FolderOpen,
   GitPullRequest,
   ListChecks,
   MoreHorizontal,
@@ -14,8 +15,10 @@ import {
   RefreshCw,
   Route,
   Send,
+  Settings,
   ShieldCheck,
   Sparkles,
+  Trash2,
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -59,6 +62,7 @@ const statusClass: Record<string, string> = {
 
 type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
 type ResizeDivider = "sidebar" | "inspector";
+type SettingsTab = "repositories" | "models";
 
 const defaultColumnWidths = {
   sidebar: 280,
@@ -82,6 +86,7 @@ export function App() {
   const [workspaceCreateOpen, setWorkspaceCreateOpen] = useState(false);
   const [workspaceConfigOpen, setWorkspaceConfigOpen] = useState(false);
   const [workspaceConfigId, setWorkspaceConfigId] = useState("");
+  const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [columnWidths, setColumnWidths] = useState(() => {
     try {
@@ -384,6 +389,15 @@ export function App() {
     }
   }
 
+  async function openProjectDirectory(projectId: string) {
+    setError("");
+    try {
+      await api.openProjectDirectory(projectId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function checkProject(projectId: string) {
     setBusy(true);
     setError("");
@@ -423,6 +437,9 @@ export function App() {
             <Bot size={14} />
             {activeBackend?.name ?? "Backend"}
           </span>
+          <button aria-label="打开设置" className="toolbar-icon-button" onClick={() => setAppSettingsOpen(true)} type="button">
+            <Settings size={16} />
+          </button>
         </div>
       </header>
 
@@ -529,6 +546,31 @@ export function App() {
           busy={busy}
           onClose={() => setWorkspaceCreateOpen(false)}
           onCreateWorkspace={createWorkspace}
+        />
+      ) : null}
+
+      {appSettingsOpen ? (
+        <AppSettingsDialog
+          agentBackends={agentBackends}
+          busy={busy}
+          projects={state.projects}
+          securityPolicy={state.securityPolicy}
+          workspaces={state.workspaces}
+          onAddProject={async (input) => {
+            setBusy(true);
+            setError("");
+            try {
+              await api.createProject(input);
+              await load();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onClose={() => setAppSettingsOpen(false)}
+          onOpenProjectDirectory={openProjectDirectory}
+          onRemoveProject={removeProject}
         />
       ) : null}
 
@@ -1325,6 +1367,281 @@ function WorkspaceCreateDialog({
             创建 Workspace
           </button>
         </form>
+      </section>
+    </div>
+  );
+}
+
+function AppSettingsDialog({
+  agentBackends,
+  busy,
+  projects,
+  securityPolicy,
+  workspaces,
+  onAddProject,
+  onClose,
+  onOpenProjectDirectory,
+  onRemoveProject
+}: {
+  agentBackends: AgentBackendInfo[];
+  busy: boolean;
+  projects: Project[];
+  securityPolicy: SecurityPolicy;
+  workspaces: Workspace[];
+  onAddProject: (input: {
+    workspaceId: string;
+    name: string;
+    path: string;
+    role: string;
+    defaultBranch: string;
+    validationCommand: string;
+  }) => Promise<void>;
+  onClose: () => void;
+  onOpenProjectDirectory: (projectId: string) => Promise<void>;
+  onRemoveProject: (projectId: string) => Promise<void>;
+}) {
+  const [tab, setTab] = useState<SettingsTab>("repositories");
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [modelConfig, setModelConfig] = useState({
+    provider: "OpenAI-compatible",
+    apiKey: "",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-5.1-codex"
+  });
+  const [newProject, setNewProject] = useState({
+    workspaceId: workspaces[0]?.id ?? "",
+    name: "",
+    path: "",
+    role: "unknown",
+    defaultBranch: "main",
+    validationCommand: ""
+  });
+  const workspaceById = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+
+  useEffect(() => {
+    setNewProject((current) => (current.workspaceId ? current : { ...current, workspaceId: workspaces[0]?.id ?? "" }));
+  }, [workspaces]);
+
+  async function submitProject(event: FormEvent) {
+    event.preventDefault();
+    if (!newProject.workspaceId || !newProject.name.trim() || !newProject.path.trim()) {
+      return;
+    }
+    await onAddProject({
+      ...newProject,
+      name: newProject.name.trim(),
+      path: newProject.path.trim(),
+      defaultBranch: newProject.defaultBranch.trim() || "main"
+    });
+    setNewProject((current) => ({
+      ...current,
+      name: "",
+      path: "",
+      role: "unknown",
+      defaultBranch: "main",
+      validationCommand: ""
+    }));
+  }
+
+  const providerOptions = [
+    { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-5.1-codex" },
+    { label: "Anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" },
+    { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-5.1" },
+    { label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "gpt-oss:20b" }
+  ];
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="app-settings-title" className="modal-panel settings-modal" role="dialog">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">RepoHelm Settings</p>
+            <h2 id="app-settings-title">设置</h2>
+          </div>
+          <button aria-label="关闭设置" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <div className="settings-tabs" role="tablist" aria-label="设置分类">
+          <button className={tab === "repositories" ? "active" : ""} onClick={() => setTab("repositories")} role="tab" type="button">
+            绑定仓库
+          </button>
+          <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")} role="tab" type="button">
+            大模型接入
+          </button>
+        </div>
+        <div className="modal-body settings-body">
+          {tab === "repositories" ? (
+            <section className="config-section">
+            <div className="settings-section-heading">
+              <h3>绑定仓库</h3>
+              <span>{projects.length} projects</span>
+            </div>
+            <form className="settings-add-project" onSubmit={submitProject}>
+              <label>
+                <span>Workspace</span>
+                <select
+                  aria-label="绑定到 Workspace"
+                  value={newProject.workspaceId}
+                  onChange={(event) => setNewProject((current) => ({ ...current, workspaceId: event.target.value }))}
+                >
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <ProjectFields
+                draft={newProject}
+                onDraftChange={(draft) => setNewProject((current) => ({ ...current, ...draft }))}
+              />
+              <button
+                className="secondary-action"
+                disabled={busy || !newProject.workspaceId || !newProject.name.trim() || !newProject.path.trim()}
+                type="submit"
+              >
+                新增绑定仓库
+              </button>
+            </form>
+            {projects.length === 0 ? <p className="muted">暂无绑定仓库。</p> : null}
+            <div className="settings-project-list">
+              {projects.map((project) => {
+                const workspace = workspaceById.get(project.workspaceId);
+                return (
+                  <article className="settings-project-row" key={project.id}>
+                    <div>
+                      <strong>{project.name}</strong>
+                      <code>{project.path}</code>
+                    </div>
+                    <div className="settings-meta">
+                      <span>{workspace?.name ?? "Unknown Workspace"}</span>
+                      <span>{project.role}</span>
+                      <span>{project.defaultBranch}</span>
+                      <span className={`health-pill ${project.health.status}`}>{project.health.status}</span>
+                    </div>
+                    <div className="settings-row-actions">
+                      <button className="ghost-action" onClick={() => onOpenProjectDirectory(project.id)} type="button">
+                        <FolderOpen size={14} />
+                        <span>打开目录</span>
+                      </button>
+                      <button className="danger-action" disabled={busy} onClick={() => onRemoveProject(project.id)} type="button">
+                        <Trash2 size={14} />
+                        <span>删除</span>
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+          ) : null}
+
+          {tab === "models" ? (
+            <>
+              <section className="config-section">
+            <div className="settings-section-heading">
+              <h3>本地 Agent CLI</h3>
+              <span>{agentBackends.filter((backend) => backend.available).length} available</span>
+            </div>
+            <div className="settings-chip-list">
+              {agentBackends.map((backend) => (
+                <span className={backend.available ? "settings-chip available" : "settings-chip"} key={backend.id}>
+                  {backend.name}
+                </span>
+              ))}
+            </div>
+          </section>
+
+              <section className="config-section model-config-panel">
+            <div className="settings-section-heading">
+              <h3>API Provider</h3>
+              <span>BYOK</span>
+            </div>
+            <div className="provider-quick-fill" role="tablist" aria-label="Provider 快速填充">
+              {providerOptions.map((provider) => (
+                <button
+                  className={modelConfig.baseUrl === provider.baseUrl ? "active" : ""}
+                  key={provider.label}
+                  onClick={() =>
+                    setModelConfig((current) => ({
+                      ...current,
+                      provider: provider.label,
+                      baseUrl: provider.baseUrl,
+                      model: provider.model
+                    }))
+                  }
+                  type="button"
+                >
+                  {provider.label}
+                </button>
+              ))}
+            </div>
+            <div className="model-config-grid">
+              <label>
+                <span>API Key</span>
+                <span className="secret-field">
+                  <input
+                    aria-label="API Key"
+                    placeholder="sk-..."
+                    type={apiKeyVisible ? "text" : "password"}
+                    value={modelConfig.apiKey}
+                    onChange={(event) => setModelConfig((current) => ({ ...current, apiKey: event.target.value }))}
+                  />
+                  <button onClick={() => setApiKeyVisible((current) => !current)} type="button">
+                    {apiKeyVisible ? "隐藏" : "显示"}
+                  </button>
+                </span>
+              </label>
+              <label>
+                <span>Base URL</span>
+                <input
+                  aria-label="Base URL"
+                  value={modelConfig.baseUrl}
+                  onChange={(event) => setModelConfig((current) => ({ ...current, baseUrl: event.target.value }))}
+                />
+              </label>
+              <label>
+                <span>Model</span>
+                <input
+                  aria-label="模型"
+                  value={modelConfig.model}
+                  onChange={(event) => setModelConfig((current) => ({ ...current, model: event.target.value }))}
+                />
+              </label>
+            </div>
+            <p className="muted">
+              当前为接入表单骨架。后续会接入 provider model list、连接测试和安全保存密钥。
+            </p>
+          </section>
+
+              <section className="config-section">
+                <div className="settings-section-heading">
+                  <h3>安全策略</h3>
+                  <span>{securityPolicy.commandApprovalMode}</span>
+                </div>
+                <div className="settings-policy-grid">
+                  <div>
+                    <span>Commands</span>
+                    <strong>{securityPolicy.allowedCommands.join(", ") || "manual approval"}</strong>
+                  </div>
+                  <div>
+                    <span>Files</span>
+                    <strong>{securityPolicy.fileScopes.join(", ")}</strong>
+                  </div>
+                  <div>
+                    <span>Sandbox</span>
+                    <strong>{securityPolicy.sandboxRuntime}</strong>
+                  </div>
+                  <div>
+                    <span>Secrets</span>
+                    <strong>{securityPolicy.secretsPolicy}</strong>
+                  </div>
+                </div>
+              </section>
+            </>
+          ) : null}
+        </div>
       </section>
     </div>
   );

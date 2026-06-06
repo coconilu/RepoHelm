@@ -306,6 +306,10 @@ export const api = {
     request<RepoHelmState>(`/api/projects/${projectId}`, {
       method: "DELETE"
     }),
+  openProjectDirectory: (projectId: string) =>
+    request<{ ok: boolean }>(`/api/projects/${projectId}/open-directory`, {
+      method: "POST"
+    }),
   checkProject: (projectId: string) =>
     request<Project>(`/api/projects/${projectId}/check`, {
       method: "POST"

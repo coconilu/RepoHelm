@@ -146,6 +146,7 @@ button {
 .toolbar-select,
 .backend-pill,
 .toolbar-action,
+.toolbar-icon-button,
 .request-delivery-action {
   background: #fff;
   border: 1px solid var(--border);
@@ -164,6 +165,17 @@ button {
   border: 0;
   color: inherit;
   outline: 0;
+}
+
+.toolbar-icon-button {
+  justify-content: center;
+  padding: 0;
+  width: 34px;
+}
+
+.toolbar-icon-button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .backend-pill {
@@ -1381,6 +1393,35 @@ code {
   max-width: 760px;
 }
 
+.settings-modal {
+  max-width: 820px;
+  width: min(820px, 100%);
+}
+
+.settings-tabs {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 4px;
+  padding: 10px 14px 0;
+}
+
+.settings-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 8px 8px 0 0;
+  color: #626b72;
+  font-size: 13px;
+  font-weight: 850;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.settings-tabs button.active {
+  background: #fff;
+  box-shadow: inset 0 -2px 0 var(--accent);
+  color: #202124;
+}
+
 .modal-header {
   align-items: flex-start;
   border-bottom: 1px solid #eeeeeb;
@@ -1413,6 +1454,190 @@ code {
 .config-section h3 {
   font-size: 14px;
   margin: 0;
+}
+
+.settings-body {
+  gap: 18px;
+}
+
+.settings-section-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.settings-section-heading span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-add-project {
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.settings-project-list,
+.settings-chip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-project-row {
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 11px;
+}
+
+.settings-project-row strong,
+.settings-project-row code {
+  display: block;
+  min-width: 0;
+}
+
+.settings-project-row code {
+  color: #5d656b;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-meta,
+.settings-chip-list {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.settings-chip-list {
+  flex-direction: row;
+  justify-content: flex-start;
+}
+
+.settings-meta span,
+.settings-chip {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: #5e666c;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 7px;
+}
+
+.settings-row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.settings-row-actions button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.settings-chip.available {
+  background: var(--accent-soft);
+  border-color: #b7d8cf;
+  color: var(--accent);
+}
+
+.settings-policy-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-policy-grid div {
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px;
+}
+
+.settings-policy-grid span {
+  color: var(--text-muted);
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  margin-bottom: 5px;
+}
+
+.settings-policy-grid strong {
+  color: #2f363b;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.model-config-panel {
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px;
+}
+
+.provider-quick-fill {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.provider-quick-fill button {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: #5e666c;
+  font-size: 12px;
+  font-weight: 850;
+  min-height: 30px;
+  padding: 5px 10px;
+}
+
+.provider-quick-fill button.active {
+  background: var(--accent-soft);
+  border-color: #b7d8cf;
+  color: var(--accent);
+}
+
+.model-config-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.model-config-grid label:first-child {
+  grid-column: 1 / -1;
+}
+
+.secret-field {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.secret-field button {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: #4f575d;
+  font-weight: 850;
+  padding: 0 10px;
 }
 
 .config-grid,

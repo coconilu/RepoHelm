@@ -3,6 +3,7 @@ import { RepoHelmService, SqliteStateStore } from "@repohelm/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { spawn } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -169,6 +170,17 @@ app.delete("/api/projects/:id", async (context) => {
 app.post("/api/projects/:id/check", async (context) => {
   const project = await service.checkProjectHealth(context.req.param("id"));
   return context.json(project);
+});
+
+app.post("/api/projects/:id/open-directory", async (context) => {
+  const state = await service.getState();
+  const project = state.projects.find((item) => item.id === context.req.param("id"));
+  if (!project) {
+    return context.json({ error: "Project not found" }, 404);
+  }
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  spawn(opener, [project.path], { detached: true, stdio: "ignore" }).unref();
+  return context.json({ ok: true });
 });
 
 app.post("/api/quests", async (context) => {

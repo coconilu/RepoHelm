@@ -10,6 +10,7 @@ const questSlug = questTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/
 const repoRoot = process.cwd();
 const e2eWorktreeRoot = join(repoRoot, ".repohelm", "e2e", "configured-worktrees");
 const tempProjectName = `Temporary E2E Project ${Date.now()}`;
+const settingsProjectName = `Settings Bound Project ${Date.now()}`;
 
 test.afterAll(async () => {
   const response = await fetch("http://127.0.0.1:4300/api/state");
@@ -37,6 +38,29 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.getByRole("button", { name: "重试" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "清理" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "运行 Request" })).toHaveCount(0);
+  await page.getByRole("button", { name: "打开设置" }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "设置" });
+  await expect(settingsDialog).toBeVisible();
+  await expect(settingsDialog.getByRole("tab", { name: "绑定仓库" })).toBeVisible();
+  await expect(settingsDialog.getByRole("tab", { name: "大模型接入" })).toBeVisible();
+  await expect(settingsDialog.getByRole("heading", { name: "绑定仓库" })).toBeVisible();
+  await expect(settingsDialog.getByText("RepoHelm").first()).toBeVisible();
+  await settingsDialog.getByRole("textbox", { name: "项目名称" }).fill(settingsProjectName);
+  await settingsDialog.getByRole("textbox", { name: "项目路径" }).fill(join(repoRoot, "docs"));
+  await settingsDialog.getByRole("combobox", { name: "项目角色" }).selectOption("documentation");
+  await settingsDialog.getByRole("button", { name: "新增绑定仓库" }).click();
+  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: settingsProjectName });
+  await expect(settingsProjectRow).toBeVisible();
+  await expect(settingsProjectRow.getByRole("button", { name: "打开目录" })).toBeVisible();
+  await settingsProjectRow.getByRole("button", { name: "删除" }).click();
+  await expect(settingsProjectRow).toBeHidden();
+  await settingsDialog.getByRole("tab", { name: "大模型接入" }).click();
+  await expect(settingsDialog.getByRole("button", { name: "OpenAI" })).toBeVisible();
+  await expect(settingsDialog.getByRole("textbox", { name: "API Key" })).toBeVisible();
+  await expect(settingsDialog.getByRole("textbox", { name: "Base URL" })).toBeVisible();
+  await expect(settingsDialog.getByRole("textbox", { name: "模型" })).toBeVisible();
+  await page.getByRole("button", { name: "关闭设置" }).click();
+
   await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
   await expect(page.locator(".request-list")).toBeHidden();
   await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
