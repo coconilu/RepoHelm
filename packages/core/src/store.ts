@@ -21,7 +21,9 @@ const emptyState = (): RepoHelmState => ({
   },
   auditLog: [],
   engine: defaultEngineConfig(),
-  modelCache: {}
+  modelCache: {},
+  subAgents: {}, // SubAgent 集合,默认为空
+  entrySubAgentId: undefined // 入口 SubAgent ID,默认为未设置
 });
 
 export const defaultEngineConfig = () => ({
@@ -30,6 +32,7 @@ export const defaultEngineConfig = () => ({
   cliModels: {} as Record<string, string>,
   byokProviders: {} as Record<string, { provider: string; baseUrl: string; model: string; apiKey: string }>,
   activeByokProviderId: "openai",
+  modelKits: {} as Record<string, any>, // ModelKit 集合，默认为空
   updatedAt: new Date().toISOString()
 });
 
@@ -79,7 +82,8 @@ function migrateEngine(engine: any): EngineConfig {
   return {
     ...engine,
     byokProviders: engine.byokProviders ?? {},
-    activeByokProviderId: engine.activeByokProviderId ?? "openai"
+    activeByokProviderId: engine.activeByokProviderId ?? "openai",
+    modelKits: engine.modelKits ?? {} // 确保 modelKits 字段存在
   };
 }
 

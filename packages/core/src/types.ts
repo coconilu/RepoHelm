@@ -259,12 +259,71 @@ export interface ByokConfig {
   apiKey: string;
 }
 
+/**
+ * ModelKit 元数据信息，记录模型的性能和成本特征
+ */
+export interface ModelKitMetadata {
+  createdAt: string; // 创建时间
+  testedAt: string; // 最后测试时间
+  lastUsedAt?: string; // 最后使用时间（可选）
+  costTier: "free" | "low" | "medium" | "high"; // 成本等级
+  performanceProfile: "fast" | "balanced" | "accurate"; // 性能配置：快速、平衡或准确
+}
+
+/**
+ * ModelKit 定义,封装了模型的完整配置信息
+ */
+export interface ModelKit {
+  id: string; // 唯一标识符
+  name: string; // 名称
+  type: "cli" | "byok"; // 类型:CLI 模式或 BYOK 模式
+  backendId?: string; // CLI 后端 ID(仅 cli 类型)
+  providerId?: string; // 提供商 ID(仅 byok 类型)
+  model: string; // 模型名称
+  config: any; // 配置信息,暂时使用 any,后续可细化为 CliBackendConfig | ByokConfig
+  metadata: ModelKitMetadata; // 元数据信息
+}
+
+/**
+ * SubAgent 权限配置,定义子代理的工具访问和步数限制
+ */
+export interface SubAgentPermissions {
+  allowedTools: string[]; // 允许使用的工具列表
+  deniedTools: string[]; // 禁止使用的工具列表
+  maxSteps?: number; // 最大执行步数(可选)
+}
+
+/**
+ * SubAgent 元数据信息,记录创建和使用情况
+ */
+export interface SubAgentMetadata {
+  createdAt: string; // 创建时间
+  updatedAt: string; // 更新时间
+  usageCount: number; // 使用次数
+}
+
+/**
+ * SubAgent 定义,表示一个专门化的子代理实例
+ */
+export interface SubAgent {
+  id: string; // 唯一标识符
+  name: string; // 名称
+  role: string; // 角色描述
+  capabilities: string[]; // 能力列表
+  modelKitId: string; // 绑定的 ModelKit ID(一对一绑定关系)
+  mode: "entry" | "worker"; // 模式:入口 agent 或工作 agent
+  permissions: SubAgentPermissions; // 权限配置
+  promptTemplate?: string; // 提示词模板(可选)
+  metadata: SubAgentMetadata; // 元数据信息
+}
+
 export interface EngineConfig {
   mode: "cli" | "byok";
   cliId: string;
   cliModels: Record<string, string>;
   byokProviders: Record<string, ByokConfig>;
   activeByokProviderId: string;
+  modelKits: Record<string, ModelKit>; // ModelKit 集合，按 ID 索引
   updatedAt: string;
 }
 
@@ -287,6 +346,8 @@ export interface RepoHelmState {
   auditLog: AuditLogEntry[];
   engine: EngineConfig;
   modelCache: Record<string, ModelCacheEntry>;
+  subAgents: Record<string, SubAgent>; // SubAgent 集合,按 ID 索引
+  entrySubAgentId?: string; // 入口 SubAgent 的 ID(可选)
 }
 
 export interface ListProviderModelsInput {
@@ -330,4 +391,72 @@ export interface CreateQuestInput {
   requirement: string;
   agentBackendId?: AgentBackendId;
   affectedProjectIds?: string[];
+}
+
+/**
+ * 创建 ModelKit 的输入参数
+ */
+export interface CreateModelKitInput {
+  id?: string; // 可选,不传则自动生成
+  name: string;
+  type: "cli" | "byok";
+  backendId?: string; // cli 类型必需
+  providerId?: string; // byok 类型必需
+  model: string;
+  config: any;
+  costTier?: "free" | "low" | "medium" | "high";
+  performanceProfile?: "fast" | "balanced" | "accurate";
+}
+
+/**
+ * 更新 ModelKit 的输入参数(所有字段可选)
+ */
+export interface UpdateModelKitInput {
+  name?: string;
+  model?: string;
+  config?: any;
+  costTier?: "free" | "low" | "medium" | "high";
+  performanceProfile?: "fast" | "balanced" | "accurate";
+}
+
+/**
+ * 测试并保存 ModelKit 的输入参数
+ */
+export interface TestModelInput {
+  type: "cli" | "byok";
+  backendId?: string; // cli 类型时提供
+  providerId?: string; // byok 类型时提供
+  model: string;
+  apiKey?: string; // byok 类型时可选
+  baseUrl?: string; // byok 类型时可选
+  name: string;
+  costTier?: "free" | "low" | "medium" | "high";
+  performanceProfile?: "fast" | "balanced" | "accurate";
+}
+
+/**
+ * 创建 SubAgent 的输入参数
+ */
+export interface CreateSubAgentInput {
+  id?: string; // 可选,不传则自动生成
+  name: string;
+  role: string;
+  capabilities?: string[];
+  modelKitId: string;
+  mode: "entry" | "worker";
+  permissions?: SubAgentPermissions;
+  promptTemplate?: string;
+}
+
+/**
+ * 更新 SubAgent 的输入参数(所有字段可选)
+ */
+export interface UpdateSubAgentInput {
+  name?: string;
+  role?: string;
+  capabilities?: string[];
+  modelKitId?: string;
+  mode?: "entry" | "worker";
+  permissions?: SubAgentPermissions;
+  promptTemplate?: string;
 }

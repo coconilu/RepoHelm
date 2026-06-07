@@ -258,7 +258,9 @@ export interface EngineConfig {
   mode: "cli" | "byok";
   cliId: string;
   cliModels: Record<string, string>;
-  byok: ByokConfig;
+  byokProviders: Record<string, ByokConfig>;
+  activeByokProviderId: string;
+  modelKits: Record<string, ModelKit>; // 新增
   updatedAt: string;
 }
 
@@ -271,6 +273,57 @@ export interface RepoHelmState {
   capabilities: CapabilityDefinition[];
   securityPolicy: SecurityPolicy;
   auditLog: AuditLogEntry[];
+}
+
+export interface TestModelInput {
+  type: "cli" | "byok";
+  backendId?: string;
+  providerId?: string;
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+  name: string;
+  costTier?: "free" | "low" | "medium" | "high";
+  performanceProfile?: "fast" | "balanced" | "accurate";
+}
+
+export interface ModelKitMetadata {
+  createdAt: string;
+  testedAt: string;
+  lastUsedAt?: string;
+  costTier: "free" | "low" | "medium" | "high";
+  performanceProfile: "fast" | "balanced" | "accurate";
+}
+
+export interface ModelKit {
+  id: string;
+  name: string;
+  type: "cli" | "byok";
+  backendId?: string;
+  providerId?: string;
+  model: string;
+  config: any;
+  metadata: ModelKitMetadata;
+}
+
+export interface CreateModelKitInput {
+  id?: string;
+  name: string;
+  type: "cli" | "byok";
+  backendId?: string;
+  providerId?: string;
+  model: string;
+  config: any;
+  costTier?: "free" | "low" | "medium" | "high";
+  performanceProfile?: "fast" | "balanced" | "accurate";
+}
+
+export interface UpdateModelKitInput {
+  name?: string;
+  model?: string;
+  config?: any;
+  costTier?: "free" | "low" | "medium" | "high";
+  performanceProfile?: "fast" | "balanced" | "accurate";
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -418,5 +471,25 @@ export const api = {
   checkProject: (projectId: string) =>
     request<Project>(`/api/projects/${projectId}/check`, {
       method: "POST"
+    }),
+  listModelKits: () => request<ModelKit[]>("/api/model-kits"),
+  createModelKit: (input: CreateModelKitInput) =>
+    request<ModelKit>("/api/model-kits", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateModelKit: (id: string, input: UpdateModelKitInput) =>
+    request<ModelKit>(`/api/model-kits/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteModelKit: (id: string) =>
+    request<{ ok: boolean }>(`/api/model-kits/${id}`, {
+      method: "DELETE"
+    }),
+  testAndSaveModelKit: (input: TestModelInput) =>
+    request<ModelKit>("/api/model-kits/test-and-save", {
+      method: "POST",
+      body: JSON.stringify(input)
     })
 };

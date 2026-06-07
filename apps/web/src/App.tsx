@@ -34,16 +34,20 @@ import {
   ChangedFile,
   CapabilityDefinition,
   CliTestResult,
+  CreateModelKitInput,
   EngineConfig,
   KnowledgeItem,
   CliModelOption,
   LocalCliInfo,
+  ModelKit,
   Project,
   ProductReadiness,
   ProviderId,
   Quest,
   RepoHelmState,
   SecurityPolicy,
+  TestModelInput,
+  UpdateModelKitInput,
   Workspace
 } from "./api";
 import { motion } from "motion/react";
@@ -73,7 +77,7 @@ const statusClass: Record<string, string> = {
 
 type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
 type ResizeDivider = "sidebar" | "inspector";
-type SettingsTab = "repositories" | "models";
+type SettingsTab = "repositories" | "models" | "modelkits";
 
 const defaultColumnWidths = {
   sidebar: 280,
@@ -605,6 +609,7 @@ export function App() {
           onClose={() => setAppSettingsOpen(false)}
           onOpenProjectDirectory={openProjectDirectory}
           onRemoveProject={removeProject}
+          onSetBusy={setBusy}
         />
       ) : null}
 
@@ -928,7 +933,7 @@ function QuestStage({
             <div className="composer-divider">
               <Select
                 variant="inline"
-                ariaLabel="执行模式"
+                ariaLabel="模型管理"
                 value={mode}
                 onValueChange={setMode}
                 options={[
@@ -1451,7 +1456,8 @@ function AppSettingsDialog({
   onCheckProject,
   onClose,
   onOpenProjectDirectory,
-  onRemoveProject
+  onRemoveProject,
+  onSetBusy
 }: {
   busy: boolean;
   projects: Project[];
@@ -1466,6 +1472,7 @@ function AppSettingsDialog({
   onClose: () => void;
   onOpenProjectDirectory: (projectId: string) => Promise<void>;
   onRemoveProject: (projectId: string) => Promise<void>;
+  onSetBusy: (value: boolean) => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>("repositories");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -1493,16 +1500,32 @@ function AppSettingsDialog({
     defaultBranch: "main",
     validationCommand: ""
   });
+  // ModelKit management state
+  const [modelKits, setModelKits] = useState<ModelKit[]>([]);
+  const [savingAsKit, setSavingAsKit] = useState<{
+    type: "cli" | "byok";
+    backendId?: string;
+    providerId?: string;
+    model: string;
+    apiKey?: string;
+    baseUrl?: string;
+  } | null>(null);
+  const [kitDraft, setKitDraft] = useState({
+    name: ""
+  });
+  const [editingKit, setEditingKit] = useState<ModelKit | null>(null);
+  const [kitError, setKitError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.listClis(), api.getEngine()])
-      .then(([cliList, eng]) => {
+    Promise.all([api.listClis(), api.getEngine(), api.listModelKits()])
+      .then(([cliList, eng, kits]) => {
         if (cancelled) {
           return;
         }
         setClis(cliList);
         setEngine(eng);
+        setModelKits(kits);
         const activeId = eng.activeByokProviderId;
         const savedConfig = eng.byokProviders[activeId];
         setProviderId(activeId as ProviderId);
@@ -1521,21 +1544,8 @@ function AppSettingsDialog({
     };
   }, []);
 
-  async function patchEngine(
-    input: Partial<Omit<EngineConfig, "updatedAt">> & {
-      byok?: Partial<ByokConfig>;
-    }
-  ) {
-    const { byok, ...rest } = input;
-    const apiInput: any = { ...rest };
-    if (byok) {
-      apiInput.byokProviders = {
-        ...engine?.byokProviders,
-        [providerId]: { ...(engine?.byokProviders[providerId] ?? {}), ...byok }
-      };
-      apiInput.activeByokProviderId = providerId;
-    }
-    const next = await api.updateEngine(apiInput);
+  async function patchEngine(input: Partial<Omit<EngineConfig, "updatedAt">>) {
+    const next = await api.updateEngine(input);
     setEngine(next);
     const activeId = next.activeByokProviderId;
     const savedConfig = next.byokProviders[activeId];
@@ -1648,6 +1658,67 @@ function AppSettingsDialog({
     return options;
   })();
 
+  // ModelKit management functions
+  async function saveAsModelKit(event: FormEvent) {
+    event.preventDefault();
+    if (!savingAsKit || !kitDraft.name.trim()) {
+      return;
+    }
+    onSetBusy(true);
+    setKitError("");
+    try {
+      const input: TestModelInput = {
+        type: savingAsKit.type,
+        backendId: savingAsKit.backendId,
+        providerId: savingAsKit.providerId,
+        model: savingAsKit.model,
+        apiKey: savingAsKit.apiKey,
+        baseUrl: savingAsKit.baseUrl,
+        name: kitDraft.name.trim(),
+        costTier: "medium",  // 使用默认值
+        performanceProfile: "balanced"  // 使用默认值
+      };
+      const newKit = await api.testAndSaveModelKit(input);
+      setModelKits((prev) => [...prev, newKit]);
+      setSavingAsKit(null);
+      setKitDraft({ name: "" });
+    } catch (err) {
+      setKitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  async function updateModelKitHandler(id: string, input: UpdateModelKitInput) {
+    onSetBusy(true);
+    setKitError("");
+    try {
+      const updated = await api.updateModelKit(id, input);
+      setModelKits((prev) => prev.map((kit) => (kit.id === id ? updated : kit)));
+      setEditingKit(null);
+    } catch (err) {
+      setKitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  async function deleteModelKitHandler(id: string) {
+    if (!confirm("确定要删除此 ModelKit 吗?")) {
+      return;
+    }
+    onSetBusy(true);
+    setKitError("");
+    try {
+      await api.deleteModelKit(id);
+      setModelKits((prev) => prev.filter((kit) => kit.id !== id));
+    } catch (err) {
+      setKitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section aria-labelledby="app-settings-title" className="modal-panel settings-modal" role="dialog">
@@ -1665,7 +1736,10 @@ function AppSettingsDialog({
             仓库管理
           </button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")} role="tab" type="button">
-            执行模式
+            模型管理
+          </button>
+          <button className={tab === "modelkits" ? "active" : ""} onClick={() => setTab("modelkits")} role="tab" type="button">
+            Agent 管理
           </button>
         </div>
         <div className="modal-body settings-body">
@@ -1724,7 +1798,7 @@ function AppSettingsDialog({
           {tab === "models" ? (
             <section className="config-section">
               <p className="muted">在本机 CLI 与 BYOK 之间选择。</p>
-              <div className="seg-control" role="tablist" aria-label="执行模式">
+              <div className="seg-control" role="tablist" aria-label="模型管理">
                 <button
                   className={engine?.mode === "cli" ? "active" : ""}
                   role="tab"
@@ -1737,7 +1811,7 @@ function AppSettingsDialog({
                   className={engine?.mode === "byok" ? "active" : ""}
                   role="tab"
                   type="button"
-                  onClick={() => patchEngine({ mode: "byok", byok: byokDraft })}
+                  onClick={() => patchEngine({ mode: "byok", activeByokProviderId: providerId })}
                 >
                   BYOK
                 </button>
@@ -1836,7 +1910,13 @@ function AppSettingsDialog({
                     <button
                       className="secondary-action"
                       disabled={busy}
-                      onClick={() => patchEngine({ mode: "byok", byok: byokDraft })}
+                      onClick={() => patchEngine({
+                        byokProviders: {
+                          ...engine?.byokProviders,
+                          [providerId]: { ...(engine?.byokProviders[providerId] ?? {}), ...byokDraft }
+                        },
+                        activeByokProviderId: providerId
+                      })}
                       type="button"
                     >
                       保存 BYOK 配置
@@ -1846,7 +1926,25 @@ function AppSettingsDialog({
                     </button>
                   </div>
                   {byokTestResult ? (
-                    <div className={`cli-test-banner${byokTestResult.ok ? " ok" : " fail"}`}>{byokTestResult.message}</div>
+                    <div className={`cli-test-banner${byokTestResult.ok ? " ok" : " fail"}`}>
+                      {byokTestResult.message}
+                      {byokTestResult.ok && (
+                        <button
+                          className="ghost-action"
+                          style={{ marginLeft: '8px' }}
+                          onClick={() => setSavingAsKit({
+                            type: "byok",
+                            providerId,
+                            model: byokDraft.model,
+                            apiKey: byokDraft.apiKey,
+                            baseUrl: byokDraft.baseUrl
+                          })}
+                          type="button"
+                        >
+                          保存为 ModelKit
+                        </button>
+                      )}
+                    </div>
                   ) : null}
                   <p className="field-hint">
                     API Key 保存在本机 SQLite 状态中,仅用于直连对应 Provider 拉取模型与本地调用。
@@ -1903,7 +2001,23 @@ function AppSettingsDialog({
                             </div>
                           ) : null}
                           {testResult && testResult.id === cli.id ? (
-                            <div className={`cli-test-banner${testResult.ok ? " ok" : " fail"}`}>{testResult.message}</div>
+                            <div className={`cli-test-banner${testResult.ok ? " ok" : " fail"}`}>
+                              {testResult.message}
+                              {testResult.ok && (
+                                <button
+                                  className="ghost-action"
+                                  style={{ marginLeft: '8px' }}
+                                  onClick={() => setSavingAsKit({
+                                    type: "cli",
+                                    backendId: cli.id,
+                                    model: selectedModel
+                                  })}
+                                  type="button"
+                                >
+                                  保存为 ModelKit
+                                </button>
+                              )}
+                            </div>
                           ) : null}
                         </div>
                       );
@@ -1913,8 +2027,147 @@ function AppSettingsDialog({
               )}
             </section>
           ) : null}
+
+          {tab === "modelkits" ? (
+            <section className="config-section">
+              <div className="settings-section-heading">
+                <h3>ModelKits ({modelKits.length})</h3>
+              </div>
+              <p className="muted">管理已保存的模型配置,方便在不同场景下快速切换。</p>
+              
+              {modelKits.length === 0 ? (
+                <p className="muted">暂无 ModelKits。在"模型管理"标签页中测试通过后,可以保存为 ModelKit。</p>
+              ) : (
+                <div className="modelkit-list">
+                  {modelKits.map((kit) => (
+                    <article key={kit.id} className="modelkit-card">
+                      <div className="modelkit-header">
+                        <div>
+                          <strong>{kit.name}</strong>
+                          <span className="modelkit-type">{kit.type === "cli" ? "CLI" : "BYOK"}</span>
+                        </div>
+                        <div className="modelkit-actions">
+                          <button
+                            className="ghost-action"
+                            onClick={() => setEditingKit(kit)}
+                            type="button"
+                          >
+                            编辑
+                          </button>
+                          <button
+                            className="danger-action"
+                            onClick={() => deleteModelKitHandler(kit.id)}
+                            type="button"
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                      <div className="modelkit-details">
+                        <code>{kit.model}</code>
+                        {kit.backendId && <span>Backend: {kit.backendId}</span>}
+                        {kit.providerId && <span>Provider: {kit.providerId}</span>}
+                        <span className="field-hint">创建于 {formatDate(kit.metadata.createdAt)}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : null}
         </div>
       </section>
+
+      {/* Save as ModelKit Dialog */}
+      {savingAsKit ? (
+        <div className="modal-backdrop" role="presentation">
+          <section aria-labelledby="save-kit-title" className="modal-panel compact-modal" role="dialog">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">ModelKit</p>
+                <h2 id="save-kit-title">保存为 ModelKit</h2>
+              </div>
+              <button aria-label="关闭" className="icon-button" onClick={() => setSavingAsKit(null)} type="button">
+                <X size={17} />
+              </button>
+            </header>
+            <form className="modal-body config-section" onSubmit={saveAsModelKit}>
+              {kitError && <div className="error-banner">{kitError}</div>}
+              <label>
+                <span>名称 *</span>
+                <input
+                  aria-label="ModelKit 名称"
+                  placeholder="例如: Claude Code (快速响应)"
+                  value={kitDraft.name}
+                  onChange={(event) => setKitDraft({ name: event.target.value })}
+                  required
+                />
+              </label>
+              <div className="project-config-actions">
+                <button 
+                  className="ghost-action" 
+                  onClick={() => setSavingAsKit(null)} 
+                  disabled={busy}
+                  type="button"
+                >
+                  取消
+                </button>
+                <button 
+                  className="secondary-action" 
+                  disabled={busy || !kitDraft.name.trim()} 
+                  type="submit"
+                >
+                  {busy ? "保存中..." : "保存"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+
+      {/* Edit ModelKit Dialog */}
+      {editingKit ? (
+        <div className="modal-backdrop" role="presentation">
+          <section aria-labelledby="edit-kit-title" className="modal-panel compact-modal" role="dialog">
+            <header className="modal-header">
+              <div>
+                <p className="eyebrow">ModelKit</p>
+                <h2 id="edit-kit-title">编辑 ModelKit</h2>
+              </div>
+              <button aria-label="关闭" className="icon-button" onClick={() => setEditingKit(null)} type="button">
+                <X size={17} />
+              </button>
+            </header>
+            <form
+              className="modal-body config-section"
+              onSubmit={(event) => {
+                event.preventDefault();
+                updateModelKitHandler(editingKit.id, {
+                  name: editingKit.name
+                });
+              }}
+            >
+              {kitError && <div className="error-banner">{kitError}</div>}
+              <label>
+                <span>名称</span>
+                <input
+                  aria-label="ModelKit 名称"
+                  value={editingKit.name}
+                  onChange={(event) => setEditingKit({ ...editingKit, name: event.target.value })}
+                />
+              </label>
+              <div className="project-config-actions">
+                <button className="secondary-action" disabled={busy} type="submit">
+                  保存
+                </button>
+                <button className="ghost-action" onClick={() => setEditingKit(null)} type="button">
+                  取消
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2334,4 +2587,38 @@ function composerBackendLabel(backend: AgentBackendInfo) {
     "openai-compatible": "OpenAI-compatible"
   };
   return labels[backend.id] ?? backend.name;
+}
+
+function costTierLabel(tier: "free" | "low" | "medium" | "high"): string {
+  const labels = {
+    free: "免费",
+    low: "低成本",
+    medium: "中等",
+    high: "高成本"
+  };
+  return labels[tier];
+}
+
+function performanceProfileLabel(profile: "fast" | "balanced" | "accurate"): string {
+  const labels = {
+    fast: "快速",
+    balanced: "平衡",
+    accurate: "高精度"
+  };
+  return labels[profile];
+}
+
+function formatDate(dateString: string): string {
+  try {
+    const date = new Date(dateString);
+    return date.toLocaleDateString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  } catch {
+    return dateString;
+  }
 }

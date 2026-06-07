@@ -287,7 +287,7 @@ textarea:focus-visible,
 .request-delivery-action:disabled,
 .send-button:disabled,
 .run-action:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.62;
 }
 
@@ -2303,10 +2303,86 @@ code {
   color: var(--accent-contrast);
 }
 
+/* ModelKit styles */
+.modelkit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modelkit-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  transition: border-color 130ms var(--ease), background-color 130ms var(--ease);
+}
+
+.modelkit-card:hover {
+  border-color: var(--border-strong);
+}
+
+.modelkit-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.modelkit-header strong {
+  font-size: 14px;
+}
+
+.modelkit-type {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+}
+
+.modelkit-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.modelkit-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modelkit-details code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.modelkit-details span {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.modelkit-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.modelkit-metadata .badge {
+  font-size: 11px;
+}
+
 .secondary-action:disabled,
 .ghost-action:disabled,
 .danger-action:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.58;
 }
 

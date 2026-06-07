@@ -12,14 +12,17 @@ import type {
   CapabilityDefinition,
   CapabilityRecommendation,
   CliTestResult,
+  CreateModelKitInput,
   CreateProjectInput,
   CreateQuestInput,
+  CreateSubAgentInput,
   CreateWorkspaceInput,
   DeliveryState,
   EngineConfig,
   KnowledgeItem,
   ListProviderModelsInput,
   LocalCliInfo,
+  ModelKit,
   Project,
   ProjectHealth,
   ProductReadiness,
@@ -29,8 +32,12 @@ import type {
   QuestSpec,
   RepoHelmState,
   SecurityPolicy,
+  SubAgent,
+  TestModelInput,
   UpdateEngineInput,
+  UpdateModelKitInput,
   UpdateProjectInput,
+  UpdateSubAgentInput,
   UpdateWorkspaceInput,
   Workspace,
   WorkspaceWorktree,
@@ -386,6 +393,370 @@ export class RepoHelmService {
     };
     await this.store.write({ ...state, engine });
     return engine;
+  }
+
+  /**
+   * 创建新的 ModelKit
+   */
+  async createModelKit(input: CreateModelKitInput): Promise<ModelKit> {
+    const state = await this.getState();
+    const idValue = input.id || `modelkit-${Date.now()}`;
+
+    // 验证 modelKitId 是否已存在
+    if (state.engine.modelKits[idValue]) {
+      throw new Error(`ModelKit ${idValue} already exists`);
+    }
+
+    // 验证必需字段
+    if (input.type === "cli" && !input.backendId) {
+      throw new Error("CLI type ModelKit requires backendId");
+    }
+    if (input.type === "byok" && !input.providerId) {
+      throw new Error("BYOK type ModelKit requires providerId");
+    }
+
+    const timestamp = now();
+    const modelKit: ModelKit = {
+      id: idValue,
+      name: input.name,
+      type: input.type,
+      backendId: input.backendId,
+      providerId: input.providerId,
+      model: input.model,
+      config: input.config,
+      metadata: {
+        createdAt: timestamp,
+        testedAt: timestamp,
+        costTier: input.costTier || "medium",
+        performanceProfile: input.performanceProfile || "balanced"
+      }
+    };
+
+    const engine: EngineConfig = {
+      ...state.engine,
+      modelKits: {
+        ...state.engine.modelKits,
+        [idValue]: modelKit
+      },
+      updatedAt: timestamp
+    };
+
+    await this.store.write({ ...state, engine });
+    return modelKit;
+  }
+
+  /**
+   * 更新现有的 ModelKit
+   */
+  async updateModelKit(idValue: string, input: UpdateModelKitInput): Promise<ModelKit> {
+    const state = await this.getState();
+    const existingKit = state.engine.modelKits[idValue];
+
+    if (!existingKit) {
+      throw new Error(`ModelKit ${idValue} not found`);
+    }
+
+    const timestamp = now();
+    const updatedKit: ModelKit = {
+      ...existingKit,
+      name: input.name ?? existingKit.name,
+      model: input.model ?? existingKit.model,
+      config: input.config ?? existingKit.config,
+      metadata: {
+        ...existingKit.metadata,
+        costTier: input.costTier ?? existingKit.metadata.costTier,
+        performanceProfile: input.performanceProfile ?? existingKit.metadata.performanceProfile,
+        testedAt: timestamp
+      }
+    };
+
+    const engine: EngineConfig = {
+      ...state.engine,
+      modelKits: {
+        ...state.engine.modelKits,
+        [idValue]: updatedKit
+      },
+      updatedAt: timestamp
+    };
+
+    await this.store.write({ ...state, engine });
+    return updatedKit;
+  }
+
+  /**
+   * 删除 ModelKit
+   */
+  async deleteModelKit(idValue: string): Promise<void> {
+    const state = await this.getState();
+    const existingKit = state.engine.modelKits[idValue];
+
+    if (!existingKit) {
+      throw new Error(`ModelKit ${idValue} not found`);
+    }
+
+    // 检查是否有 Sub-agent 引用此 ModelKit
+    // TODO: 当实现 Sub-agent 功能后,需要检查引用关系
+    // 目前先简单实现,后续可以增强
+
+    const modelKits = { ...state.engine.modelKits };
+    delete modelKits[idValue];
+
+    const engine: EngineConfig = {
+      ...state.engine,
+      modelKits,
+      updatedAt: now()
+    };
+
+    await this.store.write({ ...state, engine });
+  }
+
+  /**
+   * 列出所有 ModelKits
+   */
+  async listModelKits(): Promise<ModelKit[]> {
+    const state = await this.getState();
+    return Object.values(state.engine.modelKits);
+  }
+
+  /**
+   * 创建新的 SubAgent
+   */
+  async createSubAgent(input: CreateSubAgentInput): Promise<SubAgent> {
+    const state = await this.getState();
+
+    // 验证 modelKitId 存在
+    if (!state.engine.modelKits[input.modelKitId]) {
+      throw new Error(`ModelKit ${input.modelKitId} not found`);
+    }
+
+    const idValue = input.id || `subagent-${Date.now()}`;
+
+    // 验证 SubAgent ID 是否已存在
+    if (state.subAgents[idValue]) {
+      throw new Error(`SubAgent ${idValue} already exists`);
+    }
+
+    const timestamp = now();
+    const subAgent: SubAgent = {
+      id: idValue,
+      name: input.name,
+      role: input.role,
+      capabilities: input.capabilities || [],
+      modelKitId: input.modelKitId,
+      mode: input.mode,
+      permissions: input.permissions || { allowedTools: [], deniedTools: [] },
+      promptTemplate: input.promptTemplate,
+      metadata: {
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        usageCount: 0
+      }
+    };
+
+    const updatedState = {
+      ...state,
+      subAgents: {
+        ...state.subAgents,
+        [idValue]: subAgent
+      }
+    };
+
+    await this.store.write(updatedState);
+    return subAgent;
+  }
+
+  /**
+   * 更新现有的 SubAgent
+   */
+  async updateSubAgent(idValue: string, input: UpdateSubAgentInput): Promise<SubAgent> {
+    const state = await this.getState();
+    const existingAgent = state.subAgents[idValue];
+
+    if (!existingAgent) {
+      throw new Error(`SubAgent ${idValue} not found`);
+    }
+
+    // 如果更新了 modelKitId，需要验证新的 modelKitId 存在
+    if (input.modelKitId && !state.engine.modelKits[input.modelKitId]) {
+      throw new Error(`ModelKit ${input.modelKitId} not found`);
+    }
+
+    const timestamp = now();
+    const updatedAgent: SubAgent = {
+      ...existingAgent,
+      name: input.name ?? existingAgent.name,
+      role: input.role ?? existingAgent.role,
+      capabilities: input.capabilities ?? existingAgent.capabilities,
+      modelKitId: input.modelKitId ?? existingAgent.modelKitId,
+      mode: input.mode ?? existingAgent.mode,
+      permissions: input.permissions ?? existingAgent.permissions,
+      promptTemplate: input.promptTemplate ?? existingAgent.promptTemplate,
+      metadata: {
+        ...existingAgent.metadata,
+        updatedAt: timestamp
+      }
+    };
+
+    const updatedState = {
+      ...state,
+      subAgents: {
+        ...state.subAgents,
+        [idValue]: updatedAgent
+      }
+    };
+
+    await this.store.write(updatedState);
+    return updatedAgent;
+  }
+
+  /**
+   * 删除 SubAgent
+   */
+  async deleteSubAgent(idValue: string): Promise<void> {
+    const state = await this.getState();
+    const existingAgent = state.subAgents[idValue];
+
+    if (!existingAgent) {
+      throw new Error(`SubAgent ${idValue} not found`);
+    }
+
+    // 如果该 agent 是 entrySubAgentId，则拒绝删除
+    if (state.entrySubAgentId === idValue) {
+      throw new Error(`Cannot delete entry SubAgent ${idValue}. Please set a different entry SubAgent first.`);
+    }
+
+    const subAgents = { ...state.subAgents };
+    delete subAgents[idValue];
+
+    await this.store.write({
+      ...state,
+      subAgents
+    });
+  }
+
+  /**
+   * 列出所有 SubAgents
+   */
+  async listSubAgents(): Promise<SubAgent[]> {
+    const state = await this.getState();
+    return Object.values(state.subAgents);
+  }
+
+  /**
+   * 设置入口 SubAgent
+   */
+  async setEntrySubAgent(idValue: string): Promise<void> {
+    const state = await this.getState();
+    const subAgent = state.subAgents[idValue];
+
+    if (!subAgent) {
+      throw new Error(`SubAgent ${idValue} not found`);
+    }
+
+    if (subAgent.mode === "worker") {
+      throw new Error("Cannot set worker sub-agent as entry point");
+    }
+
+    await this.store.write({
+      ...state,
+      entrySubAgentId: idValue
+    });
+  }
+
+  /**
+   * 获取入口 SubAgent
+   */
+  async getEntrySubAgent(): Promise<SubAgent | undefined> {
+    const state = await this.getState();
+
+    if (!state.entrySubAgentId) {
+      return undefined;
+    }
+
+    return state.subAgents[state.entrySubAgentId];
+  }
+
+  /**
+   * 测试模型配置并保存为 ModelKit
+   */
+  async testAndSaveModelKit(testInput: TestModelInput): Promise<ModelKit> {
+    let testResult: CliTestResult;
+
+    // 根据类型执行相应的测试逻辑
+    if (testInput.type === "cli") {
+      if (!testInput.backendId) {
+        throw new Error("CLI type requires backendId for testing");
+      }
+
+      // 复用 CLI 测试逻辑
+      const cliDef = this.cliRegistry.get(testInput.backendId);
+      if (!cliDef) {
+        throw new Error(`CLI backend ${testInput.backendId} not found`);
+      }
+
+      testResult = await this.cliRegistry.test(cliDef, { model: testInput.model });
+    } else {
+      // BYOK 类型
+      if (!testInput.providerId) {
+        throw new Error("BYOK type requires providerId for testing");
+      }
+
+      // 复用 Provider 测试逻辑
+      const providerDef = this.providerRegistry.resolve(testInput.providerId, testInput.baseUrl);
+      testResult = await this.testProvider({
+        providerId: testInput.providerId,
+        baseUrl: testInput.baseUrl,
+        apiKey: testInput.apiKey
+      });
+    }
+
+    // 如果测试失败,抛出错误
+    if (!testResult.ok) {
+      throw new Error(`Model test failed: ${testResult.message}`);
+    }
+
+    // 测试成功后,创建 ModelKit
+    const timestamp = now();
+    const idValue = `modelkit-${Date.now()}`;
+
+    // 构建配置对象
+    const config =
+      testInput.type === "cli"
+        ? { backendId: testInput.backendId }
+        : {
+            providerId: testInput.providerId,
+            apiKey: testInput.apiKey || "",
+            baseUrl: testInput.baseUrl || ""
+          };
+
+    const modelKit: ModelKit = {
+      id: idValue,
+      name: testInput.name,
+      type: testInput.type,
+      backendId: testInput.backendId,
+      providerId: testInput.providerId,
+      model: testInput.model,
+      config,
+      metadata: {
+        createdAt: timestamp,
+        testedAt: timestamp,
+        costTier: testInput.costTier || "medium",
+        performanceProfile: testInput.performanceProfile || "balanced"
+      }
+    };
+
+    const state = await this.getState();
+    const engine: EngineConfig = {
+      ...state.engine,
+      modelKits: {
+        ...state.engine.modelKits,
+        [idValue]: modelKit
+      },
+      updatedAt: timestamp
+    };
+
+    await this.store.write({ ...state, engine });
+    return modelKit;
   }
 
   /** Real connectivity + auth test for a provider (BYOK). Hits `/models`, zero token cost. */

@@ -111,6 +111,72 @@ const questSchema = z.object({
   affectedProjectIds: z.array(z.string()).optional()
 });
 
+const createModelKitSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  type: z.enum(["cli", "byok"]),
+  backendId: z.string().optional(),
+  providerId: z.string().optional(),
+  model: z.string().min(1),
+  config: z.any(),
+  costTier: z.enum(["free", "low", "medium", "high"]).optional(),
+  performanceProfile: z.enum(["fast", "balanced", "accurate"]).optional()
+});
+
+const updateModelKitSchema = z.object({
+  name: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  config: z.any().optional(),
+  costTier: z.enum(["free", "low", "medium", "high"]).optional(),
+  performanceProfile: z.enum(["fast", "balanced", "accurate"]).optional()
+});
+
+const testModelSchema = z.object({
+  type: z.enum(["cli", "byok"]),
+  backendId: z.string().optional(),
+  providerId: z.string().optional(),
+  model: z.string().min(1),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  name: z.string().min(1),
+  costTier: z.enum(["free", "low", "medium", "high"]).optional(),
+  performanceProfile: z.enum(["fast", "balanced", "accurate"]).optional()
+});
+
+// Sub-agent Schema 定义
+const createSubAgentSchema = z.object({
+  id: z.string().optional(), // 可选，不传则自动生成
+  name: z.string().min(1),
+  role: z.string().min(1),
+  capabilities: z.array(z.string()).optional(),
+  modelKitId: z.string().min(1),
+  mode: z.enum(["entry", "worker"]),
+  permissions: z.object({
+    allowedTools: z.array(z.string()),
+    deniedTools: z.array(z.string()),
+    maxSteps: z.number().optional()
+  }).optional(),
+  promptTemplate: z.string().optional()
+});
+
+const updateSubAgentSchema = z.object({
+  name: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  capabilities: z.array(z.string()).optional(),
+  modelKitId: z.string().min(1).optional(),
+  mode: z.enum(["entry", "worker"]).optional(),
+  permissions: z.object({
+    allowedTools: z.array(z.string()),
+    deniedTools: z.array(z.string()),
+    maxSteps: z.number().optional()
+  }).optional(),
+  promptTemplate: z.string().optional()
+});
+
+const setEntrySchema = z.object({
+  id: z.string().min(1)
+});
+
 app.get("/api/health", (context) =>
   context.json({
     ok: true,
@@ -348,6 +414,110 @@ app.post("/api/quests/:id/capabilities/:capabilityId/accept", async (context) =>
 app.post("/api/quests/:id/capabilities/:capabilityId/dismiss", async (context) => {
   const quest = await service.dismissCapabilityRecommendation(context.req.param("id"), context.req.param("capabilityId"));
   return context.json(quest);
+});
+
+// POST /api/model-kits - 创建 ModelKit
+app.post("/api/model-kits", async (context) => {
+  const input = createModelKitSchema.parse(await context.req.json());
+  try {
+    const modelKit = await service.createModelKit(input);
+    return context.json(modelKit, 201);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// PATCH /api/model-kits/:id - 更新 ModelKit
+app.patch("/api/model-kits/:id", async (context) => {
+  const input = updateModelKitSchema.parse(await context.req.json());
+  try {
+    const modelKit = await service.updateModelKit(context.req.param("id"), input);
+    return context.json(modelKit);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// DELETE /api/model-kits/:id - 删除 ModelKit
+app.delete("/api/model-kits/:id", async (context) => {
+  try {
+    await service.deleteModelKit(context.req.param("id"));
+    return context.json({ ok: true });
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// GET /api/model-kits - 列出所有 ModelKits
+app.get("/api/model-kits", async (context) => {
+  const modelKits = await service.listModelKits();
+  return context.json(modelKits);
+});
+
+// POST /api/model-kits/test-and-save - 测试并保存 ModelKit
+app.post("/api/model-kits/test-and-save", async (context) => {
+  const input = testModelSchema.parse(await context.req.json());
+  try {
+    const modelKit = await service.testAndSaveModelKit(input);
+    return context.json(modelKit, 201);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// POST /api/sub-agents - 创建 Sub-agent
+app.post("/api/sub-agents", async (context) => {
+  const input = createSubAgentSchema.parse(await context.req.json());
+  try {
+    const subAgent = await service.createSubAgent(input);
+    return context.json(subAgent, 201);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// PATCH /api/sub-agents/:id - 更新 Sub-agent
+app.patch("/api/sub-agents/:id", async (context) => {
+  const input = updateSubAgentSchema.parse(await context.req.json());
+  try {
+    const subAgent = await service.updateSubAgent(context.req.param("id"), input);
+    return context.json(subAgent);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// DELETE /api/sub-agents/:id - 删除 Sub-agent
+app.delete("/api/sub-agents/:id", async (context) => {
+  try {
+    await service.deleteSubAgent(context.req.param("id"));
+    return context.json({ ok: true });
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// GET /api/sub-agents - 列出所有 Sub-agents
+app.get("/api/sub-agents", async (context) => {
+  const subAgents = await service.listSubAgents();
+  return context.json(subAgents);
+});
+
+// POST /api/sub-agents/set-entry - 设置入口 Sub-agent
+app.post("/api/sub-agents/set-entry", async (context) => {
+  const input = setEntrySchema.parse(await context.req.json());
+  try {
+    await service.setEntrySubAgent(input.id);
+    return context.json({ ok: true });
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+// GET /api/sub-agents/entry - 获取入口 Sub-agent
+app.get("/api/sub-agents/entry", async (context) => {
+  const entrySubAgent = await service.getEntrySubAgent();
+  return context.json(entrySubAgent);
 });
 
 app.onError((error, context) => {
