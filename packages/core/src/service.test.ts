@@ -151,6 +151,49 @@ describe("RepoHelmService", () => {
     expect(result.defaultBranch).toBe("main");
   });
 
+  it("lists local CLIs with built-in default models and a synthetic default option", async () => {
+    const { service } = await createService();
+
+    const clis = await service.listLocalClis(false);
+
+    expect(clis.map((cli) => cli.id)).toEqual(["claude-code", "codex-cli", "gemini-cli", "opencode"]);
+    for (const cli of clis) {
+      expect(cli.models[0]).toMatchObject({ id: "default", label: "Default (CLI config)" });
+      expect(cli.modelsLive).toBe(false);
+    }
+  });
+
+  it("reports a failed test for an unknown CLI", async () => {
+    const { service } = await createService();
+
+    const result = await service.testLocalCli("does-not-exist");
+
+    expect(result.ok).toBe(false);
+    expect(result.latencyMs).toBe(0);
+  });
+
+  it("seeds an engine config and persists engine updates", async () => {
+    const { rootDir, service } = await createService();
+
+    const engine = await service.getEngine();
+    expect(engine.mode).toBe("cli");
+    expect(engine.cliId).toBe("claude-code");
+
+    const updated = await service.updateEngine({
+      mode: "byok",
+      cliModels: { "opencode": "openai/gpt-5" },
+      byok: { model: "deepseek-chat" }
+    });
+    expect(updated.mode).toBe("byok");
+    expect(updated.cliModels.opencode).toBe("openai/gpt-5");
+    expect(updated.byok.model).toBe("deepseek-chat");
+    expect(updated.byok.baseUrl).toBe("https://api.openai.com/v1");
+
+    const reloaded = await new RepoHelmService(new SqliteStateStore(rootDir), rootDir).getEngine();
+    expect(reloaded.mode).toBe("byok");
+    expect(reloaded.byok.model).toBe("deepseek-chat");
+  });
+
   it("creates a quest with a lightweight spec and planning events", async () => {
     const { service } = await createService();
     const state = await service.bootstrap();

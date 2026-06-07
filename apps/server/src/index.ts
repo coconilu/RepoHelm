@@ -70,6 +70,26 @@ const workspaceLinkSchema = z.object({
   projectId: z.string().min(1)
 });
 
+const engineSchema = z.object({
+  mode: z.enum(["cli", "byok"]).optional(),
+  cliId: z.string().optional(),
+  cliModels: z.record(z.string(), z.string()).optional(),
+  byok: z
+    .object({
+      provider: z.string().optional(),
+      baseUrl: z.string().optional(),
+      model: z.string().optional(),
+      apiKey: z.string().optional()
+    })
+    .optional()
+});
+
+const providerModelsSchema = z.object({
+  baseUrl: z.string().optional(),
+  apiKey: z.string().optional(),
+  refresh: z.boolean().optional()
+});
+
 const securityPolicySchema = z.object({
   commandApprovalMode: z.enum(["allowlist", "manual"]).optional(),
   allowedCommands: z.array(z.string()).optional(),
@@ -106,6 +126,49 @@ app.get("/api/state", async (context) => {
 app.get("/api/agent-backends", async (context) => {
   const backends = await service.listAgentBackends();
   return context.json(backends);
+});
+
+app.get("/api/clis", async (context) => {
+  const clis = await service.listLocalClis(false);
+  return context.json(clis);
+});
+
+app.post("/api/clis/rescan", async (context) => {
+  const clis = await service.listLocalClis(true);
+  return context.json(clis);
+});
+
+app.post("/api/clis/:id/test", async (context) => {
+  const result = await service.testLocalCli(context.req.param("id"));
+  return context.json(result);
+});
+
+app.get("/api/providers", async (context) => {
+  const providers = await service.listProviders();
+  return context.json(providers);
+});
+
+// POST (not GET) so the API key stays out of the URL/query string.
+app.post("/api/providers/:id/models", async (context) => {
+  const input = providerModelsSchema.parse(await context.req.json().catch(() => ({})));
+  const result = await service.listProviderModels({
+    providerId: context.req.param("id"),
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey,
+    refresh: input.refresh
+  });
+  return context.json(result);
+});
+
+app.get("/api/engine", async (context) => {
+  const engine = await service.getEngine();
+  return context.json(engine);
+});
+
+app.patch("/api/engine", async (context) => {
+  const input = engineSchema.parse(await context.req.json());
+  const engine = await service.updateEngine(input);
+  return context.json(engine);
 });
 
 app.get("/api/capabilities", async (context) => {

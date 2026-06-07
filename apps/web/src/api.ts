@@ -206,6 +206,62 @@ export interface KnowledgeItem {
   updatedAt: string;
 }
 
+export interface CliModelOption {
+  id: string;
+  label: string;
+}
+
+export interface LocalCliInfo {
+  id: string;
+  name: string;
+  tagline: string;
+  bin: string;
+  available: boolean;
+  version?: string;
+  models: CliModelOption[];
+  modelsLive: boolean;
+  detail: string;
+}
+
+export interface CliTestResult {
+  id: string;
+  ok: boolean;
+  latencyMs: number;
+  message: string;
+}
+
+export type ProviderId = "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter" | "openai-compatible";
+
+export interface ProviderInfo {
+  id: ProviderId;
+  name: string;
+  defaultBaseUrl: string;
+  keyOptional: boolean;
+}
+
+export interface ProviderModelsResult {
+  providerId: ProviderId;
+  models: CliModelOption[];
+  live: boolean;
+  detail: string;
+  fetchedAt: string;
+}
+
+export interface ByokConfig {
+  provider: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}
+
+export interface EngineConfig {
+  mode: "cli" | "byok";
+  cliId: string;
+  cliModels: Record<string, string>;
+  byok: ByokConfig;
+  updatedAt: string;
+}
+
 export interface RepoHelmState {
   workspaces: Workspace[];
   projects: Project[];
@@ -235,6 +291,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state: () => request<RepoHelmState>("/api/state"),
   agentBackends: () => request<AgentBackendInfo[]>("/api/agent-backends"),
+  listClis: () => request<LocalCliInfo[]>("/api/clis"),
+  rescanClis: () => request<LocalCliInfo[]>("/api/clis/rescan", { method: "POST" }),
+  testCli: (id: string) => request<CliTestResult>(`/api/clis/${id}/test`, { method: "POST" }),
+  listProviders: () => request<ProviderInfo[]>("/api/providers"),
+  listProviderModels: (
+    providerId: string,
+    input: { baseUrl?: string; apiKey?: string; refresh?: boolean } = {}
+  ) =>
+    request<ProviderModelsResult>(`/api/providers/${providerId}/models`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getEngine: () => request<EngineConfig>("/api/engine"),
+  updateEngine: (input: Partial<Omit<EngineConfig, "updatedAt">> & { byok?: Partial<ByokConfig> }) =>
+    request<EngineConfig>("/api/engine", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   capabilities: () => request<CapabilityDefinition[]>("/api/capabilities"),
   securityPolicy: () => request<SecurityPolicy>("/api/security-policy"),
   auditLog: () => request<AuditLogEntry[]>("/api/audit-log"),

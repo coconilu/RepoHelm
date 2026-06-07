@@ -30,16 +30,25 @@ import {
   AgentEvent,
   api,
   AuditLogEntry,
+  ByokConfig,
   ChangedFile,
   CapabilityDefinition,
+  CliTestResult,
+  EngineConfig,
   KnowledgeItem,
+  CliModelOption,
+  LocalCliInfo,
   Project,
   ProductReadiness,
+  ProviderId,
   Quest,
   RepoHelmState,
   SecurityPolicy,
   Workspace
 } from "./api";
+import { motion } from "motion/react";
+import { CommandPalette } from "./components/CommandPalette";
+import { Select } from "./components/Select";
 
 const statusLabel: Record<string, string> = {
   draft: "草稿",
@@ -90,6 +99,7 @@ export function App() {
   const [workspaceConfigId, setWorkspaceConfigId] = useState("");
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof document !== "undefined") {
       const current = document.documentElement.getAttribute("data-theme");
@@ -153,6 +163,17 @@ export function App() {
       // Ignore unavailable storage (private mode, etc.).
     }
   }, [theme]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen((current) => !current);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const workspace = useMemo(
     () => state?.workspaces.find((item) => item.id === selectedWorkspaceId) ?? state?.workspaces[0],
@@ -566,10 +587,8 @@ export function App() {
 
       {appSettingsOpen ? (
         <AppSettingsDialog
-          agentBackends={agentBackends}
           busy={busy}
           projects={state.projects}
-          securityPolicy={state.securityPolicy}
           onAddProject={async (input) => {
             setBusy(true);
             setError("");
@@ -608,6 +627,33 @@ export function App() {
           onClose={() => setKnowledgeOpen(false)}
         />
       ) : null}
+
+      <CommandPalette
+        open={commandOpen}
+        theme={theme}
+        workspaces={state.workspaces}
+        onClose={() => setCommandOpen(false)}
+        onNewRequest={() => {
+          setSelectedWorkspaceId(workspace.id);
+          setSelectedQuestId("");
+          setDraftWorkspaceId(workspace.id);
+          setQuestRequirement("");
+          setExpandedWorkspaceIds((current) => (current.includes(workspace.id) ? current : [...current, workspace.id]));
+          setInspectorTab("spec");
+        }}
+        onSelectWorkspace={(workspaceId) => {
+          setSelectedWorkspaceId(workspaceId);
+          setSelectedQuestId("");
+          setDraftWorkspaceId("");
+          setQuestRequirement("");
+          setInspectorTab("spec");
+          setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
+        }}
+        onCreateWorkspace={() => setWorkspaceCreateOpen(true)}
+        onOpenSettings={() => setAppSettingsOpen(true)}
+        onOpenKnowledge={() => setKnowledgeOpen(true)}
+        onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+      />
     </main>
   );
 }
@@ -772,6 +818,7 @@ function QuestStage({
   const backend = questBackend ?? agentBackends.find((item) => item.id === agentBackendId);
   const chatThreadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [mode, setMode] = useState("auto");
 
   useEffect(() => {
     const chatThread = chatThreadRef.current;
@@ -870,29 +917,27 @@ function QuestStage({
         />
         <div className="composer-footer">
           <div className="composer-tools">
-            <label className="composer-select">
-              <Bot size={15} />
-              <select
-                aria-label="Agent Backend"
-                value={agentBackendId}
-                onChange={(event) => onBackendChange(event.target.value as AgentBackendId)}
-              >
-                {agentBackends.map((backend) => (
-                  <option key={backend.id} value={backend.id}>
-                    {composerBackendLabel(backend)}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={14} />
-            </label>
-            <label className="composer-select mode-select">
-              <select aria-label="执行模式" defaultValue="auto">
-                <option value="auto">Auto</option>
-                <option value="plan">Plan</option>
-                <option value="review">Review</option>
-              </select>
-              <ChevronDown size={14} />
-            </label>
+            <Select
+              variant="inline"
+              ariaLabel="Agent Backend"
+              leadingIcon={<Bot size={15} />}
+              value={agentBackendId}
+              onValueChange={(value) => onBackendChange(value as AgentBackendId)}
+              options={agentBackends.map((item) => ({ value: item.id, label: composerBackendLabel(item) }))}
+            />
+            <div className="composer-divider">
+              <Select
+                variant="inline"
+                ariaLabel="执行模式"
+                value={mode}
+                onValueChange={setMode}
+                options={[
+                  { value: "auto", label: "Auto" },
+                  { value: "plan", label: "Plan" },
+                  { value: "review", label: "Review" }
+                ]}
+              />
+            </div>
             <button aria-label="上下文清单" className="composer-icon-button" type="button">
               <ListChecks size={16} />
             </button>
@@ -1046,15 +1091,21 @@ function OverviewPanel({
       </InspectorSection>
       <InspectorSection title="Worktrees">
         {quest?.worktrees.length ? (
-          quest.worktrees.map((worktree) => (
-            <div className="worktree-row" key={`${worktree.projectId}-${worktree.worktreePath}`}>
+          quest.worktrees.map((worktree, index) => (
+            <motion.div
+              className="worktree-row"
+              key={`${worktree.projectId}-${worktree.worktreePath}`}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.28, delay: Math.min(index * 0.05, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
+            >
               <div className="worktree-title">
                 <strong>{projects.find((project) => project.id === worktree.projectId)?.name ?? worktree.projectId}</strong>
                 <em className={worktree.status === "created" ? "badge green" : "badge"}>{worktree.status}</em>
               </div>
               <code>{worktree.branchName}</code>
               <span>{worktree.worktreePath}</span>
-            </div>
+            </motion.div>
           ))
         ) : (
           <p className="muted">暂无 worktree。</p>
@@ -1263,12 +1314,20 @@ function FilesPanel({
   return (
     <div className="changed-file-list">
       {changedFiles.length === 0 ? <p className="muted">运行 Quest 后会展示变更文件。</p> : null}
-      {changedFiles.map((file) => (
-        <button className="changed-file-row" key={changedFileKey(file)} onClick={() => onFileSelect(file)} type="button">
+      {changedFiles.map((file, index) => (
+        <motion.button
+          className="changed-file-row"
+          key={changedFileKey(file)}
+          onClick={() => onFileSelect(file)}
+          type="button"
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.26, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
+        >
           <span>{projectById.get(file.projectId)?.name ?? file.projectId}</span>
           <code>{file.path}</code>
           <em>{file.status}</em>
-        </button>
+        </motion.button>
       ))}
     </div>
   );
@@ -1386,20 +1445,16 @@ function WorkspaceCreateDialog({
 }
 
 function AppSettingsDialog({
-  agentBackends,
   busy,
   projects,
-  securityPolicy,
   onAddProject,
   onCheckProject,
   onClose,
   onOpenProjectDirectory,
   onRemoveProject
 }: {
-  agentBackends: AgentBackendInfo[];
   busy: boolean;
   projects: Project[];
-  securityPolicy: SecurityPolicy;
   onAddProject: (input: {
     name: string;
     path: string;
@@ -1414,12 +1469,21 @@ function AppSettingsDialog({
 }) {
   const [tab, setTab] = useState<SettingsTab>("repositories");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
-  const [modelConfig, setModelConfig] = useState({
-    provider: "OpenAI-compatible",
-    apiKey: "",
+  const [clis, setClis] = useState<LocalCliInfo[]>([]);
+  const [engine, setEngine] = useState<EngineConfig | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [testingId, setTestingId] = useState("");
+  const [testResult, setTestResult] = useState<CliTestResult | null>(null);
+  const [byokDraft, setByokDraft] = useState<ByokConfig>({
+    provider: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    model: "gpt-5.1-codex"
+    model: "gpt-5.1-codex",
+    apiKey: ""
   });
+  const [providerId, setProviderId] = useState<ProviderId>("openai");
+  const [providerModels, setProviderModels] = useState<CliModelOption[]>([]);
+  const [modelsMeta, setModelsMeta] = useState<{ live: boolean; detail: string } | null>(null);
+  const [loadingModels, setLoadingModels] = useState(false);
   const [newProject, setNewProject] = useState({
     name: "",
     path: "",
@@ -1427,6 +1491,48 @@ function AppSettingsDialog({
     defaultBranch: "main",
     validationCommand: ""
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.listClis(), api.getEngine()])
+      .then(([cliList, eng]) => {
+        if (cancelled) {
+          return;
+        }
+        setClis(cliList);
+        setEngine(eng);
+        setByokDraft(eng.byok);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function patchEngine(input: Partial<Omit<EngineConfig, "updatedAt">> & { byok?: Partial<ByokConfig> }) {
+    const next = await api.updateEngine(input);
+    setEngine(next);
+    setByokDraft(next.byok);
+  }
+
+  async function rescanClis() {
+    setScanning(true);
+    try {
+      setClis(await api.rescanClis());
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function testCli(id: string) {
+    setTestingId(id);
+    setTestResult(null);
+    try {
+      setTestResult(await api.testCli(id));
+    } finally {
+      setTestingId("");
+    }
+  }
 
   async function submitProject(event: FormEvent) {
     event.preventDefault();
@@ -1449,12 +1555,52 @@ function AppSettingsDialog({
     });
   }
 
-  const providerOptions = [
-    { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-5.1-codex" },
-    { label: "Anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" },
-    { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-5.1" },
-    { label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "gpt-oss:20b" }
+  const providerOptions: Array<{ id: ProviderId; label: string; baseUrl: string; model: string }> = [
+    { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "gpt-4o" },
+    { id: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" },
+    { id: "gemini", label: "Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-pro" },
+    { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
+    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4o" },
+    { id: "openai-compatible", label: "Ollama / 兼容", baseUrl: "http://127.0.0.1:11434/v1", model: "" }
   ];
+
+  async function loadProviderModels(target: ProviderId, options: { refresh?: boolean } = {}) {
+    setLoadingModels(true);
+    try {
+      const result = await api.listProviderModels(target, {
+        baseUrl: byokDraft.baseUrl,
+        apiKey: byokDraft.apiKey,
+        refresh: options.refresh
+      });
+      setProviderModels(result.models);
+      setModelsMeta({ live: result.live, detail: result.detail });
+    } catch {
+      setProviderModels([]);
+      setModelsMeta({ live: false, detail: "拉取模型失败,请检查 Base URL 和 API Key。" });
+    } finally {
+      setLoadingModels(false);
+    }
+  }
+
+  // Infer the provider id from the saved BYOK base URL, then load its models (cached).
+  useEffect(() => {
+    if (engine?.mode !== "byok") {
+      return;
+    }
+    const matched = providerOptions.find((option) => byokDraft.baseUrl.startsWith(option.baseUrl));
+    const next = matched?.id ?? "openai-compatible";
+    setProviderId(next);
+    void loadProviderModels(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine?.mode]);
+
+  const modelSelectOptions = (() => {
+    const options = providerModels.map((model) => ({ value: model.id, label: model.label }));
+    if (byokDraft.model && !options.some((option) => option.value === byokDraft.model)) {
+      options.unshift({ value: byokDraft.model, label: `${byokDraft.model}(当前)` });
+    }
+    return options;
+  })();
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -1473,7 +1619,7 @@ function AppSettingsDialog({
             仓库管理
           </button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")} role="tab" type="button">
-            大模型接入
+            执行模式
           </button>
         </div>
         <div className="modal-body settings-body">
@@ -1530,108 +1676,186 @@ function AppSettingsDialog({
           ) : null}
 
           {tab === "models" ? (
-            <>
-              <section className="config-section">
-            <div className="settings-section-heading">
-              <h3>本地 Agent CLI</h3>
-              <span>{agentBackends.filter((backend) => backend.available).length} available</span>
-            </div>
-            <div className="settings-chip-list">
-              {agentBackends.map((backend) => (
-                <span className={backend.available ? "settings-chip available" : "settings-chip"} key={backend.id}>
-                  {backend.name}
-                </span>
-              ))}
-            </div>
-          </section>
-
-              <section className="config-section model-config-panel">
-            <div className="settings-section-heading">
-              <h3>API Provider</h3>
-              <span>BYOK</span>
-            </div>
-            <div className="provider-quick-fill" role="tablist" aria-label="Provider 快速填充">
-              {providerOptions.map((provider) => (
+            <section className="config-section">
+              <p className="muted">在本机 CLI 与 BYOK 之间选择。</p>
+              <div className="seg-control" role="tablist" aria-label="执行模式">
                 <button
-                  className={modelConfig.baseUrl === provider.baseUrl ? "active" : ""}
-                  key={provider.label}
-                  onClick={() =>
-                    setModelConfig((current) => ({
-                      ...current,
-                      provider: provider.label,
-                      baseUrl: provider.baseUrl,
-                      model: provider.model
-                    }))
-                  }
+                  className={engine?.mode === "cli" ? "active" : ""}
+                  role="tab"
                   type="button"
+                  onClick={() => patchEngine({ mode: "cli" })}
                 >
-                  {provider.label}
+                  本机 CLI
                 </button>
-              ))}
-            </div>
-            <div className="model-config-grid">
-              <label>
-                <span>API Key</span>
-                <span className="secret-field">
-                  <input
-                    aria-label="API Key"
-                    placeholder="sk-..."
-                    type={apiKeyVisible ? "text" : "password"}
-                    value={modelConfig.apiKey}
-                    onChange={(event) => setModelConfig((current) => ({ ...current, apiKey: event.target.value }))}
-                  />
-                  <button onClick={() => setApiKeyVisible((current) => !current)} type="button">
-                    {apiKeyVisible ? "隐藏" : "显示"}
-                  </button>
-                </span>
-              </label>
-              <label>
-                <span>Base URL</span>
-                <input
-                  aria-label="Base URL"
-                  value={modelConfig.baseUrl}
-                  onChange={(event) => setModelConfig((current) => ({ ...current, baseUrl: event.target.value }))}
-                />
-              </label>
-              <label>
-                <span>Model</span>
-                <input
-                  aria-label="模型"
-                  value={modelConfig.model}
-                  onChange={(event) => setModelConfig((current) => ({ ...current, model: event.target.value }))}
-                />
-              </label>
-            </div>
-            <p className="muted">
-              当前为接入表单骨架。后续会接入 provider model list、连接测试和安全保存密钥。
-            </p>
-          </section>
+                <button
+                  className={engine?.mode === "byok" ? "active" : ""}
+                  role="tab"
+                  type="button"
+                  onClick={() => patchEngine({ mode: "byok", byok: byokDraft })}
+                >
+                  BYOK
+                </button>
+              </div>
 
-              <section className="config-section">
-                <div className="settings-section-heading">
-                  <h3>安全策略</h3>
-                  <span>{securityPolicy.commandApprovalMode}</span>
+              {engine?.mode === "byok" ? (
+                <div className="model-config-panel">
+                  <div className="settings-section-heading">
+                    <h3>API Provider</h3>
+                    <span>BYOK</span>
+                  </div>
+                  <div className="provider-quick-fill" role="tablist" aria-label="Provider 快速填充">
+                    {providerOptions.map((provider) => (
+                      <button
+                        className={providerId === provider.id ? "active" : ""}
+                        key={provider.id}
+                        onClick={() => {
+                          setProviderId(provider.id);
+                          setByokDraft((current) => ({
+                            ...current,
+                            provider: provider.label,
+                            baseUrl: provider.baseUrl,
+                            model: provider.model
+                          }));
+                          void loadProviderModels(provider.id);
+                        }}
+                        type="button"
+                      >
+                        {provider.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="model-config-grid">
+                    <label>
+                      <span>API Key</span>
+                      <span className="secret-field">
+                        <input
+                          aria-label="API Key"
+                          placeholder="sk-..."
+                          type={apiKeyVisible ? "text" : "password"}
+                          value={byokDraft.apiKey}
+                          onChange={(event) => setByokDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                        />
+                        <button onClick={() => setApiKeyVisible((current) => !current)} type="button">
+                          {apiKeyVisible ? "隐藏" : "显示"}
+                        </button>
+                      </span>
+                    </label>
+                    <label>
+                      <span>Base URL</span>
+                      <input
+                        aria-label="Base URL"
+                        value={byokDraft.baseUrl}
+                        onChange={(event) => setByokDraft((current) => ({ ...current, baseUrl: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>
+                        Model · {loadingModels ? "拉取中…" : modelsMeta?.live ? "实时列表" : "内置列表"}
+                      </span>
+                      <div className="model-picker-row">
+                        <Select
+                          ariaLabel="模型"
+                          value={byokDraft.model}
+                          placeholder={loadingModels ? "拉取中…" : "选择或在下方手动输入"}
+                          options={modelSelectOptions}
+                          onValueChange={(model) => setByokDraft((current) => ({ ...current, model }))}
+                        />
+                        <button
+                          className="ghost-action"
+                          disabled={loadingModels}
+                          onClick={() => loadProviderModels(providerId, { refresh: true })}
+                          type="button"
+                        >
+                          <RefreshCw size={14} className={loadingModels ? "spin" : undefined} />
+                          <span>{loadingModels ? "刷新中…" : "刷新模型"}</span>
+                        </button>
+                      </div>
+                    </label>
+                    <label>
+                      <span>手动指定(可选)</span>
+                      <input
+                        aria-label="手动模型"
+                        placeholder="如 gpt-4o-2024-11-20"
+                        value={byokDraft.model}
+                        onChange={(event) => setByokDraft((current) => ({ ...current, model: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  {modelsMeta ? <p className="field-hint">{modelsMeta.detail}</p> : null}
+                  <div className="project-config-actions">
+                    <button
+                      className="secondary-action"
+                      disabled={busy}
+                      onClick={() => patchEngine({ mode: "byok", byok: byokDraft })}
+                      type="button"
+                    >
+                      保存 BYOK 配置
+                    </button>
+                  </div>
+                  <p className="field-hint">
+                    API Key 保存在本机 SQLite 状态中,仅用于直连对应 Provider 拉取模型与本地调用。
+                  </p>
                 </div>
-                <div className="settings-policy-grid">
-                  <div>
-                    <span>Commands</span>
-                    <strong>{securityPolicy.allowedCommands.join(", ") || "manual approval"}</strong>
+              ) : (
+                <>
+                  <p className="muted">选择用来运行提示词的 CLI。</p>
+                  <div className="settings-section-heading">
+                    <h3>你的 CLI ({clis.filter((cli) => cli.available).length})</h3>
+                    <button className="ghost-action" disabled={scanning} onClick={rescanClis} type="button">
+                      <RefreshCw size={14} className={scanning ? "spin" : undefined} />
+                      <span>{scanning ? "扫描中…" : "重新扫描"}</span>
+                    </button>
                   </div>
-                  <div>
-                    <span>Files</span>
-                    <strong>{securityPolicy.fileScopes.join(", ")}</strong>
+                  {clis.length === 0 ? <p className="muted">正在检测本机 CLI…</p> : null}
+                  <div className="cli-list">
+                    {clis.map((cli) => {
+                      const selected = engine?.cliId === cli.id;
+                      const selectedModel = engine?.cliModels[cli.id] ?? "default";
+                      return (
+                        <div key={cli.id}>
+                          <article
+                            className={`cli-card${selected ? " selected" : ""}${cli.available ? "" : " unavailable"}`}
+                          >
+                            <button className="cli-card-main" onClick={() => patchEngine({ mode: "cli", cliId: cli.id })} type="button">
+                              <div className="cli-card-title">
+                                <strong>{cli.name}</strong>
+                                <span className="cli-tagline">· {cli.tagline}</span>
+                              </div>
+                              <span className="cli-version">{cli.available ? cli.version ?? cli.bin : "未检测到"}</span>
+                            </button>
+                            <button
+                              className="cli-test-button"
+                              disabled={!cli.available || testingId === cli.id}
+                              onClick={() => testCli(cli.id)}
+                              type="button"
+                            >
+                              {testingId === cli.id ? "测试中…" : "测试"}
+                            </button>
+                          </article>
+                          {selected ? (
+                            <div className="cli-card-body">
+                              <label>
+                                <span>模型 · {cli.modelsLive ? "实时列表" : "内置列表"}</span>
+                                <Select
+                                  ariaLabel={`${cli.name} 模型`}
+                                  value={selectedModel}
+                                  onValueChange={(model) => patchEngine({ mode: "cli", cliId: cli.id, cliModels: { [cli.id]: model } })}
+                                  options={cli.models.map((model) => ({ value: model.id, label: model.label }))}
+                                />
+                              </label>
+                              <span className="field-hint">{cli.detail}</span>
+                            </div>
+                          ) : null}
+                          {testResult && testResult.id === cli.id ? (
+                            <div className={`cli-test-banner${testResult.ok ? " ok" : " fail"}`}>{testResult.message}</div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div>
-                    <span>Sandbox</span>
-                    <strong>{securityPolicy.sandboxRuntime}</strong>
-                  </div>
-                  <div>
-                    <span>Secrets</span>
-                    <strong>{securityPolicy.secretsPolicy}</strong>
-                  </div>
-                </div>
-              </section>
-            </>
+                </>
+              )}
+            </section>
           ) : null}
         </div>
       </section>
@@ -1749,22 +1973,17 @@ function WorkspaceConfigDialog({
             <form className="settings-add-project" onSubmit={submitLink}>
               <label>
                 <span>从仓库管理选择</span>
-                <select
-                  aria-label="选择要关联的仓库"
+                <Select
+                  ariaLabel="选择要关联的仓库"
                   disabled={linkableProjects.length === 0}
+                  placeholder="没有可关联的仓库"
                   value={linkTarget}
-                  onChange={(event) => setLinkTarget(event.target.value)}
-                >
-                  {linkableProjects.length === 0 ? (
-                    <option value="">没有可关联的仓库</option>
-                  ) : (
-                    linkableProjects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name} · {project.defaultBranch}
-                      </option>
-                    ))
-                  )}
-                </select>
+                  onValueChange={setLinkTarget}
+                  options={linkableProjects.map((project) => ({
+                    value: project.id,
+                    label: `${project.name} · ${project.defaultBranch}`
+                  }))}
+                />
               </label>
               <button className="secondary-action" disabled={busy || !linkTarget} type="submit">
                 关联并 checkout worktree
@@ -1902,17 +2121,12 @@ function ProjectFields({
       </label>
       <label className="full-field">
         <span>默认分支</span>
-        <select
-          aria-label="默认分支"
+        <Select
+          ariaLabel="默认分支"
           value={draft.defaultBranch}
-          onChange={(event) => onDraftChange({ ...draft, defaultBranch: event.target.value })}
-        >
-          {branchOptions.map((branch) => (
-            <option key={branch} value={branch}>
-              {branch}
-            </option>
-          ))}
-        </select>
+          onValueChange={(branch) => onDraftChange({ ...draft, defaultBranch: branch })}
+          options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
+        />
         <span className="field-hint">默认分支会作为 worktree 和知识库的 base。</span>
       </label>
     </div>
@@ -1990,15 +2204,21 @@ function Timeline({ events }: { events: AgentEvent[] }) {
   return (
     <div className="timeline">
       {events.length === 0 ? <p className="muted">暂无执行事件。</p> : null}
-      {events.map((event) => (
-        <article className="timeline-item" key={event.id}>
+      {events.map((event, index) => (
+        <motion.article
+          className="timeline-item"
+          key={event.id}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.28, delay: Math.min(index * 0.04, 0.32), ease: [0.22, 0.61, 0.36, 1] }}
+        >
           <div className="timeline-dot" />
           <div>
             <strong>{event.title}</strong>
             <span>{event.agent}</span>
             <p>{event.detail}</p>
           </div>
-        </article>
+        </motion.article>
       ))}
     </div>
   );

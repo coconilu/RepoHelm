@@ -204,6 +204,76 @@ export interface KnowledgeItem {
   updatedAt: string;
 }
 
+export interface CliModelOption {
+  id: string;
+  label: string;
+}
+
+export type ProviderId = "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter" | "openai-compatible";
+
+export interface ProviderInfo {
+  id: ProviderId;
+  name: string;
+  defaultBaseUrl: string;
+  keyOptional: boolean;
+}
+
+export interface ProviderModelsResult {
+  providerId: ProviderId;
+  models: CliModelOption[];
+  live: boolean;
+  detail: string;
+  fetchedAt: string;
+}
+
+export interface ModelCacheEntry {
+  models: CliModelOption[];
+  live: boolean;
+  detail: string;
+  fetchedAt: string;
+}
+
+export interface LocalCliInfo {
+  id: string;
+  name: string;
+  tagline: string;
+  bin: string;
+  available: boolean;
+  version?: string;
+  models: CliModelOption[];
+  modelsLive: boolean;
+  detail: string;
+}
+
+export interface CliTestResult {
+  id: string;
+  ok: boolean;
+  latencyMs: number;
+  message: string;
+}
+
+export interface ByokConfig {
+  provider: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}
+
+export interface EngineConfig {
+  mode: "cli" | "byok";
+  cliId: string;
+  cliModels: Record<string, string>;
+  byok: ByokConfig;
+  updatedAt: string;
+}
+
+export interface UpdateEngineInput {
+  mode?: "cli" | "byok";
+  cliId?: string;
+  cliModels?: Record<string, string>;
+  byok?: Partial<ByokConfig>;
+}
+
 export interface RepoHelmState {
   workspaces: Workspace[];
   projects: Project[];
@@ -213,6 +283,15 @@ export interface RepoHelmState {
   capabilities: CapabilityDefinition[];
   securityPolicy: SecurityPolicy;
   auditLog: AuditLogEntry[];
+  engine: EngineConfig;
+  modelCache: Record<string, ModelCacheEntry>;
+}
+
+export interface ListProviderModelsInput {
+  providerId?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  refresh?: boolean;
 }
 
 export interface CreateWorkspaceInput {

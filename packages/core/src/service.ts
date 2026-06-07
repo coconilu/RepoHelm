@@ -2,35 +2,45 @@ import { access } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { AgentBackendRegistry } from "./agent.js";
+import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
+import { ProviderRegistry } from "./providers.js";
 import type {
   AgentEvent,
   AuditLogEntry,
   CapabilityDefinition,
   CapabilityRecommendation,
+  CliTestResult,
   CreateProjectInput,
   CreateQuestInput,
   CreateWorkspaceInput,
   DeliveryState,
+  EngineConfig,
   KnowledgeItem,
+  ListProviderModelsInput,
+  LocalCliInfo,
   Project,
   ProjectHealth,
   ProductReadiness,
+  ProviderInfo,
+  ProviderModelsResult,
   Quest,
   QuestSpec,
   RepoHelmState,
   SecurityPolicy,
+  UpdateEngineInput,
   UpdateProjectInput,
   UpdateWorkspaceInput,
   Workspace,
   WorkspaceWorktree,
   WorktreeState
 } from "./types.js";
-import type { StateStore } from "./store.js";
+import { defaultEngineConfig, type StateStore } from "./store.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
+const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const unknownHealth = (): ProjectHealth => ({
   status: "unknown",
   message: "尚未检查项目状态。"
@@ -46,6 +56,8 @@ const slugify = (value: string) =>
 export class RepoHelmService {
   private readonly gitWorktreeManager = new GitWorktreeManager();
   private readonly agentBackendRegistry = new AgentBackendRegistry();
+  private readonly providerRegistry = new ProviderRegistry();
+  private readonly cliRegistry = new LocalCliRegistry(undefined, this.providerRegistry);
   private readonly worktreeRootDir: string;
   private readonly knowledgeFileStore: KnowledgeFileStore;
 
@@ -328,6 +340,87 @@ export class RepoHelmService {
 
   async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string }> {
     return this.gitWorktreeManager.listBranches(path);
+  }
+
+  async listLocalClis(refresh = false): Promise<LocalCliInfo[]> {
+    return this.cliRegistry.detectAll({ refresh });
+  }
+
+  async testLocalCli(id: string): Promise<CliTestResult> {
+    const def = this.cliRegistry.get(id);
+    if (!def) {
+      return { id, ok: false, latencyMs: 0, message: "未知的 CLI。" };
+    }
+    return this.cliRegistry.test(def);
+  }
+
+  async getEngine(): Promise<EngineConfig> {
+    const state = await this.getState();
+    return state.engine;
+  }
+
+  async updateEngine(input: UpdateEngineInput): Promise<EngineConfig> {
+    const state = await this.getState();
+    const engine: EngineConfig = {
+      ...state.engine,
+      mode: input.mode ?? state.engine.mode,
+      cliId: input.cliId ?? state.engine.cliId,
+      cliModels: input.cliModels ? { ...state.engine.cliModels, ...input.cliModels } : state.engine.cliModels,
+      byok: input.byok ? { ...state.engine.byok, ...input.byok } : state.engine.byok,
+      updatedAt: now()
+    };
+    await this.store.write({ ...state, engine });
+    return engine;
+  }
+
+  async listProviders(): Promise<ProviderInfo[]> {
+    return this.providerRegistry.list().map((def) => ({
+      id: def.id,
+      name: def.name,
+      defaultBaseUrl: def.defaultBaseUrl,
+      keyOptional: Boolean(def.keyOptional)
+    }));
+  }
+
+  /**
+   * List a provider's models from its REST `/models` endpoint, with a SQLite-backed
+   * cache (TTL {@link MODEL_CACHE_TTL_MS}). `refresh` forces a live fetch.
+   * Falls back to the BYOK key/baseUrl saved in engine config when not supplied.
+   */
+  async listProviderModels(input: ListProviderModelsInput): Promise<ProviderModelsResult> {
+    const state = await this.getState();
+    const def = this.providerRegistry.resolve(input.providerId, input.baseUrl);
+    const baseUrl = input.baseUrl?.trim() || def.defaultBaseUrl;
+    const apiKey =
+      input.apiKey?.trim() ||
+      (state.engine.byok.provider && this.providerRegistry.resolve(undefined, state.engine.byok.baseUrl).id === def.id
+        ? state.engine.byok.apiKey
+        : "") ||
+      this.providerRegistry.envKey(def) ||
+      "";
+    const cacheKey = `${def.id}:${baseUrl}`;
+    const cached = state.modelCache?.[cacheKey];
+
+    if (!input.refresh && cached && Date.now() - new Date(cached.fetchedAt).getTime() < MODEL_CACHE_TTL_MS) {
+      return { providerId: def.id, ...cached };
+    }
+
+    const result = await this.providerRegistry.fetchModels(def, { apiKey, baseUrl });
+    if (result.live) {
+      await this.store.write({
+        ...state,
+        modelCache: {
+          ...(state.modelCache ?? {}),
+          [cacheKey]: {
+            models: result.models,
+            live: result.live,
+            detail: result.detail,
+            fetchedAt: result.fetchedAt
+          }
+        }
+      });
+    }
+    return result;
   }
 
   async checkProjectHealth(projectId: string): Promise<Project> {
@@ -998,7 +1091,9 @@ export class RepoHelmService {
       })),
       capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now()),
       securityPolicy: state.securityPolicy ?? this.seedSecurityPolicy(now()),
-      auditLog: state.auditLog ?? []
+      auditLog: state.auditLog ?? [],
+      engine: state.engine ?? defaultEngineConfig(),
+      modelCache: state.modelCache ?? {}
     };
   }
 

@@ -19,7 +19,22 @@ const emptyState = (): RepoHelmState => ({
     sandboxRuntime: "local",
     updatedAt: new Date().toISOString()
   },
-  auditLog: []
+  auditLog: [],
+  engine: defaultEngineConfig(),
+  modelCache: {}
+});
+
+export const defaultEngineConfig = () => ({
+  mode: "cli" as const,
+  cliId: "claude-code",
+  cliModels: {} as Record<string, string>,
+  byok: {
+    provider: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-5.1-codex",
+    apiKey: ""
+  },
+  updatedAt: new Date().toISOString()
 });
 
 export interface StateStore {

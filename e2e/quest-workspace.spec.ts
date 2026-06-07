@@ -43,7 +43,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   const settingsDialog = page.getByRole("dialog", { name: "设置" });
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.getByRole("tab", { name: "仓库管理" })).toBeVisible();
-  await expect(settingsDialog.getByRole("tab", { name: "大模型接入" })).toBeVisible();
+  await expect(settingsDialog.getByRole("tab", { name: "执行模式" })).toBeVisible();
   await expect(settingsDialog.getByRole("heading", { name: "仓库管理" })).toBeVisible();
   await expect(settingsDialog.getByText("RepoHelm").first()).toBeVisible();
   // Repos are global now: register the docs directory once, then link it from the workspace below.
@@ -53,11 +53,17 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(settingsProjectRow).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "打开目录" })).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "检查状态" })).toBeVisible();
-  await settingsDialog.getByRole("tab", { name: "大模型接入" }).click();
+  await settingsDialog.getByRole("tab", { name: "执行模式" }).click();
+  await expect(settingsDialog.getByRole("tab", { name: "本机 CLI" })).toBeVisible();
+  await expect(settingsDialog.getByRole("heading", { name: /你的 CLI/ })).toBeVisible();
+  await expect(settingsDialog.getByRole("button", { name: "重新扫描" })).toBeVisible();
+  await settingsDialog.getByRole("tab", { name: "BYOK" }).click();
   await expect(settingsDialog.getByRole("button", { name: "OpenAI" })).toBeVisible();
   await expect(settingsDialog.getByRole("textbox", { name: "API Key" })).toBeVisible();
   await expect(settingsDialog.getByRole("textbox", { name: "Base URL" })).toBeVisible();
-  await expect(settingsDialog.getByRole("textbox", { name: "模型" })).toBeVisible();
+  await expect(settingsDialog.getByRole("combobox", { name: "模型" })).toBeVisible();
+  await expect(settingsDialog.getByRole("textbox", { name: "手动模型" })).toBeVisible();
+  await expect(settingsDialog.getByRole("button", { name: /刷新模型/ })).toBeVisible();
   await page.getByRole("button", { name: "关闭设置" }).click();
 
   await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
@@ -140,6 +146,18 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await changedFileRow.click();
   await expect(page.getByText("MVP mock Implementation Agent")).toBeVisible();
 
+  // Delivery runs each project's validation command inside the bare worktree. The repo's
+  // default `pnpm test:all` can't run there (no node_modules), so point validation at a
+  // trivial command via the API for a deterministic delivery.
+  const apiBase = "http://127.0.0.1:4300";
+  const preDeliverState = await (await fetch(`${apiBase}/api/state`)).json();
+  const deliverRepo = preDeliverState.projects.find((item: { path: string }) => item.path === repoRoot);
+  await fetch(`${apiBase}/api/projects/${deliverRepo.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ validationCommand: "node --version" })
+  });
+
   await page.getByRole("button", { name: "交付", exact: true }).click();
   await expect(page.locator("strong").filter({ hasText: "交付准备完成" })).toBeVisible();
   await expect(page.getByText("pr_ready").first()).toBeVisible();
@@ -149,7 +167,8 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page
     .getByRole("textbox", { name: "需求" })
     .fill(`${codexQuestTitle}\n从浏览器选择 Codex CLI backend，并验证外部 CLI fixture 写入产物。`);
-  await page.getByRole("combobox", { name: "Agent Backend" }).selectOption("codex-cli");
+  await page.getByRole("combobox", { name: "Agent Backend" }).click();
+  await page.getByRole("option", { name: "Codex", exact: true }).click();
   await page.getByRole("button", { name: "发送给 Agent" }).click();
   await expect(page.getByRole("heading", { name: codexQuestTitle })).toBeVisible();
   await expect(page.locator(".run-context").filter({ hasText: "Codex CLI" })).toBeVisible();
