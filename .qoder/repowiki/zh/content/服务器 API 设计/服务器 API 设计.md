@@ -3,6 +3,7 @@
 <cite>
 **本文引用的文件列表**
 - [apps/server/src/index.ts](file://apps/server/src/index.ts)
+- [apps/server/src/index.test.ts](file://apps/server/src/index.test.ts)
 - [apps/web/src/api.ts](file://apps/web/src/api.ts)
 - [packages/core/src/service.ts](file://packages/core/src/service.ts)
 - [packages/core/src/types.ts](file://packages/core/src/types.ts)
@@ -26,6 +27,8 @@
 
 ## 简介
 本文件为 RepoHelm 服务器 API 的全面设计文档，面向前端与集成开发者，系统性说明 RESTful API 的端点、请求/响应模式、数据验证（Zod）、路由与中间件、CORS 与安全策略、错误处理、版本与兼容性、客户端实现与性能优化、测试与调试方法，以及与核心服务的集成关系。RepoHelm 以 Hono 为基础构建 API，使用 Zod 对输入进行强类型校验，通过 @repohelm/core 提供业务逻辑与状态持久化。
+
+**更新** 本次更新新增了完整的 ModelKit 管理能力，包括 ModelKit 的创建、测试、保存、更新、删除和查询，以及相关的 SubAgent 管理功能。
 
 ## 项目结构
 - 应用层
@@ -53,15 +56,15 @@ W --> S
 S --> C
 ```
 
-图表来源
+**图表来源**
 - [apps/server/src/index.ts:39-49](file://apps/server/src/index.ts#L39-L49)
 - [apps/web/src/api.ts:276-422](file://apps/web/src/api.ts#L276-L422)
 - [packages/core/src/service.ts:56-71](file://packages/core/src/service.ts#L56-L71)
 
-章节来源
-- [apps/server/src/index.ts:1-366](file://apps/server/src/index.ts#L1-L366)
+**章节来源**
+- [apps/server/src/index.ts:1-536](file://apps/server/src/index.ts#L1-L536)
 - [apps/web/src/api.ts:1-423](file://apps/web/src/api.ts#L1-L423)
-- [packages/core/src/service.ts:1-1331](file://packages/core/src/service.ts#L1-L1331)
+- [packages/core/src/service.ts:1-1702](file://packages/core/src/service.ts#L1-L1702)
 - [README.md:1-100](file://README.md#L1-L100)
 
 ## 核心组件
@@ -69,22 +72,24 @@ S --> C
   - 日志中间件：全局日志记录。
   - CORS 中间件：允许来自 http://localhost:5173 与 http://127.0.0.1:5173 的跨域请求，支持 GET/POST/PATCH/DELETE/OPTIONS，允许 Content-Type 头。
 - 数据验证（Zod）
-  - 为工作区、项目、引擎、提供商模型查询、安全策略、Quest 等输入建立严格 Schema，统一在路由层解析与校验。
+  - 为工作区、项目、引擎、提供商模型查询、安全策略、Quest、**ModelKit**、**SubAgent** 等输入建立严格 Schema，统一在路由层解析与校验。
 - 核心服务（RepoHelmService）
   - 提供工作区管理、项目管理、引擎配置、提供商模型查询、安全策略、Quest 生命周期、Git worktree 管理、知识库检索与持久化、审计日志等能力。
+  - **新增** ModelKit 管理：创建、测试、保存、更新、删除、查询 ModelKit。
+  - **新增** SubAgent 管理：创建、更新、删除、查询 SubAgent，支持权限配置和模式切换。
 - 状态存储（StateStore）
   - 支持 JSON 与 SQLite 两种实现，含迁移逻辑与默认配置。
 
-章节来源
+**章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
-- [apps/server/src/index.ts:51-112](file://apps/server/src/index.ts#L51-L112)
+- [apps/server/src/index.ts:51-144](file://apps/server/src/index.ts#L51-L144)
 - [packages/core/src/service.ts:56-71](file://packages/core/src/service.ts#L56-L71)
 - [packages/core/src/store.ts:86-165](file://packages/core/src/store.ts#L86-L165)
 
 ## 架构总览
-服务器 API 采用“路由层 + 服务层 + 存储层”的分层设计：
+服务器 API 采用"路由层 + 服务层 + 存储层"的分层设计：
 - 路由层：Hono 路由注册与中间件装配，Zod 输入校验，统一错误处理。
-- 服务层：RepoHelmService 组织业务流程，协调 Git、Provider、Knowledge、Audit 等子系统。
+- 服务层：RepoHelmService 组织业务流程，协调 Git、Provider、Knowledge、Audit、**ModelKit**、**SubAgent** 等子系统。
 - 存储层：SqliteStateStore/JsonStateStore 提供状态持久化与迁移。
 
 ```mermaid
@@ -107,8 +112,8 @@ Service-->>Router : 返回业务结果
 Router-->>Client : JSON 响应
 ```
 
-图表来源
-- [apps/server/src/index.ts:114-361](file://apps/server/src/index.ts#L114-L361)
+**图表来源**
+- [apps/server/src/index.ts:114-536](file://apps/server/src/index.ts#L114-L536)
 - [packages/core/src/service.ts:135-137](file://packages/core/src/service.ts#L135-L137)
 - [packages/core/src/store.ts:125-139](file://packages/core/src/store.ts#L125-L139)
 
@@ -121,9 +126,9 @@ Router-->>Client : JSON 响应
 - 错误处理
   - 全局 onError 捕获异常，统一返回 500 与错误消息。
 
-章节来源
+**章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
-- [apps/server/src/index.ts:353-361](file://apps/server/src/index.ts#L353-L361)
+- [apps/server/src/index.ts:523-531](file://apps/server/src/index.ts#L523-L531)
 
 ### 数据验证（Zod）与类型系统
 - 输入校验 Schema
@@ -135,14 +140,21 @@ Router-->>Client : JSON 响应
   - 提供商模型查询：baseUrl/apiKey/refresh 可选。
   - 安全策略：命令审批模式、允许命令、文件作用域、网络作用域、密钥策略、沙箱运行时可选。
   - Quest：workspaceId/title/requirement 必填，agentBackendId 可选，affectedProjectIds 可选。
+  - **新增** ModelKit 创建：id/name/type/backendId/providerId/model/config/costTier/performanceProfile 可选。
+  - **新增** ModelKit 更新：name/model/config/costTier/performanceProfile 可选。
+  - **新增** ModelKit 测试：type/backendId/providerId/model/apiKey/baseUrl/name/costTier/performanceProfile 可选。
+  - **新增** SubAgent 创建：id/name/role/capabilities/modelKitId/mode/permissions/promptTemplate 可选。
+  - **新增** SubAgent 更新：name/role/capabilities/modelKitId/mode/permissions/promptTemplate 可选。
 - 类型定义
   - 服务层与前端均使用统一类型定义，确保 API 与 UI 的一致性。
 
-章节来源
-- [apps/server/src/index.ts:51-112](file://apps/server/src/index.ts#L51-L112)
-- [packages/core/src/types.ts:1-334](file://packages/core/src/types.ts#L1-L334)
+**章节来源**
+- [apps/server/src/index.ts:51-144](file://apps/server/src/index.ts#L51-L144)
+- [packages/core/src/types.ts:265-435](file://packages/core/src/types.ts#L265-L435)
 
 ### API 端点清单与规范
+
+**更新** 新增 ModelKit 和 SubAgent 管理端点组
 
 说明
 - 所有端点均返回 JSON。
@@ -151,7 +163,74 @@ Router-->>Client : JSON 响应
 - 请求体为 JSON；Content-Type: application/json。
 - 身份验证：本项目未实现鉴权中间件，API 未包含鉴权头或令牌。
 
-端点一览
+#### ModelKit 管理端点
+- 创建 ModelKit
+  - 方法：POST
+  - 路径：/api/model-kits
+  - 请求体：name/type/backendId/providerId/model/config/costTier/performanceProfile（部分可选）
+  - 功能：创建新的 ModelKit 配置
+  - 响应：ModelKit（201）
+- 更新 ModelKit
+  - 方法：PATCH
+  - 路径：/api/model-kits/:id
+  - 参数：路径参数 id；请求体：name/model/config/costTier/performanceProfile（可选）
+  - 功能：更新现有 ModelKit
+  - 响应：ModelKit
+- 删除 ModelKit
+  - 方法：DELETE
+  - 路径：/api/model-kits/:id
+  - 参数：路径参数 id
+  - 功能：删除 ModelKit（如被 SubAgent 引用，需先删除引用）
+  - 响应：{ ok: true }
+- 列出所有 ModelKits
+  - 方法：GET
+  - 路径：/api/model-kits
+  - 功能：获取所有 ModelKit 列表
+  - 响应：ModelKit[]
+- 测试并保存 ModelKit
+  - 方法：POST
+  - 路径：/api/model-kits/test-and-save
+  - 请求体：type/backendId/providerId/model/apiKey/baseUrl/name/costTier/performanceProfile（部分可选）
+  - 功能：测试模型配置连通性并保存为 ModelKit
+  - 响应：ModelKit（201）
+
+#### SubAgent 管理端点
+- 创建 SubAgent
+  - 方法：POST
+  - 路径：/api/sub-agents
+  - 请求体：name/role/capabilities/modelKitId/mode/permissions/promptTemplate（部分可选）
+  - 功能：创建新的 SubAgent
+  - 响应：SubAgent（201）
+- 更新 SubAgent
+  - 方法：PATCH
+  - 路径：/api/sub-agents/:id
+  - 参数：路径参数 id；请求体：name/role/capabilities/modelKitId/mode/permissions/promptTemplate（可选）
+  - 功能：更新现有 SubAgent
+  - 响应：SubAgent
+- 删除 SubAgent
+  - 方法：DELETE
+  - 路径：/api/sub-agents/:id
+  - 参数：路径参数 id
+  - 功能：删除 SubAgent（如为入口 SubAgent，需先设置其他入口）
+  - 响应：{ ok: true }
+- 列出所有 SubAgents
+  - 方法：GET
+  - 路径：/api/sub-agents
+  - 功能：获取所有 SubAgent 列表
+  - 响应：SubAgent[]
+- 设置入口 SubAgent
+  - 方法：POST
+  - 路径：/api/sub-agents/set-entry
+  - 请求体：id
+  - 功能：设置入口 SubAgent（必须为 entry 模式）
+  - 响应：{ ok: true }
+- 获取入口 SubAgent
+  - 方法：GET
+  - 路径：/api/sub-agents/entry
+  - 功能：获取当前入口 SubAgent
+  - 响应：SubAgent 或 undefined
+
+端点一览（其余端点保持不变）
 - 健康检查
   - 方法：GET
   - 路径：/api/health
@@ -191,13 +270,13 @@ Router-->>Client : JSON 响应
 - 列举提供商模型
   - 方法：POST
   - 路径：/api/providers/:id/models
-  - 参数：路径参数 id；请求体包含 baseUrl、apiKey、refresh
+  - 参数：路径参数 id；请求体包含 baseUrl/apiKey/refresh
   - 功能：列举提供商模型（支持缓存与刷新）
   - 响应：ProviderModelsResult
 - 测试提供商
   - 方法：POST
   - 路径：/api/providers/:id/test
-  - 参数：路径参数 id；请求体包含 baseUrl、apiKey
+  - 参数：路径参数 id；请求体包含 baseUrl/apiKey
   - 功能：探测提供商连通性与鉴权
   - 响应：CliTestResult
 - 引擎配置
@@ -358,21 +437,23 @@ Router-->>Client : JSON 响应
   - 功能：拒绝能力推荐
   - 响应：Quest
 
-章节来源
-- [apps/server/src/index.ts:114-361](file://apps/server/src/index.ts#L114-L361)
+**章节来源**
+- [apps/server/src/index.ts:419-521](file://apps/server/src/index.ts#L419-L521)
 
 ### 请求/响应示例与错误处理
 - 示例
   - 获取状态：GET /api/state → 返回 RepoHelmState
   - 创建工作区：POST /api/workspaces → 请求体包含 name/description/worktreeRoot；响应 201 与 Workspace
   - 运行 Quest：POST /api/quests/:id/run → 返回 Quest
+  - **新增** 创建 ModelKit：POST /api/model-kits → 请求体包含 name/type/backendId/model；响应 201 与 ModelKit
+  - **新增** 测试并保存 ModelKit：POST /api/model-kits/test-and-save → 请求体包含 type/name/model；响应 201 与 ModelKit
 - 错误处理
   - 全局 onError：捕获异常并返回 500 与错误消息。
   - 路由层 Zod 校验失败：将触发 400（由 Hono 默认行为处理，具体取决于框架行为）。
-  - 业务异常：如“Workspace not found”、“Project not found”，服务层抛出错误，最终由全局 onError 捕获并返回 500。
+  - 业务异常：如"Workspace not found"、"Project not found"、"ModelKit not found"，服务层抛出错误，最终由全局 onError 捕获并返回 500。
 
-章节来源
-- [apps/server/src/index.ts:353-361](file://apps/server/src/index.ts#L353-L361)
+**章节来源**
+- [apps/server/src/index.ts:523-531](file://apps/server/src/index.ts#L523-L531)
 - [packages/core/src/service.ts:163-164](file://packages/core/src/service.ts#L163-L164)
 - [packages/core/src/service.ts:206-207](file://packages/core/src/service.ts#L206-L207)
 - [packages/core/src/service.ts:307-309](file://packages/core/src/service.ts#L307-L309)
@@ -387,7 +468,7 @@ Router-->>Client : JSON 响应
   - 审计日志：记录命令、文件、网络、密钥、能力、沙箱等类型的决策与详情。
   - 身份验证：未实现鉴权中间件，不包含 Authorization 头或令牌。
 
-章节来源
+**章节来源**
 - [apps/server/src/index.ts:42-49](file://apps/server/src/index.ts#L42-L49)
 - [packages/core/src/types.ts:135-143](file://packages/core/src/types.ts#L135-L143)
 - [packages/core/src/store.ts:13-24](file://packages/core/src/store.ts#L13-L24)
@@ -398,8 +479,9 @@ Router-->>Client : JSON 响应
 - 兼容性
   - 状态存储支持从旧 JSON 迁移到 SQLite，并对引擎配置进行兼容迁移（byok -> byokProviders）。
   - 类型定义与 API 行为保持一致，前端通过统一类型定义对接。
+  - **新增** ModelKit 和 SubAgent 功能作为扩展特性，不影响现有 API 兼容性。
 
-章节来源
+**章节来源**
 - [apps/server/package.json:1-22](file://apps/server/package.json#L1-L22)
 - [packages/core/package.json:1-21](file://packages/core/package.json#L1-L21)
 - [packages/core/src/store.ts:36-84](file://packages/core/src/store.ts#L36-L84)
@@ -410,24 +492,27 @@ Router-->>Client : JSON 响应
   - 建议：使用 fetch 包装统一处理 4xx/5xx，提取错误消息，避免重复代码。
 - 性能优化
   - 提供商模型缓存：ProviderModelsResult 支持缓存（TTL），减少频繁请求。
-  - 分页与过滤：对大列表（如知识库、审计日志）建议在前端分页或增加筛选参数。
+  - 分页与过滤：对大列表（如知识库、审计日志、ModelKit 列表）建议在前端分页或增加筛选参数。
   - 并发控制：批量操作（如多个 Quest 并行运行）需注意资源限制与并发队列。
+  - **新增** ModelKit 缓存：ModelKit 配置可重复使用，减少重复测试开销。
 
-章节来源
+**章节来源**
 - [apps/web/src/api.ts:276-422](file://apps/web/src/api.ts#L276-L422)
 - [packages/core/src/service.ts:422-455](file://packages/core/src/service.ts#L422-L455)
 
 ### API 测试与调试
 - 单元测试
   - @repohelm/core 提供 vitest 测试，覆盖工作区引导、SQLite 迁移、知识文件写入、Quest 创建、能力推荐、安全策略、真实 worktree、mock/CLI Agent、diff 读取、清理、重试、交付、产品就绪度等。
+  - **新增** ModelKit 测试：覆盖创建、更新、删除、查询、测试保存等完整 CRUD 场景。
 - 端到端测试
   - e2e 使用 Playwright，覆盖从 UI 创建 Quest、生成 Spec、确认能力推荐、运行 Quest、搜索知识库、展示 worktree/review/diff、交付、清理、安全审计、产品就绪度与 CLI backend 的主流程。
 - 调试
   - 启用日志中间件，观察请求与响应。
   - 使用 /api/health 检查服务状态与根目录配置。
   - 通过 /api/audit-log 查看审计记录。
+  - **新增** 使用 /api/model-kits 和 /api/sub-agents 验证 ModelKit 和 SubAgent 管理功能。
 
-章节来源
+**章节来源**
 - [README.md:79-85](file://README.md#L79-L85)
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
 - [apps/server/src/index.ts:114-123](file://apps/server/src/index.ts#L114-L123)
@@ -443,16 +528,17 @@ E["apps/web/src/api.ts"] --> A
 B --> F["packages/core/src/service.ts"]
 F --> G["packages/core/src/types.ts"]
 F --> H["packages/core/src/store.ts"]
+I["apps/server/src/index.test.ts"] --> A
 ```
 
-图表来源
+**图表来源**
 - [apps/server/src/index.ts:1-11](file://apps/server/src/index.ts#L1-L11)
 - [apps/web/src/api.ts:276-422](file://apps/web/src/api.ts#L276-L422)
 - [packages/core/src/service.ts:1-39](file://packages/core/src/service.ts#L1-L39)
 - [packages/core/src/types.ts:1-334](file://packages/core/src/types.ts#L1-L334)
 - [packages/core/src/store.ts:1-89](file://packages/core/src/store.ts#L1-L89)
 
-章节来源
+**章节来源**
 - [apps/server/src/index.ts:1-11](file://apps/server/src/index.ts#L1-L11)
 - [apps/web/src/api.ts:276-422](file://apps/web/src/api.ts#L276-L422)
 - [packages/core/src/service.ts:1-39](file://packages/core/src/service.ts#L1-L39)
@@ -461,14 +547,17 @@ F --> H["packages/core/src/store.ts"]
 - 模型缓存：ProviderModelsResult 支持缓存（TTL），refresh=true 可强制刷新，降低对外部提供商的请求压力。
 - 并发与资源：同时运行多个 Quest 时，注意 Git worktree 创建与外部 CLI 执行的资源占用。
 - 状态持久化：SQLite 相比 JSON 更适合增量写入与并发场景，建议在生产环境优先使用 SqliteStateStore。
+- **新增** ModelKit 性能：ModelKit 配置可复用，避免重复测试开销；支持成本等级和性能配置优化资源使用。
 
-章节来源
+**章节来源**
 - [packages/core/src/service.ts:422-455](file://packages/core/src/service.ts#L422-L455)
 - [packages/core/src/store.ts:117-165](file://packages/core/src/store.ts#L117-L165)
 
 ## 故障排查指南
 - 常见错误
-  - “Workspace not found”/“Project not found”：检查路径参数与数据库状态。
+  - "Workspace not found" / "Project not found"：检查路径参数与数据库状态。
+  - "ModelKit not found"：检查 ModelKit ID 是否正确，确认是否存在。
+  - "SubAgent not found"：检查 SubAgent ID 是否正确，确认是否存在。
   - macOS 目录选择器：仅支持 macOS，其他平台返回空路径。
   - 分支枚举失败：当路径无效时返回默认分支与空列表。
 - 排查步骤
@@ -476,8 +565,9 @@ F --> H["packages/core/src/store.ts"]
   - 使用 /api/state 检查当前状态。
   - 使用 /api/audit-log 审核最近决策与拒绝原因。
   - 使用 /api/security-policy 检查安全策略是否过严导致命令被阻断。
+  - **新增** 使用 /api/model-kits 和 /api/sub-agents 检查 ModelKit 和 SubAgent 状态。
 
-章节来源
+**章节来源**
 - [apps/server/src/index.ts:273-291](file://apps/server/src/index.ts#L273-L291)
 - [apps/server/src/index.ts:293-304](file://apps/server/src/index.ts#L293-L304)
 - [packages/core/src/service.ts:163-164](file://packages/core/src/service.ts#L163-L164)
@@ -485,7 +575,7 @@ F --> H["packages/core/src/store.ts"]
 - [packages/core/src/service.ts:307-309](file://packages/core/src/service.ts#L307-L309)
 
 ## 结论
-RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
+RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的 ModelKit 和 SubAgent 管理功能**进一步增强了模型配置管理和代理编排能力。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
 
 ## 附录
 
@@ -527,5 +617,20 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 接受能力推荐：POST /api/quests/:id/capabilities/:capabilityId/accept
 - 拒绝能力推荐：POST /api/quests/:id/capabilities/:capabilityId/dismiss
 
-章节来源
-- [apps/server/src/index.ts:114-361](file://apps/server/src/index.ts#L114-L361)
+**新增** ModelKit 管理端点
+- 创建 ModelKit：POST /api/model-kits（请求体：name/type/backendId/providerId/model/config/costTier/performanceProfile）
+- 更新 ModelKit：PATCH /api/model-kits/:id（请求体：部分字段）
+- 删除 ModelKit：DELETE /api/model-kits/:id
+- 列出 ModelKits：GET /api/model-kits
+- 测试并保存 ModelKit：POST /api/model-kits/test-and-save（请求体：type/backendId/providerId/model/apiKey/baseUrl/name/costTier/performanceProfile）
+
+**新增** SubAgent 管理端点
+- 创建 SubAgent：POST /api/sub-agents（请求体：name/role/capabilities/modelKitId/mode/permissions/promptTemplate）
+- 更新 SubAgent：PATCH /api/sub-agents/:id（请求体：部分字段）
+- 删除 SubAgent：DELETE /api/sub-agents/:id
+- 列出 SubAgents：GET /api/sub-agents
+- 设置入口 SubAgent：POST /api/sub-agents/set-entry（请求体：id）
+- 获取入口 SubAgent：GET /api/sub-agents/entry
+
+**章节来源**
+- [apps/server/src/index.ts:114-521](file://apps/server/src/index.ts#L114-L521)

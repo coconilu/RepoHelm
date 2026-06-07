@@ -306,6 +306,52 @@ export interface ModelKit {
   metadata: ModelKitMetadata;
 }
 
+// Sub-agent 相关类型定义
+export interface SubAgentPermissions {
+  allowedTools: string[];
+  deniedTools: string[];
+  maxSteps?: number;
+}
+
+export interface SubAgentMetadata {
+  createdAt: string;
+  updatedAt: string;
+  usageCount: number;
+}
+
+export interface SubAgent {
+  id: string;
+  name: string;
+  role: string;
+  capabilities: string[];
+  modelKitId: string;
+  mode: "entry" | "worker";
+  permissions: SubAgentPermissions;
+  promptTemplate?: string;
+  metadata: SubAgentMetadata;
+}
+
+export interface CreateSubAgentInput {
+  id?: string;
+  name: string;
+  role: string;
+  capabilities?: string[];
+  modelKitId: string;
+  mode: "entry" | "worker";
+  permissions?: SubAgentPermissions;
+  promptTemplate?: string;
+}
+
+export interface UpdateSubAgentInput {
+  name?: string;
+  role?: string;
+  capabilities?: string[];
+  modelKitId?: string;
+  mode?: "entry" | "worker";
+  permissions?: SubAgentPermissions;
+  promptTemplate?: string;
+}
+
 export interface CreateModelKitInput {
   id?: string;
   name: string;
@@ -491,5 +537,27 @@ export const api = {
     request<ModelKit>("/api/model-kits/test-and-save", {
       method: "POST",
       body: JSON.stringify(input)
-    })
+    }),
+  // Sub-agent API 函数
+  listSubAgents: () => request<SubAgent[]>("/api/sub-agents"),
+  createSubAgent: (input: CreateSubAgentInput) =>
+    request<SubAgent>("/api/sub-agents", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateSubAgent: (id: string, input: UpdateSubAgentInput) =>
+    request<SubAgent>(`/api/sub-agents/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteSubAgent: (id: string) =>
+    request<{ ok: boolean }>(`/api/sub-agents/${id}`, {
+      method: "DELETE"
+    }),
+  setEntrySubAgent: (id: string) =>
+    request<{ ok: boolean }>("/api/sub-agents/set-entry", {
+      method: "POST",
+      body: JSON.stringify({ id })
+    }),
+  getEntrySubAgent: () => request<SubAgent | undefined>("/api/sub-agents/entry")
 };

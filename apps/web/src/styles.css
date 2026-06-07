@@ -2379,6 +2379,168 @@ code {
   font-size: 11px;
 }
 
+/* Sub-agent styles */
+.subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subagent-card {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  transition: border-color 130ms var(--ease), background-color 130ms var(--ease);
+}
+
+.subagent-card:hover {
+  border-color: var(--border-strong);
+}
+
+.subagent-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.subagent-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.subagent-title strong {
+  font-size: 15px;
+}
+
+.subagent-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.subagent-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subagent-role {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.subagent-modelkit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.subagent-modelkit span:first-child {
+  color: var(--text-faint);
+}
+
+.subagent-modelkit code {
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.subagent-capabilities {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.subagent-capabilities > span:first-child {
+  color: var(--text-faint);
+}
+
+.subagent-capabilities em {
+  background-color: var(--accent-soft);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.subagent-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Capability tags in dialog */
+.capability-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.capability-tag {
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 130ms var(--ease);
+}
+
+.capability-tag:hover {
+  border-color: var(--border-strong);
+  background-color: var(--bg-elevated);
+}
+
+.capability-tag.active {
+  background-color: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Tool permissions in dialog */
+.tool-permissions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tool-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+
+.tool-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.tool-checkbox span {
+  color: var(--text-muted);
+}
+
 .secondary-action:disabled,
 .ghost-action:disabled,
 .danger-action:disabled {

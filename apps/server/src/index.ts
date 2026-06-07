@@ -517,7 +517,7 @@ app.post("/api/sub-agents/set-entry", async (context) => {
 // GET /api/sub-agents/entry - 获取入口 Sub-agent
 app.get("/api/sub-agents/entry", async (context) => {
   const entrySubAgent = await service.getEntrySubAgent();
-  return context.json(entrySubAgent);
+  return context.json(entrySubAgent ?? null);
 });
 
 app.onError((error, context) => {

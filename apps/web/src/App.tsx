@@ -35,6 +35,7 @@ import {
   CapabilityDefinition,
   CliTestResult,
   CreateModelKitInput,
+  CreateSubAgentInput,
   EngineConfig,
   KnowledgeItem,
   CliModelOption,
@@ -46,8 +47,10 @@ import {
   Quest,
   RepoHelmState,
   SecurityPolicy,
+  SubAgent,
   TestModelInput,
   UpdateModelKitInput,
+  UpdateSubAgentInput,
   Workspace
 } from "./api";
 import { motion } from "motion/react";
@@ -77,7 +80,7 @@ const statusClass: Record<string, string> = {
 
 type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
 type ResizeDivider = "sidebar" | "inspector";
-type SettingsTab = "repositories" | "models" | "modelkits";
+type SettingsTab = "repositories" | "models" | "modelkits" | "subagents";
 
 const defaultColumnWidths = {
   sidebar: 280,
@@ -1515,17 +1518,26 @@ function AppSettingsDialog({
   });
   const [editingKit, setEditingKit] = useState<ModelKit | null>(null);
   const [kitError, setKitError] = useState("");
+  
+  // Sub-agent management state
+  const [subAgents, setSubAgents] = useState<SubAgent[]>([]);
+  const [entrySubAgentId, setEntrySubAgentId] = useState<string | undefined>();
+  const [creatingSubAgent, setCreatingSubAgent] = useState(false);
+  const [editingSubAgent, setEditingSubAgent] = useState<SubAgent | null>(null);
+  const [subAgentError, setSubAgentError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.listClis(), api.getEngine(), api.listModelKits()])
-      .then(([cliList, eng, kits]) => {
+    Promise.all([api.listClis(), api.getEngine(), api.listModelKits(), api.listSubAgents(), api.getEntrySubAgent()])
+      .then(([cliList, eng, kits, agents, entryAgent]) => {
         if (cancelled) {
           return;
         }
         setClis(cliList);
         setEngine(eng);
         setModelKits(kits);
+        setSubAgents(agents);
+        setEntrySubAgentId(entryAgent?.id);
         const activeId = eng.activeByokProviderId;
         const savedConfig = eng.byokProviders[activeId];
         setProviderId(activeId as ProviderId);
@@ -1633,6 +1645,19 @@ function AppSettingsDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine?.mode]);
 
+  // Auto-scan when switching to the models tab.
+  useEffect(() => {
+    if (tab !== "models" || !engine) {
+      return;
+    }
+    if (engine.mode === "cli") {
+      void rescanClis();
+    } else if (engine.mode === "byok") {
+      void loadProviderModels(providerId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, engine?.mode]);
+
   async function testByok() {
     setByokTesting(true);
     setByokTestResult(null);
@@ -1719,6 +1744,77 @@ function AppSettingsDialog({
     }
   }
 
+  // Sub-agent management functions
+  async function createSubAgentHandler(input: CreateSubAgentInput) {
+    onSetBusy(true);
+    setSubAgentError("");
+    try {
+      const newAgent = await api.createSubAgent(input);
+      setSubAgents((prev) => [...prev, newAgent]);
+      if (input.mode === "entry") {
+        setEntrySubAgentId(newAgent.id);
+      }
+      setCreatingSubAgent(false);
+    } catch (err) {
+      setSubAgentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  async function updateSubAgentHandler(id: string, input: UpdateSubAgentInput) {
+    onSetBusy(true);
+    setSubAgentError("");
+    try {
+      const updated = await api.updateSubAgent(id, input);
+      setSubAgents((prev) => prev.map((agent) => (agent.id === id ? updated : agent)));
+      setEditingSubAgent(null);
+    } catch (err) {
+      setSubAgentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  async function deleteSubAgentHandler(id: string) {
+    if (id === entrySubAgentId) {
+      alert("无法删除入口 Agent，请先设置其他 Agent 为入口。");
+      return;
+    }
+    if (!confirm("确定要删除此 Agent 吗?")) {
+      return;
+    }
+    onSetBusy(true);
+    setSubAgentError("");
+    try {
+      await api.deleteSubAgent(id);
+      setSubAgents((prev) => prev.filter((agent) => agent.id !== id));
+    } catch (err) {
+      setSubAgentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  async function setEntrySubAgentHandler(id: string) {
+    onSetBusy(true);
+    setSubAgentError("");
+    try {
+      await api.setEntrySubAgent(id);
+      setEntrySubAgentId(id);
+      // 更新该 agent 的 mode 为 entry
+      setSubAgents((prev) =>
+        prev.map((agent) =>
+          agent.id === id ? { ...agent, mode: "entry" as const } : agent
+        )
+      );
+    } catch (err) {
+      setSubAgentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section aria-labelledby="app-settings-title" className="modal-panel settings-modal" role="dialog">
@@ -1739,6 +1835,9 @@ function AppSettingsDialog({
             模型管理
           </button>
           <button className={tab === "modelkits" ? "active" : ""} onClick={() => setTab("modelkits")} role="tab" type="button">
+            ModelKit 管理
+          </button>
+          <button className={tab === "subagents" ? "active" : ""} onClick={() => setTab("subagents")} role="tab" type="button">
             Agent 管理
           </button>
         </div>
@@ -1800,7 +1899,7 @@ function AppSettingsDialog({
               <p className="muted">在本机 CLI 与 BYOK 之间选择。</p>
               <div className="seg-control" role="tablist" aria-label="模型管理">
                 <button
-                  className={engine?.mode === "cli" ? "active" : ""}
+                  className={(!engine || engine.mode === "cli") ? "active" : ""}
                   role="tab"
                   type="button"
                   onClick={() => patchEngine({ mode: "cli" })}
@@ -2034,9 +2133,9 @@ function AppSettingsDialog({
                 <h3>ModelKits ({modelKits.length})</h3>
               </div>
               <p className="muted">管理已保存的模型配置,方便在不同场景下快速切换。</p>
-              
+                        
               {modelKits.length === 0 ? (
-                <p className="muted">暂无 ModelKits。在"模型管理"标签页中测试通过后,可以保存为 ModelKit。</p>
+                <p className="muted">暂无 ModelKits。在“模型管理”标签页中测试通过后,可以保存为 ModelKit。</p>
               ) : (
                 <div className="modelkit-list">
                   {modelKits.map((kit) => (
@@ -2071,6 +2170,105 @@ function AppSettingsDialog({
                       </div>
                     </article>
                   ))}
+                </div>
+              )}
+            </section>
+          ) : null}
+          
+          {tab === "subagents" ? (
+            <section className="config-section">
+              <div className="settings-section-heading">
+                <h3>Agent ({subAgents.length})</h3>
+                <button
+                  className="secondary-action"
+                  onClick={() => setCreatingSubAgent(true)}
+                  type="button"
+                >
+                  <Plus size={14} />
+                  <span>新建 Agent</span>
+                </button>
+              </div>
+              <p className="muted">管理专门的智能体，每个 Agent 绑定一个 ModelKit 并配置特定权限。</p>
+                        
+              {subAgents.length === 0 ? (
+                <p className="muted">暂无 Agent。点击“新建 Agent”创建第一个。</p>
+              ) : (
+                <div className="subagent-list">
+                  {subAgents.map((agent) => {
+                    const modelKit = modelKits.find((kit) => kit.id === agent.modelKitId);
+                    const isEntry = agent.id === entrySubAgentId;
+                    return (
+                      <article key={agent.id} className="subagent-card">
+                        <div className="subagent-header">
+                          <div className="subagent-title">
+                            <strong>{agent.name}</strong>
+                            {isEntry && (
+                              <span className="badge green" style={{ marginLeft: '8px' }}>
+                                入口 Agent
+                              </span>
+                            )}
+                            <span className={`badge ${agent.mode === 'entry' ? 'blue' : ''}`}>
+                              {agent.mode === 'entry' ? '入口' : '工作节点'}
+                            </span>
+                          </div>
+                          <div className="subagent-actions">
+                            {!isEntry && (
+                              <button
+                                className="ghost-action"
+                                onClick={() => setEntrySubAgentHandler(agent.id)}
+                                type="button"
+                              >
+                                设为入口
+                              </button>
+                            )}
+                            <button
+                              className="ghost-action"
+                              onClick={() => setEditingSubAgent(agent)}
+                              type="button"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              className="danger-action"
+                              disabled={isEntry}
+                              onClick={() => deleteSubAgentHandler(agent.id)}
+                              type="button"
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                        <div className="subagent-details">
+                          <p className="subagent-role">{agent.role}</p>
+                          {modelKit && (
+                            <div className="subagent-modelkit">
+                              <span>绑定 ModelKit:</span>
+                              <code>{modelKit.name}</code>
+                              <span className="modelkit-type">{modelKit.type === "cli" ? "CLI" : "BYOK"}</span>
+                            </div>
+                          )}
+                          {agent.capabilities.length > 0 && (
+                            <div className="subagent-capabilities">
+                              <span>能力:</span>
+                              {agent.capabilities.map((cap) => (
+                                <em key={cap}>{cap}</em>
+                              ))}
+                            </div>
+                          )}
+                          <div className="subagent-permissions">
+                            <span>允许工具: {agent.permissions.allowedTools.length}</span>
+                            {agent.permissions.deniedTools.length > 0 && (
+                              <span>禁止工具: {agent.permissions.deniedTools.length}</span>
+                            )}
+                            {agent.permissions.maxSteps && (
+                              <span>最大步数: {agent.permissions.maxSteps}</span>
+                            )}
+                          </div>
+                          <span className="field-hint">创建于 {formatDate(agent.metadata.createdAt)}</span>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -2167,6 +2365,28 @@ function AppSettingsDialog({
             </form>
           </section>
         </div>
+      ) : null}
+
+      {/* Create/Edit Sub-agent Dialog */}
+      {(creatingSubAgent || editingSubAgent) ? (
+        <SubAgentDialog
+          agent={editingSubAgent}
+          modelKits={modelKits}
+          busy={busy}
+          error={subAgentError}
+          onClose={() => {
+            setCreatingSubAgent(false);
+            setEditingSubAgent(null);
+            setSubAgentError("");
+          }}
+          onSave={(input) => {
+            if (editingSubAgent) {
+              updateSubAgentHandler(editingSubAgent.id, input);
+            } else {
+              createSubAgentHandler(input as CreateSubAgentInput);
+            }
+          }}
+        />
       ) : null}
     </div>
   );
@@ -2621,4 +2841,321 @@ function formatDate(dateString: string): string {
   } catch {
     return dateString;
   }
+}
+
+/**
+ * Sub-agent 创建/编辑对话框组件
+ */
+function SubAgentDialog({
+  agent,
+  modelKits,
+  busy,
+  error,
+  onClose,
+  onSave
+}: {
+  agent: SubAgent | null;
+  modelKits: ModelKit[];
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onSave: (input: CreateSubAgentInput | UpdateSubAgentInput) => void;
+}) {
+  // 初始化表单状态
+  const [formData, setFormData] = useState<{
+    name: string;
+    role: string;
+    capabilities: string[];
+    modelKitId: string;
+    mode: "entry" | "worker";
+    allowedTools: string[];
+    deniedTools: string[];
+    maxSteps?: number;
+    promptTemplate?: string;
+  }>(() => {
+    if (agent) {
+      return {
+        name: agent.name,
+        role: agent.role,
+        capabilities: agent.capabilities,
+        modelKitId: agent.modelKitId,
+        mode: agent.mode,
+        allowedTools: agent.permissions.allowedTools,
+        deniedTools: agent.permissions.deniedTools,
+        maxSteps: agent.permissions.maxSteps,
+        promptTemplate: agent.promptTemplate
+      };
+    }
+    return {
+      name: "",
+      role: "",
+      capabilities: [],
+      modelKitId: "",
+      mode: "worker",
+      allowedTools: [],
+      deniedTools: [],
+      maxSteps: undefined,
+      promptTemplate: ""
+    };
+  });
+
+  // 能力标签选项
+  const capabilityOptions = [
+    "requirements",
+    "specification",
+    "planning",
+    "coding",
+    "testing",
+    "review",
+    "documentation",
+    "debugging"
+  ];
+
+  // 常用工具列表(用于权限配置)
+  const commonTools = [
+    "read_file",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "list_directory",
+    "search_files",
+    "grep_code",
+    "git_operations"
+  ];
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!formData.name.trim() || !formData.role.trim() || !formData.modelKitId) {
+      return;
+    }
+    
+    const input: CreateSubAgentInput | UpdateSubAgentInput = {
+      name: formData.name.trim(),
+      role: formData.role.trim(),
+      capabilities: formData.capabilities,
+      modelKitId: formData.modelKitId,
+      mode: formData.mode,
+      permissions: {
+        allowedTools: formData.allowedTools,
+        deniedTools: formData.deniedTools,
+        maxSteps: formData.maxSteps
+      },
+      promptTemplate: formData.promptTemplate?.trim() || undefined
+    };
+    
+    onSave(input);
+  }
+
+  function toggleCapability(cap: string) {
+    setFormData((prev) => ({
+      ...prev,
+      capabilities: prev.capabilities.includes(cap)
+        ? prev.capabilities.filter((c) => c !== cap)
+        : [...prev.capabilities, cap]
+    }));
+  }
+
+  function toggleTool(tool: string, type: "allowed" | "denied") {
+    setFormData((prev) => {
+      const targetList = type === "allowed" ? prev.allowedTools : prev.deniedTools;
+      const otherList = type === "allowed" ? prev.deniedTools : prev.allowedTools;
+      
+      if (targetList.includes(tool)) {
+        return {
+          ...prev,
+          [type === "allowed" ? "allowedTools" : "deniedTools"]: targetList.filter((t) => t !== tool)
+        };
+      } else {
+        // 从另一个列表中移除
+        return {
+          ...prev,
+          [type === "allowed" ? "allowedTools" : "deniedTools"]: [...targetList, tool],
+          [type === "allowed" ? "deniedTools" : "allowedTools"]: otherList.filter((t) => t !== tool)
+        };
+      }
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-labelledby="subagent-dialog-title" className="modal-panel" role="dialog">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">Agent</p>
+            <h2 id="subagent-dialog-title">
+              {agent ? "编辑 Agent" : "新建 Agent"}
+            </h2>
+          </div>
+          <button aria-label="关闭" className="icon-button" onClick={onClose} type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <form className="modal-body config-section" onSubmit={handleSubmit}>
+          {error && <div className="error-banner">{error}</div>}
+          
+          {/* Step 1: 基本信息 */}
+          <div className="config-section">
+            <h3>基本信息</h3>
+            <label>
+              <span>名称 *</span>
+              <input
+                aria-label="Agent 名称"
+                placeholder="例如: Spec Generator"
+                value={formData.name}
+                onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>角色描述 *</span>
+              <textarea
+                aria-label="角色描述"
+                className="compact-textarea"
+                placeholder="例如: 负责需求澄清和 Spec 生成"
+                value={formData.role}
+                onChange={(event) => setFormData({ ...formData, role: event.target.value })}
+                required
+              />
+            </label>
+            <label>
+              <span>能力标签(可选)</span>
+              <div className="capability-tags">
+                {capabilityOptions.map((cap) => (
+                  <button
+                    key={cap}
+                    type="button"
+                    className={`capability-tag ${formData.capabilities.includes(cap) ? 'active' : ''}`}
+                    onClick={() => toggleCapability(cap)}
+                  >
+                    {cap}
+                  </button>
+                ))}
+              </div>
+            </label>
+          </div>
+
+          {/* Step 2: 绑定 ModelKit */}
+          <div className="config-section">
+            <h3>绑定 ModelKit *</h3>
+            <label>
+              <span>选择 ModelKit</span>
+              <Select
+                ariaLabel="选择 ModelKit"
+                value={formData.modelKitId}
+                placeholder="请选择一个 ModelKit"
+                onValueChange={(value) => setFormData({ ...formData, modelKitId: value })}
+                options={modelKits.map((kit) => ({
+                  value: kit.id,
+                  label: `${kit.name} (${kit.type === "cli" ? "CLI" : "BYOK"})`
+                }))}
+              />
+              <span className="field-hint">每个 Agent 必须绑定一个 ModelKit</span>
+            </label>
+          </div>
+
+          {/* Step 3: 配置权限 */}
+          <div className="config-section">
+            <h3>配置权限</h3>
+            <label>
+              <span>允许的工具</span>
+              <div className="tool-permissions">
+                {commonTools.map((tool) => (
+                  <label key={tool} className="tool-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={formData.allowedTools.includes(tool)}
+                      onChange={() => toggleTool(tool, "allowed")}
+                    />
+                    <span>{tool}</span>
+                  </label>
+                ))}
+              </div>
+            </label>
+            <label>
+              <span>禁止的工具</span>
+              <div className="tool-permissions">
+                {commonTools.map((tool) => (
+                  <label key={tool} className="tool-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={formData.deniedTools.includes(tool)}
+                      onChange={() => toggleTool(tool, "denied")}
+                    />
+                    <span>{tool}</span>
+                  </label>
+                ))}
+              </div>
+            </label>
+            <label>
+              <span>最大执行步数(可选)</span>
+              <input
+                type="number"
+                min="1"
+                placeholder="例如: 50"
+                value={formData.maxSteps || ""}
+                onChange={(event) => setFormData({
+                  ...formData,
+                  maxSteps: event.target.value ? parseInt(event.target.value) : undefined
+                })}
+              />
+            </label>
+          </div>
+
+          {/* Step 4: 选择模式 */}
+          <div className="config-section">
+            <h3>选择模式</h3>
+            <div className="seg-control" role="tablist" aria-label="Agent 模式">
+              <button
+                className={formData.mode === "entry" ? "active" : ""}
+                type="button"
+                onClick={() => setFormData({ ...formData, mode: "entry" })}
+              >
+                Entry (入口 Agent)
+              </button>
+              <button
+                className={formData.mode === "worker" ? "active" : ""}
+                type="button"
+                onClick={() => setFormData({ ...formData, mode: "worker" })}
+              >
+                Worker (工作节点)
+              </button>
+            </div>
+            <p className="field-hint">
+              Entry: 处理初始请求,协调其他 agents<br />
+              Worker: 执行具体任务,由 Entry agent 调用
+            </p>
+          </div>
+
+          {/* Step 5: 系统提示模板 */}
+          <div className="config-section">
+            <h3>系统提示模板(可选)</h3>
+            <label>
+              <span>自定义行为提示词</span>
+              <textarea
+                aria-label="系统提示模板"
+                className="compact-textarea"
+                placeholder="例如: 你是一个专业的需求分析师,专注于..."
+                value={formData.promptTemplate || ""}
+                onChange={(event) => setFormData({ ...formData, promptTemplate: event.target.value })}
+                style={{ minHeight: '120px' }}
+              />
+            </label>
+          </div>
+
+          <div className="project-config-actions">
+            <button className="ghost-action" onClick={onClose} disabled={busy} type="button">
+              取消
+            </button>
+            <button
+              className="secondary-action"
+              disabled={busy || !formData.name.trim() || !formData.role.trim() || !formData.modelKitId}
+              type="submit"
+            >
+              {busy ? "保存中..." : "保存"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
 }
