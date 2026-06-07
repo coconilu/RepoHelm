@@ -160,6 +160,17 @@ app.post("/api/providers/:id/models", async (context) => {
   return context.json(result);
 });
 
+// POST so the API key stays out of the URL/query string.
+app.post("/api/providers/:id/test", async (context) => {
+  const input = providerModelsSchema.parse(await context.req.json().catch(() => ({})));
+  const result = await service.testProvider({
+    providerId: context.req.param("id"),
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey
+  });
+  return context.json(result);
+});
+
 app.get("/api/engine", async (context) => {
   const engine = await service.getEngine();
   return context.json(engine);

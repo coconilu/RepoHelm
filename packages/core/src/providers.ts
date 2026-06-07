@@ -199,6 +199,25 @@ export class ProviderRegistry {
     return undefined;
   }
 
+  /**
+   * Real connectivity + auth probe: performs an actual `/models` request against the
+   * provider and reports latency. Zero token cost (metadata endpoint), but proves the
+   * key, base URL and network all work.
+   */
+  async probe(
+    def: ProviderDef,
+    options: { apiKey?: string; baseUrl?: string; timeoutMs?: number } = {}
+  ): Promise<{ ok: boolean; latencyMs: number; modelCount: number; detail: string }> {
+    const started = Date.now();
+    const result = await this.fetchModels(def, options);
+    return {
+      ok: result.live,
+      latencyMs: Date.now() - started,
+      modelCount: result.models.length,
+      detail: result.detail
+    };
+  }
+
   async fetchModels(
     def: ProviderDef,
     options: { apiKey?: string; baseUrl?: string; timeoutMs?: number } = {}

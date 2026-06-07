@@ -1484,6 +1484,8 @@ function AppSettingsDialog({
   const [providerModels, setProviderModels] = useState<CliModelOption[]>([]);
   const [modelsMeta, setModelsMeta] = useState<{ live: boolean; detail: string } | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [byokTesting, setByokTesting] = useState(false);
+  const [byokTestResult, setByokTestResult] = useState<CliTestResult | null>(null);
   const [newProject, setNewProject] = useState({
     name: "",
     path: "",
@@ -1593,6 +1595,23 @@ function AppSettingsDialog({
     void loadProviderModels(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine?.mode]);
+
+  async function testByok() {
+    setByokTesting(true);
+    setByokTestResult(null);
+    try {
+      setByokTestResult(await api.testProvider(providerId, { baseUrl: byokDraft.baseUrl, apiKey: byokDraft.apiKey }));
+    } catch (error) {
+      setByokTestResult({
+        id: providerId,
+        ok: false,
+        latencyMs: 0,
+        message: error instanceof Error ? error.message : "测试失败。"
+      });
+    } finally {
+      setByokTesting(false);
+    }
+  }
 
   const modelSelectOptions = (() => {
     const options = providerModels.map((model) => ({ value: model.id, label: model.label }));
@@ -1791,7 +1810,13 @@ function AppSettingsDialog({
                     >
                       保存 BYOK 配置
                     </button>
+                    <button className="ghost-action" disabled={byokTesting} onClick={testByok} type="button">
+                      {byokTesting ? "测试中…" : "测试连接"}
+                    </button>
                   </div>
+                  {byokTestResult ? (
+                    <div className={`cli-test-banner${byokTestResult.ok ? " ok" : " fail"}`}>{byokTestResult.message}</div>
+                  ) : null}
                   <p className="field-hint">
                     API Key 保存在本机 SQLite 状态中,仅用于直连对应 Provider 拉取模型与本地调用。
                   </p>

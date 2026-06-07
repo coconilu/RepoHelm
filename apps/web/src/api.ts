@@ -303,6 +303,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  testProvider: (providerId: string, input: { baseUrl?: string; apiKey?: string } = {}) =>
+    request<CliTestResult>(`/api/providers/${providerId}/test`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   getEngine: () => request<EngineConfig>("/api/engine"),
   updateEngine: (input: Partial<Omit<EngineConfig, "updatedAt">> & { byok?: Partial<ByokConfig> }) =>
     request<EngineConfig>("/api/engine", {

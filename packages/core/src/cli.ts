@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { ProviderRegistry } from "./providers.js";
 import type { CliModelOption, CliTestResult, LocalCliInfo, ProviderId } from "./types.js";
@@ -6,6 +6,18 @@ import type { CliModelOption, CliTestResult, LocalCliInfo, ProviderId } from "./
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_MODEL_OPTION: CliModelOption = { id: "default", label: "Default (CLI config)" };
+
+/** Minimal prompt for the real connectivity test — kept tiny to minimise token spend. */
+const PING_PROMPT = "Reply with exactly: ok";
+
+/** Strip ANSI codes / collapse whitespace so CLI output fits in a one-line banner. */
+const cleanPingOutput = (value: string): string =>
+  value
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
 
 export interface CliDefinition {
   id: string;
@@ -16,6 +28,11 @@ export interface CliDefinition {
   versionArgs: string[];
   /** Subcommand that prints one model id per line; omitted when the CLI has none. */
   listModels?: { args: string[]; timeoutMs?: number };
+  /**
+   * Non-interactive prompt invocation used for a *real* connectivity test — runs through
+   * the CLI's own auth (OAuth/subscription/keychain), so it works without an env API key.
+   */
+  ping?: { build: (prompt: string, model?: string) => string[]; timeoutMs?: number };
   /** Underlying provider — when set, live models can be pulled via the provider REST API using an env key. */
   providerId?: ProviderId;
   /** CLI-only aliases (e.g. sonnet/opus) kept even when live provider models are merged in. */
@@ -31,6 +48,7 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     bin: "claude",
     fallbackBins: ["openclaude"],
     versionArgs: ["--version"],
+    ping: { build: (prompt, model) => (model ? ["-p", prompt, "--model", model] : ["-p", prompt]) },
     providerId: "anthropic",
     aliasModels: [
       { id: "sonnet", label: "Sonnet (alias)" },
@@ -50,6 +68,7 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     tagline: "OpenAI official CLI",
     bin: "codex",
     versionArgs: ["--version"],
+    ping: { build: (prompt, model) => (model ? ["exec", "--model", model, prompt] : ["exec", prompt]) },
     providerId: "openai",
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
@@ -64,6 +83,7 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     tagline: "Google official CLI",
     bin: "gemini",
     versionArgs: ["--version"],
+    ping: { build: (prompt, model) => (model ? ["-p", prompt, "-m", model] : ["-p", prompt]) },
     providerId: "gemini",
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
@@ -78,6 +98,7 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     bin: "opencode",
     fallbackBins: ["opencode-cli"],
     versionArgs: ["--version"],
+    ping: { build: (prompt, model) => (model ? ["run", "--model", model, prompt] : ["run", prompt]) },
     listModels: { args: ["models"], timeoutMs: 15_000 },
     fallbackModels: [
       DEFAULT_MODEL_OPTION,
@@ -180,26 +201,116 @@ export class LocalCliRegistry {
     return Promise.all(this.definitions.map((def) => this.detect(def, options)));
   }
 
-  async test(def: CliDefinition): Promise<CliTestResult> {
+  async test(def: CliDefinition, options: { model?: string } = {}): Promise<CliTestResult> {
     const resolvedBin = await this.resolveBin(def);
     if (!resolvedBin) {
-      return { id: def.id, ok: false, latencyMs: 0, message: `未检测到 ${def.bin}，无法测试。` };
+      return { id: def.id, ok: false, latencyMs: 0, message: `未检测到 ${def.bin},无法测试。` };
     }
-    const startedAt = Date.now();
+
+    // 1) Verify the binary actually runs (real exec).
+    const cliStart = Date.now();
     try {
-      // Connectivity + latency probe only — we run --version rather than a real
-      // model call so the test never consumes tokens or blocks on auth/interaction.
       await execFileAsync(resolvedBin, def.versionArgs, {
         timeout: 12_000,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
       });
-      const latencyMs = Date.now() - startedAt;
-      return { id: def.id, ok: true, latencyMs, message: `${def.name} 在 ${latencyMs} 毫秒内响应 — 'ok'` };
     } catch (error) {
-      const latencyMs = Date.now() - startedAt;
+      const latencyMs = Date.now() - cliStart;
       const message = error instanceof Error ? error.message : String(error);
-      return { id: def.id, ok: false, latencyMs, message: `${def.name} 测试失败：${message}` };
+      return { id: def.id, ok: false, latencyMs, message: `${def.name} 无法执行:${message}` };
     }
+    const cliLatency = Date.now() - cliStart;
+
+    // 2) Real model call through the CLI's own auth (OAuth/subscription/keychain) — the
+    //    faithful "does this CLI work for me right now" test. Costs a tiny amount of tokens.
+    if (def.ping) {
+      const model = options.model && options.model !== DEFAULT_MODEL_OPTION.id ? options.model : undefined;
+      const args = def.ping.build(PING_PROMPT, model);
+      const pingStart = Date.now();
+      try {
+        const { stdout, stderr } = await this.runPing(resolvedBin, args, def.ping.timeoutMs ?? 60_000);
+        const latencyMs = Date.now() - pingStart;
+        const reply = cleanPingOutput(stdout) || cleanPingOutput(stderr);
+        if (!reply) {
+          return {
+            id: def.id,
+            ok: false,
+            latencyMs,
+            message: `${def.name} 调用返回为空(${latencyMs}ms),可能未登录或模型不可用。`
+          };
+        }
+        const modelNote = model ? `,模型 ${model}` : "";
+        return {
+          id: def.id,
+          ok: true,
+          latencyMs,
+          message: `${def.name} 真实调用成功(${latencyMs}ms${modelNote})。回复:“${reply}”`
+        };
+      } catch (error) {
+        const latencyMs = Date.now() - pingStart;
+        const raw = error instanceof Error ? error.message : String(error);
+        const hint = /login|auth|unauthor|api key|credential|sign in/i.test(raw)
+          ? "(疑似未登录/鉴权失败,请先登录该 CLI)"
+          : /timed out|ETIMEDOUT|timeout/i.test(raw)
+            ? "(超时,模型可能较慢或卡在交互登录)"
+            : "";
+        return {
+          id: def.id,
+          ok: false,
+          latencyMs,
+          message: `${def.name} 真实调用失败${hint}:${cleanPingOutput(raw).slice(0, 160)}`
+        };
+      }
+    }
+
+    return {
+      id: def.id,
+      ok: true,
+      latencyMs: cliLatency,
+      message: `${def.name} 可执行(${cliLatency}ms)。该 CLI 未配置可用的非交互调用,仅验证了可执行性。`
+    };
+  }
+
+  /**
+   * Run a non-interactive prompt, closing stdin immediately so CLIs that read it
+   * (codex exec, opencode run) get EOF and proceed instead of blocking. Resolves on
+   * exit 0, rejects on non-zero/error/timeout.
+   */
+  private runPing(bin: string, args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(bin, args, {
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" }
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(() => reject(new Error("timed out")));
+      }, timeoutMs);
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
+        if (stdout.length > 1024 * 1024) {
+          child.kill("SIGKILL");
+        }
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => finish(() => reject(error)));
+      child.on("close", (code) =>
+        finish(() => (code === 0 ? resolve({ stdout, stderr }) : reject(new Error(stderr || stdout || `exit ${code}`))))
+      );
+      child.stdin?.end();
+    });
   }
 
   private async resolveBin(def: CliDefinition): Promise<string | undefined> {

@@ -351,7 +351,9 @@ export class RepoHelmService {
     if (!def) {
       return { id, ok: false, latencyMs: 0, message: "未知的 CLI。" };
     }
-    return this.cliRegistry.test(def);
+    const state = await this.getState();
+    const model = state.engine.cliModels[id];
+    return this.cliRegistry.test(def, { model });
   }
 
   async getEngine(): Promise<EngineConfig> {
@@ -371,6 +373,23 @@ export class RepoHelmService {
     };
     await this.store.write({ ...state, engine });
     return engine;
+  }
+
+  /** Real connectivity + auth test for a provider (BYOK). Hits `/models`, zero token cost. */
+  async testProvider(input: { providerId?: string; baseUrl?: string; apiKey?: string }): Promise<CliTestResult> {
+    const def = this.providerRegistry.resolve(input.providerId, input.baseUrl);
+    const probe = await this.providerRegistry.probe(def, {
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl
+    });
+    return {
+      id: def.id,
+      ok: probe.ok,
+      latencyMs: probe.latencyMs,
+      message: probe.ok
+        ? `已真实请求 ${def.name} /models,鉴权成功,返回 ${probe.modelCount} 个模型(${probe.latencyMs}ms)。`
+        : `${def.name} /models 请求失败:${probe.detail}`
+    };
   }
 
   async listProviders(): Promise<ProviderInfo[]> {

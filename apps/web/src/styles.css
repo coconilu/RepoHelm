@@ -129,6 +129,8 @@ textarea:focus-visible,
 .toolbar-select,
 .backend-pill,
 .toolbar-action,
+.toolbar-icon-button,
+.request-delivery-action,
 .new-quest-button,
 .icon-button,
 .workspace-row,
@@ -970,7 +972,7 @@ kbd {
   box-shadow: var(--shadow-md), 0 0 0 3px var(--ring);
 }
 
-label span {
+label > span {
   color: var(--text-muted);
   display: block;
   font-size: 12px;
@@ -2254,9 +2256,13 @@ code {
 .secondary-action,
 .ghost-action,
 .danger-action {
+  align-items: center;
   border-radius: 8px;
+  display: inline-flex;
   font-size: 12px;
   font-weight: 850;
+  gap: 6px;
+  justify-content: center;
   min-height: 34px;
   padding: 7px 10px;
   white-space: nowrap;
