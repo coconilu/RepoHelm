@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { RepoHelmState } from "./types.js";
+import type { RepoHelmState, EngineConfig } from "./types.js";
 
 const emptyState = (): RepoHelmState => ({
   workspaces: [],
@@ -28,14 +28,60 @@ export const defaultEngineConfig = () => ({
   mode: "cli" as const,
   cliId: "claude-code",
   cliModels: {} as Record<string, string>,
-  byok: {
-    provider: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-5.1-codex",
-    apiKey: ""
-  },
+  byokProviders: {} as Record<string, { provider: string; baseUrl: string; model: string; apiKey: string }>,
+  activeByokProviderId: "openai",
   updatedAt: new Date().toISOString()
 });
+
+/** Migrate old byok format to new byokProviders format */
+function migrateEngine(engine: any): EngineConfig {
+  // Check if old byok field exists
+  if (engine.byok && typeof engine.byok === "object") {
+    const oldByok = engine.byok;
+    const newEngine: EngineConfig = {
+      ...engine,
+      byokProviders: engine.byokProviders ?? {},
+      activeByokProviderId: engine.activeByokProviderId ?? "openai"
+    };
+
+    // Resolve provider ID from baseUrl
+    const baseUrl = oldByok.baseUrl || "";
+    let providerId = "openai-compatible";
+    if (baseUrl.includes("api.openai.com")) {
+      providerId = "openai";
+    } else if (baseUrl.includes("api.anthropic.com")) {
+      providerId = "anthropic";
+    } else if (baseUrl.includes("generativelanguage.googleapis.com")) {
+      providerId = "gemini";
+    } else if (baseUrl.includes("api.deepseek.com")) {
+      providerId = "deepseek";
+    } else if (baseUrl.includes("openrouter.ai")) {
+      providerId = "openrouter";
+    }
+
+    // Migrate old config to the resolved provider
+    if (oldByok.provider || oldByok.apiKey || oldByok.baseUrl) {
+      newEngine.byokProviders[providerId] = {
+        provider: oldByok.provider || "",
+        baseUrl: oldByok.baseUrl || "",
+        model: oldByok.model || "",
+        apiKey: oldByok.apiKey || ""
+      };
+      newEngine.activeByokProviderId = providerId;
+    }
+
+    // Remove old byok field
+    delete (newEngine as any).byok;
+    return newEngine;
+  }
+
+  // Ensure new fields exist
+  return {
+    ...engine,
+    byokProviders: engine.byokProviders ?? {},
+    activeByokProviderId: engine.activeByokProviderId ?? "openai"
+  };
+}
 
 export interface StateStore {
   read(): Promise<RepoHelmState>;
@@ -52,7 +98,8 @@ export class JsonStateStore implements StateStore {
   async read(): Promise<RepoHelmState> {
     try {
       const raw = await readFile(this.statePath, "utf8");
-      return JSON.parse(raw) as RepoHelmState;
+      const state = JSON.parse(raw) as RepoHelmState;
+      return { ...state, engine: migrateEngine(state.engine) };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return emptyState();
@@ -79,7 +126,8 @@ export class SqliteStateStore implements StateStore {
     const db = await this.database();
     const row = db.prepare("SELECT payload FROM state WHERE id = ?").get("current") as { payload?: string } | undefined;
     if (row?.payload) {
-      return JSON.parse(row.payload) as RepoHelmState;
+      const state = JSON.parse(row.payload) as RepoHelmState;
+      return { ...state, engine: migrateEngine(state.engine) };
     }
 
     const legacyState = await new JsonStateStore(this.rootDir).read();

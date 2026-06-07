@@ -74,14 +74,18 @@ const engineSchema = z.object({
   mode: z.enum(["cli", "byok"]).optional(),
   cliId: z.string().optional(),
   cliModels: z.record(z.string(), z.string()).optional(),
-  byok: z
-    .object({
-      provider: z.string().optional(),
-      baseUrl: z.string().optional(),
-      model: z.string().optional(),
-      apiKey: z.string().optional()
-    })
-    .optional()
+  byokProviders: z
+    .record(
+      z.string(),
+      z.object({
+        provider: z.string().optional(),
+        baseUrl: z.string().optional(),
+        model: z.string().optional(),
+        apiKey: z.string().optional()
+      })
+    )
+    .optional(),
+  activeByokProviderId: z.string().optional()
 });
 
 const providerModelsSchema = z.object({

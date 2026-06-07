@@ -363,12 +363,25 @@ export class RepoHelmService {
 
   async updateEngine(input: UpdateEngineInput): Promise<EngineConfig> {
     const state = await this.getState();
+    const byokProviders = input.byokProviders
+      ? {
+          ...state.engine.byokProviders,
+          ...Object.fromEntries(
+            Object.entries(input.byokProviders).map(([id, config]) => [
+              id,
+              { ...(state.engine.byokProviders[id] ?? { provider: "", baseUrl: "", model: "", apiKey: "" }), ...config }
+            ])
+          )
+        }
+      : state.engine.byokProviders;
+
     const engine: EngineConfig = {
       ...state.engine,
       mode: input.mode ?? state.engine.mode,
       cliId: input.cliId ?? state.engine.cliId,
       cliModels: input.cliModels ? { ...state.engine.cliModels, ...input.cliModels } : state.engine.cliModels,
-      byok: input.byok ? { ...state.engine.byok, ...input.byok } : state.engine.byok,
+      byokProviders,
+      activeByokProviderId: input.activeByokProviderId ?? state.engine.activeByokProviderId,
       updatedAt: now()
     };
     await this.store.write({ ...state, engine });
@@ -410,11 +423,10 @@ export class RepoHelmService {
     const state = await this.getState();
     const def = this.providerRegistry.resolve(input.providerId, input.baseUrl);
     const baseUrl = input.baseUrl?.trim() || def.defaultBaseUrl;
+    const savedConfig = state.engine.byokProviders[def.id];
     const apiKey =
       input.apiKey?.trim() ||
-      (state.engine.byok.provider && this.providerRegistry.resolve(undefined, state.engine.byok.baseUrl).id === def.id
-        ? state.engine.byok.apiKey
-        : "") ||
+      savedConfig?.apiKey ||
       this.providerRegistry.envKey(def) ||
       "";
     const cacheKey = `${def.id}:${baseUrl}`;

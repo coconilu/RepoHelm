@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /Users/chenmeili/Documents/GitHub/RepoHelm && cat /Users/chenmeili/Documents/GitHub/RepoHelm/package.json 2>/dev/null | head -20)"
+    ]
+  }
+}

@@ -309,7 +309,7 @@ export const api = {
       body: JSON.stringify(input)
     }),
   getEngine: () => request<EngineConfig>("/api/engine"),
-  updateEngine: (input: Partial<Omit<EngineConfig, "updatedAt">> & { byok?: Partial<ByokConfig> }) =>
+  updateEngine: (input: Partial<Omit<EngineConfig, "updatedAt">>) =>
     request<EngineConfig>("/api/engine", {
       method: "PATCH",
       body: JSON.stringify(input)

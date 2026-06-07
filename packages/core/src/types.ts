@@ -263,7 +263,8 @@ export interface EngineConfig {
   mode: "cli" | "byok";
   cliId: string;
   cliModels: Record<string, string>;
-  byok: ByokConfig;
+  byokProviders: Record<string, ByokConfig>;
+  activeByokProviderId: string;
   updatedAt: string;
 }
 
@@ -271,7 +272,8 @@ export interface UpdateEngineInput {
   mode?: "cli" | "byok";
   cliId?: string;
   cliModels?: Record<string, string>;
-  byok?: Partial<ByokConfig>;
+  byokProviders?: Record<string, Partial<ByokConfig>>;
+  activeByokProviderId?: string;
 }
 
 export interface RepoHelmState {

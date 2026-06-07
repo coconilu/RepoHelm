@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -182,16 +182,126 @@ describe("RepoHelmService", () => {
     const updated = await service.updateEngine({
       mode: "byok",
       cliModels: { "opencode": "openai/gpt-5" },
-      byok: { model: "deepseek-chat" }
+      byokProviders: { openai: { model: "deepseek-chat" } },
+      activeByokProviderId: "openai"
     });
     expect(updated.mode).toBe("byok");
     expect(updated.cliModels.opencode).toBe("openai/gpt-5");
-    expect(updated.byok.model).toBe("deepseek-chat");
-    expect(updated.byok.baseUrl).toBe("https://api.openai.com/v1");
+    expect(updated.byokProviders.openai?.model).toBe("deepseek-chat");
+    expect(updated.byokProviders.openai?.baseUrl).toBe("");
+    expect(updated.activeByokProviderId).toBe("openai");
 
     const reloaded = await new RepoHelmService(new SqliteStateStore(rootDir), rootDir).getEngine();
     expect(reloaded.mode).toBe("byok");
-    expect(reloaded.byok.model).toBe("deepseek-chat");
+    expect(reloaded.byokProviders.openai?.model).toBe("deepseek-chat");
+  });
+
+  it("isolates BYOK API keys per provider", async () => {
+    const { service } = await createService();
+
+    // Save config for DeepSeek
+    const withDeepSeek = await service.updateEngine({
+      mode: "byok",
+      byokProviders: {
+        deepseek: {
+          provider: "DeepSeek",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-chat",
+          apiKey: "sk-deepseek-key"
+        }
+      },
+      activeByokProviderId: "deepseek"
+    });
+    expect(withDeepSeek.byokProviders.deepseek?.apiKey).toBe("sk-deepseek-key");
+    expect(withDeepSeek.activeByokProviderId).toBe("deepseek");
+
+    // Save config for OpenAI - should not affect DeepSeek
+    const withOpenAI = await service.updateEngine({
+      byokProviders: {
+        openai: {
+          provider: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-4o",
+          apiKey: "sk-openai-key"
+        }
+      },
+      activeByokProviderId: "openai"
+    });
+    expect(withOpenAI.byokProviders.openai?.apiKey).toBe("sk-openai-key");
+    expect(withOpenAI.byokProviders.deepseek?.apiKey).toBe("sk-deepseek-key");
+    expect(withOpenAI.activeByokProviderId).toBe("openai");
+
+    // Update DeepSeek config - should not affect OpenAI
+    const updatedDeepSeek = await service.updateEngine({
+      byokProviders: {
+        deepseek: {
+          model: "deepseek-coder",
+          apiKey: "sk-deepseek-new-key"
+        }
+      },
+      activeByokProviderId: "deepseek"
+    });
+    expect(updatedDeepSeek.byokProviders.deepseek?.apiKey).toBe("sk-deepseek-new-key");
+    expect(updatedDeepSeek.byokProviders.deepseek?.model).toBe("deepseek-coder");
+    expect(updatedDeepSeek.byokProviders.deepseek?.baseUrl).toBe("https://api.deepseek.com");
+    expect(updatedDeepSeek.byokProviders.openai?.apiKey).toBe("sk-openai-key");
+    expect(updatedDeepSeek.activeByokProviderId).toBe("deepseek");
+  });
+
+  it("migrates old byok format to byokProviders on load", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-"));
+    const repohelmDir = join(rootDir, ".repohelm");
+    const statePath = join(repohelmDir, "state.json");
+
+    // Create .repohelm directory
+    await mkdir(repohelmDir, { recursive: true });
+
+    // Write old format state with byok field
+    const oldState = {
+      workspaces: [],
+      projects: [],
+      quests: [],
+      events: [],
+      knowledge: [],
+      capabilities: [],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: ["mock"],
+        fileScopes: ["workspace"],
+        networkScopes: ["localhost"],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local",
+        updatedAt: new Date().toISOString()
+      },
+      auditLog: [],
+      engine: {
+        mode: "byok",
+        cliId: "claude-code",
+        cliModels: {},
+        byok: {
+          provider: "DeepSeek",
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-chat",
+          apiKey: "sk-old-deepseek-key"
+        },
+        updatedAt: new Date().toISOString()
+      },
+      modelCache: {}
+    };
+
+    await writeFile(statePath, JSON.stringify(oldState), "utf8");
+
+    // Load with JsonStateStore - should migrate
+    const store = new JsonStateStore(rootDir);
+    const state = await store.read();
+
+    expect(state.engine.byokProviders.deepseek).toBeDefined();
+    expect(state.engine.byokProviders.deepseek?.provider).toBe("DeepSeek");
+    expect(state.engine.byokProviders.deepseek?.baseUrl).toBe("https://api.deepseek.com");
+    expect(state.engine.byokProviders.deepseek?.model).toBe("deepseek-chat");
+    expect(state.engine.byokProviders.deepseek?.apiKey).toBe("sk-old-deepseek-key");
+    expect(state.engine.activeByokProviderId).toBe("deepseek");
+    expect((state.engine as any).byok).toBeUndefined();
   });
 
   it("creates a quest with a lightweight spec and planning events", async () => {

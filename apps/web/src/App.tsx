@@ -1503,7 +1503,17 @@ function AppSettingsDialog({
         }
         setClis(cliList);
         setEngine(eng);
-        setByokDraft(eng.byok);
+        const activeId = eng.activeByokProviderId;
+        const savedConfig = eng.byokProviders[activeId];
+        setProviderId(activeId as ProviderId);
+        setByokDraft(
+          savedConfig ?? {
+            provider: providerOptions.find((p) => p.id === activeId)?.label ?? "OpenAI",
+            baseUrl: providerOptions.find((p) => p.id === activeId)?.baseUrl ?? "https://api.openai.com/v1",
+            model: providerOptions.find((p) => p.id === activeId)?.model ?? "",
+            apiKey: ""
+          }
+        );
       })
       .catch(() => undefined);
     return () => {
@@ -1511,10 +1521,27 @@ function AppSettingsDialog({
     };
   }, []);
 
-  async function patchEngine(input: Partial<Omit<EngineConfig, "updatedAt">> & { byok?: Partial<ByokConfig> }) {
-    const next = await api.updateEngine(input);
+  async function patchEngine(
+    input: Partial<Omit<EngineConfig, "updatedAt">> & {
+      byok?: Partial<ByokConfig>;
+    }
+  ) {
+    const { byok, ...rest } = input;
+    const apiInput: any = { ...rest };
+    if (byok) {
+      apiInput.byokProviders = {
+        ...engine?.byokProviders,
+        [providerId]: { ...(engine?.byokProviders[providerId] ?? {}), ...byok }
+      };
+      apiInput.activeByokProviderId = providerId;
+    }
+    const next = await api.updateEngine(apiInput);
     setEngine(next);
-    setByokDraft(next.byok);
+    const activeId = next.activeByokProviderId;
+    const savedConfig = next.byokProviders[activeId];
+    if (savedConfig) {
+      setByokDraft(savedConfig);
+    }
   }
 
   async function rescanClis() {
@@ -1729,12 +1756,16 @@ function AppSettingsDialog({
                         key={provider.id}
                         onClick={() => {
                           setProviderId(provider.id);
-                          setByokDraft((current) => ({
-                            ...current,
-                            provider: provider.label,
-                            baseUrl: provider.baseUrl,
-                            model: provider.model
-                          }));
+                          const savedConfig = engine?.byokProviders[provider.id];
+                          setByokDraft(
+                            savedConfig ?? {
+                              provider: provider.label,
+                              baseUrl: provider.baseUrl,
+                              model: provider.model,
+                              apiKey: ""
+                            }
+                          );
+                          patchEngine({ activeByokProviderId: provider.id });
                           void loadProviderModels(provider.id);
                         }}
                         type="button"
