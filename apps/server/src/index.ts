@@ -108,6 +108,7 @@ const questSchema = z.object({
   title: z.string().min(1),
   requirement: z.string().min(1),
   agentBackendId: z.enum(["mock", "codex-cli", "claude-code", "opencode", "openai-compatible"]).optional(),
+  entrySubAgentId: z.string().optional(),
   affectedProjectIds: z.array(z.string()).optional()
 });
 
@@ -499,7 +500,11 @@ app.delete("/api/sub-agents/:id", async (context) => {
 
 // GET /api/sub-agents - 列出所有 Sub-agents
 app.get("/api/sub-agents", async (context) => {
+  const modeFilter = context.req.query("mode");
   const subAgents = await service.listSubAgents();
+  if (modeFilter === "entry" || modeFilter === "worker") {
+    return context.json(subAgents.filter((agent) => agent.mode === modeFilter));
+  }
   return context.json(subAgents);
 });
 
@@ -529,6 +534,13 @@ app.onError((error, context) => {
     500
   );
 });
+
+service
+  .getState()
+  .then(() => service.ensureBuiltInSubAgents())
+  .catch((error) => {
+    console.warn("[startup] ensureBuiltInSubAgents skipped:", error instanceof Error ? error.message : String(error));
+  });
 
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`RepoHelm API listening on http://localhost:${info.port}`);

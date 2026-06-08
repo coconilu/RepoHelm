@@ -6,7 +6,8 @@ import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
 import { ProviderRegistry } from "./providers.js";
-import { SubAgentOrchestrator } from "./orchestrator.js";
+import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
+import { seedBuiltInSubAgents } from "./seed-agents.js";
 import type {
   AgentEvent,
   AuditLogEntry,
@@ -160,6 +161,26 @@ export class RepoHelmService {
     };
     await this.store.write(nextState);
     return nextState;
+  }
+
+  /**
+   * Seed the built-in sub-agents on first run. Safe to call multiple times — idempotent.
+   * Call once at server startup (after bootstrap) so the supervisor is available for quests.
+   */
+  async ensureBuiltInSubAgents(): Promise<void> {
+    try {
+      const rawReader = () => this.store.read();
+      const result = await seedBuiltInSubAgents(this, rawReader);
+      if (result.seeded) {
+        console.log(
+          `[seed-agents] seeded ${result.agents.length} agents (modelKit=${result.defaultModelKitId})`
+        );
+      } else if (result.reason) {
+        console.warn(`[seed-agents] skipped: ${result.reason}`);
+      }
+    } catch (error) {
+      console.warn("[seed-agents] failed:", error instanceof Error ? error.message : String(error));
+    }
   }
 
   async getState(): Promise<RepoHelmState> {
@@ -916,6 +937,7 @@ export class RepoHelmService {
     const relatedKnowledge = this.searchKnowledgeItems(state.knowledge, input.workspaceId, input.requirement).slice(0, 3);
     const spec = this.generateSpec(input.requirement, relatedKnowledge);
     const capabilityRecommendations = this.recommendCapabilities(state.capabilities, input.requirement, timestamp);
+    const entrySubAgentId = input.entrySubAgentId ?? state.entrySubAgentId;
     const quest: Quest = {
       id: questId,
       workspaceId: input.workspaceId,
@@ -924,6 +946,7 @@ export class RepoHelmService {
       status: "planning",
       spec,
       agentBackendId: input.agentBackendId ?? "mock",
+      entrySubAgentId,
       affectedProjectIds,
       worktrees: [],
       changedFiles: [],
@@ -967,25 +990,109 @@ export class RepoHelmService {
   }
 
   async runQuest(questId: string): Promise<Quest> {
-    // 检查是否配置了入口 Sub-agent
-    const entryAgent = await this.getEntrySubAgent();
-    
-    if (entryAgent) {
-      // 使用新的编排引擎
-      const orchestrator = new SubAgentOrchestrator(this);
-      try {
-        const result = await orchestrator.executeQuest(questId);
-        // 更新 Quest 状态为完成
-        return this.updateQuestStatus(questId, "delivered", result);
-      } catch (error) {
-        // 编排失败,回退到传统模式
-        console.error("Orchestration failed, falling back to legacy mode:", error);
-        return this.runQuestLegacy(questId);
-      }
-    } else {
-      // 没有配置入口 agent,使用传统模式
+    const entryAgent = await this.resolveEntryAgentForQuest(questId);
+
+    if (!entryAgent) {
       return this.runQuestLegacy(questId);
     }
+
+    const orchestrator = new SubAgentOrchestrator(this);
+    try {
+      const result: OrchestratorQuestResult = await orchestrator.executeQuest(questId);
+      return this.persistOrchestratorResult(questId, entryAgent, result);
+    } catch (error) {
+      console.error("Orchestration failed, falling back to legacy mode:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await this.appendEvent(
+        this.event(
+          questId,
+          "orchestrator.failed",
+          "编排引擎失败，回退到传统模式",
+          `Supervisor 执行失败: ${errorMessage}`,
+          entryAgent.name
+        )
+      );
+      return this.runQuestLegacy(questId);
+    }
+  }
+
+  private async resolveEntryAgentForQuest(questId: string): Promise<SubAgent | undefined> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (quest?.entrySubAgentId && state.subAgents[quest.entrySubAgentId]) {
+      return state.subAgents[quest.entrySubAgentId];
+    }
+    if (state.entrySubAgentId && state.subAgents[state.entrySubAgentId]) {
+      return state.subAgents[state.entrySubAgentId];
+    }
+    return undefined;
+  }
+
+  private async persistOrchestratorResult(
+    questId: string,
+    entryAgent: SubAgent,
+    result: OrchestratorQuestResult
+  ): Promise<Quest> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+
+    const delegationSummary =
+      result.delegations.length === 0
+        ? "Supervisor 未委派任何子任务，直接给出答复。"
+        : result.delegations
+            .map((d, idx) => `${idx + 1}. ${d.agentName} (${d.ok ? "ok" : "fail"}): ${d.summary}`)
+            .join("\n");
+
+    const updatedQuest: Quest = {
+      ...quest,
+      status: "ready",
+      entrySubAgentId: entryAgent.id,
+      agentSummary: result.finalContent || delegationSummary,
+      updatedAt: now()
+    };
+
+    const events: AgentEvent[] = [
+      this.event(
+        questId,
+        "orchestrator.started",
+        "Supervisor 开始编排",
+        `入口 Agent: ${entryAgent.name}。开始分析需求并分派给 worker sub-agents。`,
+        entryAgent.name
+      ),
+      ...result.delegations.map((d) =>
+        this.event(
+          questId,
+          d.ok ? "orchestrator.delegated" : "orchestrator.delegation_failed",
+          `已委派给 ${d.agentName}`,
+          d.summary,
+          d.agentName
+        )
+      ),
+      this.event(
+        questId,
+        "orchestrator.completed",
+        "Supervisor 编排完成",
+        result.finalContent
+          ? `迭代 ${result.iterations} 次，最终答复: ${result.finalContent.slice(0, 300)}`
+          : `迭代 ${result.iterations} 次，无最终答复。`,
+        entryAgent.name
+      )
+    ];
+
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      events: [...events, ...state.events]
+    });
+    return updatedQuest;
+  }
+
+  private async appendEvent(event: AgentEvent): Promise<void> {
+    const state = await this.getState();
+    await this.store.write({ ...state, events: [event, ...state.events] });
   }
 
   /**

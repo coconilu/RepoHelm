@@ -171,6 +171,7 @@ export interface Quest {
   status: QuestStatus;
   spec: QuestSpec;
   agentBackendId: AgentBackendId;
+  entrySubAgentId?: string;
   affectedProjectIds: string[];
   worktrees: WorktreeState[];
   changedFiles: Array<ChangedFile | string>;
@@ -178,6 +179,7 @@ export interface Quest {
   reviewNotes: string[];
   deliveryResults: DeliveryState[];
   capabilityRecommendations: CapabilityRecommendation[];
+  agentSummary?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -273,6 +275,8 @@ export interface RepoHelmState {
   capabilities: CapabilityDefinition[];
   securityPolicy: SecurityPolicy;
   auditLog: AuditLogEntry[];
+  subAgents: Record<string, SubAgent>;
+  entrySubAgentId?: string;
 }
 
 export interface TestModelInput {
@@ -436,7 +440,8 @@ export const api = {
     workspaceId: string;
     title: string;
     requirement: string;
-    agentBackendId: AgentBackendId;
+    agentBackendId?: AgentBackendId;
+    entrySubAgentId?: string;
     affectedProjectIds: string[];
   }) =>
     request<Quest>("/api/quests", {

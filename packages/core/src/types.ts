@@ -178,6 +178,7 @@ export interface Quest {
   status: QuestStatus;
   spec: QuestSpec;
   agentBackendId: AgentBackendId;
+  entrySubAgentId?: string;
   affectedProjectIds: string[];
   worktrees: WorktreeState[];
   changedFiles: ChangedFile[];
@@ -390,6 +391,7 @@ export interface CreateQuestInput {
   title: string;
   requirement: string;
   agentBackendId?: AgentBackendId;
+  entrySubAgentId?: string;
   affectedProjectIds?: string[];
 }
 

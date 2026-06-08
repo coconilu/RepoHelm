@@ -1,202 +1,340 @@
-import { RepoHelmService } from './service.js';
-import type { SubAgent, ModelKit, Quest } from './types.js';
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { RepoHelmService } from "./service.js";
+import {
+  callLlmWithModelKit,
+  type LlmMessage,
+  type LlmToolCall,
+  type LlmToolSpec
+} from "./llm.js";
+import {
+  buildDelegateHandler,
+  DELEGATE_TOOL_NAME,
+  delegateToolSpec,
+  type DelegateInput
+} from "./tools/delegate.js";
+import type { ModelKit, Quest, SubAgent, WorktreeState } from "./types.js";
 
-interface TaskAnalysis {
-  needs: string[];  // 任务需求标签
-  complexity: 'simple' | 'medium' | 'complex';
-  estimatedSteps: number;
+const execFileAsync = promisify(execFile);
+
+const MAX_TOOL_LOOP_ITERATIONS = 8;
+
+/** Minimal backend interface used internally by the orchestrator. */
+export interface SubAgentBackend {
+  run(input: {
+    systemPrompt: string;
+    messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+    tools?: LlmToolSpec[];
+    worktrees: WorktreeState[];
+    quest: Quest;
+  }): Promise<SubAgentBackendResult>;
 }
 
-interface WorkerTask {
-  agent: SubAgent;
-  input: {
-    task: string;
-    context: any;
-  };
+export interface SubAgentBackendResult {
+  content: string;
+  toolCalls: LlmToolCall[];
+  finishReason: string;
+  /** Present for CLI backends that emit a one-shot summary. */
+  events: Array<{ type: string; title: string; detail: string; agent: string }>;
+}
+
+export interface OrchestratorQuestResult {
+  entryAgentId: string;
+  entryAgentName: string;
+  finalContent: string;
+  delegations: Array<{ agentId: string; agentName: string; ok: boolean; summary: string }>;
+  iterations: number;
 }
 
 /**
- * SubAgentOrchestrator - 多 Agent 协作执行 Quest 的编排引擎
- * 
- * 核心职责:
- * 1. 获取入口 Sub-agent 分析任务
- * 2. 根据分析结果路由到 worker agents
- * 3. 并行/串行执行 worker agents
- * 4. 聚合结果并返回
+ * SubAgentOrchestrator - Supervisor + Task Tool pattern.
+ *
+ * The entry (supervisor) sub-agent runs an LLM loop with a single tool: `delegate`.
+ * It decides which worker sub-agents to invoke and when to stop.
+ * Workers run a single LLM call (or CLI shot) and return their result.
  */
 export class SubAgentOrchestrator {
   constructor(private service: RepoHelmService) {}
-  
-  /**
-   * 执行 Quest - 通过多 Agent 协作完成
-   */
-  async executeQuest(questId: string): Promise<any> {
-    // 1. 获取入口 Sub-agent
+
+  async executeQuest(questId: string): Promise<OrchestratorQuestResult> {
     const entryAgent = await this.service.getEntrySubAgent();
     if (!entryAgent) {
       throw new Error("No entry sub-agent configured");
     }
-    
-    // 2. 获取 Quest 信息
     const quest = await this.service.getQuest(questId);
-    
-    // 3. 入口 agent 分析任务
-    const analysis = await this.invokeSubAgent(entryAgent, {
-      task: quest.requirement,
-      context: { workspaceId: quest.workspaceId }
-    });
-    
-    // 4. 根据分析结果路由到 worker agents
-    const workerTasks = this.routeToWorkers(analysis);
-    
-    // 5. 并行/串行执行 worker agents
-    const results = await Promise.all(
-      workerTasks.map(task => this.invokeSubAgent(task.agent, task.input))
+    if (!quest) {
+      throw new Error(`Quest ${questId} not found`);
+    }
+
+    const entryBackend = await this.createBackendFromModelKit(
+      await this.requireModelKit(entryAgent)
     );
-    
-    // 6. 聚合结果
-    return this.aggregateResults(results);
-  }
-  
-  /**
-   * 调用单个 Sub-agent 执行任务
-   */
-  private async invokeSubAgent(agent: SubAgent, input: any): Promise<any> {
-    try {
-      // 1. 获取绑定的 ModelKit
-      const modelKit = await this.service.getModelKit(agent.modelKitId);
-      if (!modelKit) {
-        throw new Error(`ModelKit ${agent.modelKitId} not found for agent ${agent.id}`);
-      }
-      
-      // 2. 构建 AgentBackend
-      const backend = this.createBackendFromModelKit(modelKit);
-      
-      // 3. 应用权限限制
-      const restrictedBackend = this.applyPermissions(backend, agent.permissions);
-      
-      // 4. 执行
-      const result = await restrictedBackend.run({
-        systemPrompt: agent.promptTemplate || '',
-        messages: [{ role: "user" as const, content: input.task }],
-        tools: this.filterTools(agent.permissions)
+
+    const workerCatalog = await this.listWorkers();
+    const delegations: OrchestratorQuestResult["delegations"] = [];
+
+    const resolveWorker = async (agentId: string) => {
+      return workerCatalog.find((w) => w.id === agentId);
+    };
+    const invokeWorker = async (
+      worker: SubAgent,
+      task: string,
+      context: Record<string, unknown>
+    ) => {
+      const result = await this.invokeWorkerAgent(worker, { task, context, quest });
+      delegations.push({
+        agentId: worker.id,
+        agentName: worker.name,
+        ok: !result.error,
+        summary: result.error ? `error: ${result.error}` : truncate(result.content, 400)
       });
-      
-      // 5. 更新使用统计
-      await this.updateSubAgentUsage(agent.id);
-      
-      return {
-        agentId: agent.id,
-        agentName: agent.name,
-        success: true,
-        result,
-        timestamp: new Date().toISOString()
-      };
-    } catch (error) {
-      console.error(`Failed to invoke sub-agent ${agent.id}:`, error);
-      return {
-        agentId: agent.id,
-        agentName: agent.name,
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-        timestamp: new Date().toISOString()
-      };
-    }
-  }
-  
-  /**
-   * 基于任务分析结果路由到合适的 worker agents
-   */
-  private routeToWorkers(analysis: TaskAnalysis): WorkerTask[] {
-    // TODO: 这里需要从 service 获取所有 worker agents
-    // 暂时返回空数组,后续完善
-    const workers: SubAgent[] = [];
-    
-    const tasks: WorkerTask[] = [];
-    
-    // 基于关键词匹配路由
-    if (analysis.needs.includes("specification")) {
-      const specAgent = workers.find(w => 
-        w.capabilities.includes("specification") || 
-        w.capabilities.includes("requirements")
-      );
-      if (specAgent) {
-        tasks.push({ agent: specAgent, input: { task: "生成详细规格", context: {} } });
+      return result.error
+        ? { ok: false, error: result.error }
+        : { ok: true, content: result.content };
+    };
+    const handleDelegate = buildDelegateHandler(resolveWorker, invokeWorker);
+
+    const systemPrompt =
+      entryAgent.promptTemplate ??
+      "You are the RepoHelm supervisor. You do not write code, specs, or reviews yourself. " +
+        "Use the `delegate` tool to assign work to worker sub-agents, then synthesize their results into a concise summary. " +
+        "Available workers: " +
+        workerCatalog.map((w) => `${w.id} (${w.capabilities.join(",") || "general"})`).join("; ") +
+        ".";
+
+    const messages: LlmMessage[] = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: quest.requirement }
+    ];
+
+    let iterations = 0;
+    let finalContent = "";
+
+    while (iterations < MAX_TOOL_LOOP_ITERATIONS) {
+      iterations += 1;
+      const response = await entryBackend.run({
+        systemPrompt,
+        messages: messages.map((m) => ({
+          role: m.role === "tool" ? "assistant" : (m.role as "system" | "user" | "assistant"),
+          content: m.content
+        })),
+        tools: [delegateToolSpec],
+        worktrees: quest.worktrees,
+        quest
+      });
+
+      if (response.toolCalls.length > 0) {
+        messages.push({
+          role: "assistant",
+          content: response.content ?? "",
+          tool_calls: response.toolCalls
+        });
+        for (const call of response.toolCalls) {
+          const reply = await this.dispatchToolCall(call, handleDelegate);
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: reply
+          });
+        }
+        continue;
       }
+
+      finalContent = response.content || "";
+      break;
     }
-    
-    if (analysis.needs.includes("implementation")) {
-      const implAgent = workers.find(w => 
-        w.capabilities.includes("coding") || 
-        w.capabilities.includes("planning")
-      );
-      if (implAgent) {
-        tasks.push({ agent: implAgent, input: { task: "实现代码", context: {} } });
-      }
+
+    if (iterations >= MAX_TOOL_LOOP_ITERATIONS && !finalContent) {
+      finalContent =
+        "Supervisor reached the maximum iteration limit (" +
+        MAX_TOOL_LOOP_ITERATIONS +
+        ") without producing a final answer.";
     }
-    
-    if (analysis.needs.includes("testing")) {
-      const testAgent = workers.find(w => 
-        w.capabilities.includes("testing")
-      );
-      if (testAgent) {
-        tasks.push({ agent: testAgent, input: { task: "编写测试", context: {} } });
-      }
-    }
-    
-    return tasks;
-  }
-  
-  /**
-   * 聚合多个 worker agent 的执行结果
-   */
-  private aggregateResults(results: any[]): any {
-    // 简单聚合:合并所有结果
+
+    await this.updateSubAgentUsage(entryAgent.id);
+
     return {
-      completed: true,
-      subAgentResults: results,
-      timestamp: new Date().toISOString()
+      entryAgentId: entryAgent.id,
+      entryAgentName: entryAgent.name,
+      finalContent,
+      delegations,
+      iterations
     };
   }
-  
+
+  private async dispatchToolCall(
+    call: LlmToolCall,
+    handleDelegate: (input: DelegateInput) => Promise<string>
+  ): Promise<string> {
+    if (call.function.name !== DELEGATE_TOOL_NAME) {
+      return JSON.stringify({ ok: false, error: `unknown tool ${call.function.name}` });
+    }
+    let parsed: DelegateInput;
+    try {
+      parsed = JSON.parse(call.function.arguments || "{}");
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: `invalid delegate arguments: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+    return handleDelegate(parsed);
+  }
+
+  private async invokeWorkerAgent(
+    worker: SubAgent,
+    input: { task: string; context: Record<string, unknown>; quest: Quest }
+  ): Promise<{ content: string; error?: string }> {
+    try {
+      const modelKit = await this.requireModelKit(worker);
+      const backend = await this.createBackendFromModelKit(modelKit);
+      const systemPrompt =
+        worker.promptTemplate ??
+        `You are a specialized worker agent named "${worker.name}". ` +
+          `Your capabilities: ${worker.capabilities.join(", ") || "general"}. ` +
+          `Produce a concise, high-quality result for the task below.`;
+      const userContent = input.context && Object.keys(input.context).length > 0
+        ? `${input.task}\n\nContext:\n${JSON.stringify(input.context, null, 2)}`
+        : input.task;
+      const result = await backend.run({
+        systemPrompt,
+        messages: [{ role: "user", content: userContent }],
+        tools: [],
+        worktrees: input.quest.worktrees,
+        quest: input.quest
+      });
+      await this.updateSubAgentUsage(worker.id);
+      return { content: result.content || "(worker returned no content)" };
+    } catch (error) {
+      return {
+        content: "",
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
+  private async requireModelKit(agent: SubAgent): Promise<ModelKit> {
+    const modelKit = await this.service.getModelKit(agent.modelKitId);
+    if (!modelKit) {
+      throw new Error(`ModelKit ${agent.modelKitId} not found for agent ${agent.id}`);
+    }
+    return modelKit;
+  }
+
+  private async listWorkers(): Promise<SubAgent[]> {
+    const all = await this.service.listSubAgents();
+    return all.filter((agent) => agent.mode === "worker");
+  }
+
+  private async updateSubAgentUsage(agentId: string): Promise<void> {
+    try {
+      await this.service.updateSubAgentUsage(agentId);
+    } catch {
+      // usage stats are best-effort
+    }
+  }
+
   /**
-   * 从 ModelKit 配置创建对应的 AgentBackend
-   * TODO: 完整实现需要根据 ModelKit 类型(cli/byok)创建不同的 backend
+   * Build a SubAgentBackend from a ModelKit.
+   * - type=byok: uses OpenAI-compatible chat completions with full tool-call loop support.
+   * - type=cli:  shells out via the configured external CLI (codex/claude/opencode), one-shot.
    */
-  private createBackendFromModelKit(modelKit: ModelKit): any {
-    // 目前返回 mock backend,后续需要实现真实的 backend 创建逻辑
+  async createBackendFromModelKit(modelKit: ModelKit): Promise<SubAgentBackend> {
+    if (modelKit.type === "byok") {
+      return this.createByokBackend(modelKit);
+    }
+    if (modelKit.type === "cli") {
+      return this.createCliBackend(modelKit);
+    }
+    throw new Error(`ModelKit ${modelKit.id} has unsupported type ${(modelKit as { type: string }).type}`);
+  }
+
+  private createByokBackend(modelKit: ModelKit): SubAgentBackend {
     return {
-      run: async (options: any) => {
-        // Mock implementation
+      async run(input) {
+        const messages: LlmMessage[] = [
+          { role: "system", content: input.systemPrompt },
+          ...input.messages.map((m) => ({
+            role: m.role as LlmMessage["role"],
+            content: m.content
+          }))
+        ];
+        const result = await callLlmWithModelKit({
+          modelKit,
+          messages,
+          tools: input.tools && input.tools.length > 0 ? input.tools : undefined
+        });
         return {
-          status: "completed",
-          summary: `Mock execution with ModelKit ${modelKit.id}`,
-          events: []
+          content: result.content,
+          toolCalls: result.toolCalls,
+          finishReason: result.finishReason,
+          events: [
+            {
+              type: "agent.byok.call",
+              title: `ModelKit ${modelKit.name} 调用完成`,
+              detail: `model=${modelKit.model} finish=${result.finishReason}`,
+              agent: modelKit.name
+            }
+          ]
         };
       }
     };
   }
-  
-  /**
-   * 应用权限限制到 backend
-   * TODO: 实现真正的权限过滤逻辑
-   */
-  private applyPermissions(backend: any, permissions: any): any {
-    // 目前直接返回原 backend,后续需要实现权限包装器
-    return backend;
+
+  private createCliBackend(modelKit: ModelKit): SubAgentBackend {
+    const backendId = modelKit.backendId;
+    const envVar = resolveCliEnvVar(backendId);
+    return {
+      async run(input) {
+        const command = process.env[envVar];
+        if (!command) {
+          throw new Error(
+            `CLI backend ${backendId} requires environment variable ${envVar} to be set.`
+          );
+        }
+        const prompt = [input.systemPrompt, ...input.messages.map((m) => m.content)]
+          .filter(Boolean)
+          .join("\n\n---\n\n");
+        const { stdout, stderr } = await execFileAsync(command, [prompt], {
+          maxBuffer: 10 * 1024 * 1024
+        }).catch((error: { stdout?: string; stderr?: string; message?: string }) => {
+          throw new Error(
+            `CLI backend ${backendId} failed: ${error.message}\n${error.stderr ?? ""}`
+          );
+        });
+        const content = (stdout || "").trim() || (stderr || "").trim();
+        return {
+          content,
+          toolCalls: [],
+          finishReason: "stop",
+          events: [
+            {
+              type: "agent.cli.call",
+              title: `CLI ${backendId} 调用完成`,
+              detail: truncate(content, 200) || "(empty)",
+              agent: modelKit.name
+            }
+          ]
+        };
+      }
+    };
   }
-  
-  /**
-   * 根据权限配置过滤可用工具
-   */
-  private filterTools(permissions: any): string[] {
-    return permissions.allowedTools || [];
+}
+
+function resolveCliEnvVar(backendId: string | undefined): string {
+  switch (backendId) {
+    case "codex-cli":
+      return "REPOHELM_CODEX_COMMAND";
+    case "claude-code":
+      return "REPOHELM_CLAUDE_COMMAND";
+    case "opencode":
+      return "REPOHELM_OPENCODE_COMMAND";
+    default:
+      return "REPOHELM_GENERIC_CLI_COMMAND";
   }
-  
-  /**
-   * 更新 Sub-agent 的使用统计
-   */
-  private async updateSubAgentUsage(agentId: string): Promise<void> {
-    await this.service.updateSubAgentUsage(agentId);
-  }
+}
+
+function truncate(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return value.slice(0, max - 1) + "…";
 }

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls /Users/chenmeili/Documents/GitHub/RepoHelm && cat /Users/chenmeili/Documents/GitHub/RepoHelm/package.json 2>/dev/null | head -20)"
+      "Bash(ls /Users/chenmeili/Documents/GitHub/RepoHelm && cat /Users/chenmeili/Documents/GitHub/RepoHelm/package.json 2>/dev/null | head -20)",
+      "Bash(grep -r \"新建\" /Users/chenmeili/Documents/GitHub/RepoHelm/apps 2>/dev/null | head -20)"
     ]
   }
 }

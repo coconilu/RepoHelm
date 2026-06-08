@@ -1244,6 +1244,30 @@ textarea {
   width: 34px;
 }
 
+.composer-icon-button:hover {
+  color: var(--text);
+}
+
+.composer-empty-agent {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  opacity: 0.7;
+}
+
+.composer-toast {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0 14px;
+  padding: 6px 10px;
+}
+
 .spark-action {
   align-items: center;
   background: transparent;

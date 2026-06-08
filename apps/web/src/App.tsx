@@ -96,6 +96,7 @@ export function App() {
   const [questRequirement, setQuestRequirement] = useState("");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [agentBackendId, setAgentBackendId] = useState<AgentBackendId>("mock");
+  const [selectedEntrySubAgentId, setSelectedEntrySubAgentId] = useState<string>("");
   const [agentBackends, setAgentBackends] = useState<AgentBackendInfo[]>([]);
   const [productReadiness, setProductReadiness] = useState<ProductReadiness | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("spec");
@@ -205,6 +206,24 @@ export function App() {
   const selectedChangedFile =
     changedFiles.find((file) => changedFileKey(file) === selectedChangedFileKey) ?? changedFiles[0];
   const activeBackend = agentBackends.find((backend) => backend.id === agentBackendId);
+  const entrySubAgents = useMemo(() => {
+    const all = state?.subAgents ? Object.values(state.subAgents) : [];
+    return all.filter((agent) => agent.mode === "entry").sort((a, b) => a.name.localeCompare(b.name));
+  }, [state?.subAgents]);
+
+  useEffect(() => {
+    if (entrySubAgents.length === 0) {
+      setSelectedEntrySubAgentId("");
+      return;
+    }
+    const preferred = state?.entrySubAgentId;
+    const preferredStillValid = entrySubAgents.some((agent) => agent.id === preferred);
+    if (preferredStillValid && preferred) {
+      setSelectedEntrySubAgentId(preferred);
+    } else if (!entrySubAgents.some((agent) => agent.id === selectedEntrySubAgentId)) {
+      setSelectedEntrySubAgentId(entrySubAgents[0].id);
+    }
+  }, [entrySubAgents, state?.entrySubAgentId, selectedEntrySubAgentId]);
 
   useEffect(() => {
     if (draftWorkspaceId === workspace?.id) {
@@ -238,6 +257,7 @@ export function App() {
         title: deriveRequestTitle(trimmedRequirement),
         requirement: trimmedRequirement,
         agentBackendId,
+        entrySubAgentId: selectedEntrySubAgentId || undefined,
         affectedProjectIds: projects.map((project) => project.id)
       });
       await api.runQuest(quest.id);
@@ -547,12 +567,14 @@ export function App() {
           agentBackendId={agentBackendId}
           agentBackends={agentBackends}
           busy={busy}
+          entrySubAgents={entrySubAgents}
           events={questEvents}
           projects={projects}
           quest={selectedQuest}
           questRequirement={questRequirement}
+          selectedEntrySubAgentId={selectedEntrySubAgentId}
           workspace={workspace}
-          onBackendChange={setAgentBackendId}
+          onEntrySubAgentChange={setSelectedEntrySubAgentId}
           onCreateQuest={createQuest}
           onDeliverQuest={deliverQuest}
           onRequirementChange={setQuestRequirement}
@@ -799,12 +821,14 @@ function QuestStage({
   agentBackendId,
   agentBackends,
   busy,
+  entrySubAgents,
   events,
   projects,
   quest,
   questRequirement,
+  selectedEntrySubAgentId,
   workspace,
-  onBackendChange,
+  onEntrySubAgentChange,
   onCreateQuest,
   onDeliverQuest,
   onRequirementChange
@@ -812,21 +836,26 @@ function QuestStage({
   agentBackendId: AgentBackendId;
   agentBackends: AgentBackendInfo[];
   busy: boolean;
+  entrySubAgents: SubAgent[];
   events: AgentEvent[];
   projects: Project[];
   quest?: Quest;
   questRequirement: string;
+  selectedEntrySubAgentId: string;
   workspace: Workspace;
-  onBackendChange: (backend: AgentBackendId) => void;
+  onEntrySubAgentChange: (id: string) => void;
   onCreateQuest: (event: FormEvent) => void;
   onDeliverQuest: () => void;
   onRequirementChange: (value: string) => void;
 }) {
   const questBackend = agentBackends.find((backend) => backend.id === quest?.agentBackendId);
-  const backend = questBackend ?? agentBackends.find((item) => item.id === agentBackendId);
+  const activeEntryAgent =
+    entrySubAgents.find((agent) => agent.id === selectedEntrySubAgentId) ??
+    entrySubAgents.find((agent) => agent.id === quest?.entrySubAgentId) ??
+    entrySubAgents[0];
+  const [contextListToast, setContextListToast] = useState<string>("");
   const chatThreadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [mode, setMode] = useState("auto");
 
   useEffect(() => {
     const chatThread = chatThreadRef.current;
@@ -856,7 +885,7 @@ function QuestStage({
           <div className="run-context">
             <span>{workspace.name}</span>
             <ChevronDown size={14} />
-            <span>{backend?.name ?? "Mock"}</span>
+            <span>{activeEntryAgent?.name ?? (questBackend?.name ?? "未选择 Agent")}</span>
             <ChevronDown size={14} />
             <span>{projects.length} project{projects.length === 1 ? "" : "s"}</span>
           </div>
@@ -877,7 +906,7 @@ function QuestStage({
             </div>
             <div className="chat-bubble">
               <strong>RepoHelm Agent</strong>
-              <p>描述你要完成的 request。Agent 会判断是否需要创建 Spec、worktree、执行计划和 review。</p>
+              <p>描述你要完成的 request。Supervisor 会把任务分派给合适的 worker sub-agent 来完成。</p>
             </div>
           </article>
         ) : (
@@ -893,9 +922,9 @@ function QuestStage({
                 <Bot size={16} />
               </div>
               <div className="chat-bubble">
-                <strong>{backend?.name ?? "RepoHelm Agent"}</strong>
+                <strong>{activeEntryAgent?.name ?? "RepoHelm Agent"}</strong>
                 <p>
-                  Request 已进入工作流。右侧会展示 Agent 判断后生成的 Spec、执行进展、产物和 diff。
+                  Request 已进入工作流。右侧会展示 Supervisor 分派进展、Spec、执行产物和 diff。
                 </p>
               </div>
             </article>
@@ -923,30 +952,41 @@ function QuestStage({
           value={questRequirement}
           onChange={(event) => onRequirementChange(event.target.value)}
         />
+        {contextListToast ? (
+          <div
+            aria-live="polite"
+            className="composer-toast"
+            role="status"
+          >
+            {contextListToast}
+          </div>
+        ) : null}
         <div className="composer-footer">
           <div className="composer-tools">
-            <Select
-              variant="inline"
-              ariaLabel="Agent Backend"
-              leadingIcon={<Bot size={15} />}
-              value={agentBackendId}
-              onValueChange={(value) => onBackendChange(value as AgentBackendId)}
-              options={agentBackends.map((item) => ({ value: item.id, label: composerBackendLabel(item) }))}
-            />
-            <div className="composer-divider">
+            {entrySubAgents.length > 0 ? (
               <Select
                 variant="inline"
-                ariaLabel="模型管理"
-                value={mode}
-                onValueChange={setMode}
-                options={[
-                  { value: "auto", label: "Auto" },
-                  { value: "plan", label: "Plan" },
-                  { value: "review", label: "Review" }
-                ]}
+                ariaLabel="入口 Agent"
+                leadingIcon={<Bot size={15} />}
+                value={selectedEntrySubAgentId || entrySubAgents[0]?.id || ""}
+                onValueChange={onEntrySubAgentChange}
+                options={entrySubAgents.map((agent) => ({ value: agent.id, label: agent.name }))}
               />
-            </div>
-            <button aria-label="上下文清单" className="composer-icon-button" type="button">
+            ) : (
+              <span className="composer-empty-agent" title="请先在设置里配置 BYOK 或创建入口 Agent">
+                <Bot size={15} />
+                <span>未配置 Agent</span>
+              </span>
+            )}
+            <button
+              aria-label="上下文清单"
+              className="composer-icon-button"
+              type="button"
+              onClick={() => {
+                setContextListToast("暂无附加上下文，用 @ 引用文件或符号");
+                window.setTimeout(() => setContextListToast(""), 2500);
+              }}
+            >
               <ListChecks size={16} />
             </button>
           </div>
@@ -957,7 +997,7 @@ function QuestStage({
             <button
               aria-label="发送给 Agent"
               className="send-button icon-send"
-              disabled={busy || !questRequirement.trim()}
+              disabled={busy || !questRequirement.trim() || entrySubAgents.length === 0}
               type="submit"
             >
               <Send size={16} />
@@ -2796,17 +2836,6 @@ function deriveRequestTitle(requirement: string) {
     return "Untitled Request";
   }
   return firstLine.length > 42 ? `${firstLine.slice(0, 42)}...` : firstLine;
-}
-
-function composerBackendLabel(backend: AgentBackendInfo) {
-  const labels: Record<AgentBackendId, string> = {
-    mock: "智能体",
-    "codex-cli": "Codex",
-    "claude-code": "Claude Code",
-    opencode: "OpenCode",
-    "openai-compatible": "OpenAI-compatible"
-  };
-  return labels[backend.id] ?? backend.name;
 }
 
 function costTierLabel(tier: "free" | "low" | "medium" | "high"): string {
