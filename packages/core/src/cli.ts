@@ -123,6 +123,12 @@ export class LocalCliRegistry {
     return this.definitions.find((def) => def.id === id);
   }
 
+  async resolveCommand(backendId: string): Promise<string | undefined> {
+    const def = this.get(backendId);
+    if (!def) return undefined;
+    return this.resolveBin(def);
+  }
+
   async detect(def: CliDefinition, options: { refresh?: boolean } = {}): Promise<LocalCliInfo> {
     const resolvedBin = await this.resolveBin(def);
     if (!resolvedBin) {

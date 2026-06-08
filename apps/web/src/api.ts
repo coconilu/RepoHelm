@@ -74,6 +74,31 @@ export interface QuestSpec {
   openQuestions: string[];
 }
 
+export type PlanApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface PlanApproval {
+  status: PlanApprovalStatus;
+  approvedAt?: string;
+  rejectionReason?: string;
+}
+
+export interface OrchestrationPlanStep {
+  id: string;
+  description: string;
+  agentId: string;
+  agentName: string;
+  dependencies: string[];
+  expectedOutput: string;
+}
+
+export interface OrchestrationPlan {
+  questId: string;
+  summary: string;
+  steps: OrchestrationPlanStep[];
+  notes?: string;
+  generatedAt: string;
+}
+
 export interface WorktreeState {
   projectId: string;
   branchName: string;
@@ -180,6 +205,9 @@ export interface Quest {
   deliveryResults: DeliveryState[];
   capabilityRecommendations: CapabilityRecommendation[];
   agentSummary?: string;
+  autoApprovePlan: boolean;
+  planApproval?: PlanApproval;
+  planPath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -329,7 +357,7 @@ export interface SubAgent {
   role: string;
   capabilities: string[];
   modelKitId: string;
-  mode: "entry" | "worker";
+  mode?: "entry" | "worker";
   permissions: SubAgentPermissions;
   promptTemplate?: string;
   metadata: SubAgentMetadata;
@@ -341,7 +369,7 @@ export interface CreateSubAgentInput {
   role: string;
   capabilities?: string[];
   modelKitId: string;
-  mode: "entry" | "worker";
+  mode?: "entry" | "worker";
   permissions?: SubAgentPermissions;
   promptTemplate?: string;
 }
@@ -443,6 +471,7 @@ export const api = {
     agentBackendId?: AgentBackendId;
     entrySubAgentId?: string;
     affectedProjectIds: string[];
+    autoApprovePlan?: boolean;
   }) =>
     request<Quest>("/api/quests", {
       method: "POST",
@@ -472,6 +501,17 @@ export const api = {
     request<Quest>(`/api/quests/${questId}/capabilities/${capabilityId}/dismiss`, {
       method: "POST"
     }),
+  approvePlan: (questId: string) =>
+    request<Quest>(`/api/quests/${questId}/approve-plan`, {
+      method: "POST"
+    }),
+  rejectPlan: (questId: string, reason?: string) =>
+    request<Quest>(`/api/quests/${questId}/reject-plan`, {
+      method: "POST",
+      body: JSON.stringify({ reason })
+    }),
+  getQuestPlan: (questId: string) =>
+    request<OrchestrationPlan>(`/api/quests/${questId}/plan`),
   updateWorkspace: (workspaceId: string, input: { name?: string; description?: string; worktreeRoot?: string }) =>
     request<Workspace>(`/api/workspaces/${workspaceId}`, {
       method: "PATCH",

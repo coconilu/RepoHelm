@@ -22,7 +22,7 @@ export const delegateToolSpec: LlmToolSpec = {
       properties: {
         agentId: {
           type: "string",
-          description: "The id of a worker sub-agent (mode=worker) registered in the system."
+          description: "The id of a registered sub-agent (other than the entry agent) to delegate to."
         },
         task: {
           type: "string",
@@ -42,18 +42,19 @@ export interface WorkerInvoker {
   (worker: SubAgent, task: string, context: Record<string, unknown>): Promise<unknown>;
 }
 
-export interface ResolveWorker {
+export interface ResolveAgent {
   (agentId: string): Promise<SubAgent | undefined>;
 }
 
 /**
- * Build a handler that, given a DelegateInput, resolves the worker,
- * validates it is a worker (not entry), and invokes it.
+ * Build a handler that, given a DelegateInput, resolves the agent,
+ * validates it is not the entry agent, and invokes it.
  * Returns a JSON string to feed back to the entry LLM.
  */
 export function buildDelegateHandler(
-  resolveWorker: ResolveWorker,
-  invokeWorker: WorkerInvoker
+  resolveAgent: ResolveAgent,
+  invokeWorker: WorkerInvoker,
+  entryAgentId: string
 ) {
   return async function handleDelegate(input: DelegateInput): Promise<string> {
     if (!input.agentId || typeof input.agentId !== "string") {
@@ -62,29 +63,29 @@ export function buildDelegateHandler(
     if (!input.task || typeof input.task !== "string") {
       return JSON.stringify({ ok: false, error: "task is required" });
     }
-    const worker = await resolveWorker(input.agentId);
-    if (!worker) {
-      return JSON.stringify({ ok: false, error: `worker ${input.agentId} not found` });
+    const agent = await resolveAgent(input.agentId);
+    if (!agent) {
+      return JSON.stringify({ ok: false, error: `agent ${input.agentId} not found` });
     }
-    if (worker.mode !== "worker") {
+    if (agent.id === entryAgentId) {
       return JSON.stringify({
         ok: false,
-        error: `agent ${input.agentId} is mode=${worker.mode}, only worker agents can be delegated to`
+        error: `cannot delegate to the entry agent (${agent.id})`
       });
     }
     try {
-      const result = await invokeWorker(worker, input.task, input.context ?? {});
+      const result = await invokeWorker(agent, input.task, input.context ?? {});
       return JSON.stringify({
         ok: true,
-        agentId: worker.id,
-        agentName: worker.name,
+        agentId: agent.id,
+        agentName: agent.name,
         result
       });
     } catch (error) {
       return JSON.stringify({
         ok: false,
-        agentId: worker.id,
-        agentName: worker.name,
+        agentId: agent.id,
+        agentName: agent.name,
         error: error instanceof Error ? error.message : String(error)
       });
     }

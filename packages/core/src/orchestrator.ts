@@ -7,13 +7,15 @@ import {
   type LlmToolCall,
   type LlmToolSpec
 } from "./llm.js";
+import { generateOrchestrationPlan } from "./planning.js";
+import { QuestWorkspaceManager } from "./quest-workspace.js";
 import {
   buildDelegateHandler,
   DELEGATE_TOOL_NAME,
   delegateToolSpec,
   type DelegateInput
 } from "./tools/delegate.js";
-import type { ModelKit, Quest, SubAgent, WorktreeState } from "./types.js";
+import type { ModelKit, OrchestrationPlan, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,7 +36,6 @@ export interface SubAgentBackendResult {
   content: string;
   toolCalls: LlmToolCall[];
   finishReason: string;
-  /** Present for CLI backends that emit a one-shot summary. */
   events: Array<{ type: string; title: string; detail: string; agent: string }>;
 }
 
@@ -47,16 +48,21 @@ export interface OrchestratorQuestResult {
 }
 
 /**
- * SubAgentOrchestrator - Supervisor + Task Tool pattern.
+ * SubAgentOrchestrator — Plan-then-Execute orchestration.
  *
- * The entry (supervisor) sub-agent runs an LLM loop with a single tool: `delegate`.
- * It decides which worker sub-agents to invoke and when to stop.
- * Workers run a single LLM call (or CLI shot) and return their result.
+ * Phase 1 (generatePlan): Entry agent produces a structured plan.
+ * Phase 2 (executeApprovedPlan): Steps are executed in dependency order via delegation.
  */
 export class SubAgentOrchestrator {
-  constructor(private service: RepoHelmService) {}
+  readonly questWorkspace: QuestWorkspaceManager;
 
-  async executeQuest(questId: string): Promise<OrchestratorQuestResult> {
+  constructor(private service: RepoHelmService, questWorkspaceRoot?: string) {
+    this.questWorkspace = new QuestWorkspaceManager(
+      questWorkspaceRoot ?? service.getRootDir()
+    );
+  }
+
+  async generatePlan(questId: string): Promise<OrchestrationPlan> {
     const entryAgent = await this.service.getEntrySubAgent();
     if (!entryAgent) {
       throw new Error("No entry sub-agent configured");
@@ -69,121 +75,113 @@ export class SubAgentOrchestrator {
     const entryBackend = await this.createBackendFromModelKit(
       await this.requireModelKit(entryAgent)
     );
+    const agentPool = await this.listDelegatableAgents(entryAgent.id);
 
-    const workerCatalog = await this.listWorkers();
-    const delegations: OrchestratorQuestResult["delegations"] = [];
+    return generateOrchestrationPlan({
+      entryAgent,
+      quest,
+      agentPool,
+      backend: entryBackend
+    });
+  }
 
-    const resolveWorker = async (agentId: string) => {
-      return workerCatalog.find((w) => w.id === agentId);
-    };
-    const invokeWorker = async (
-      worker: SubAgent,
-      task: string,
-      context: Record<string, unknown>
-    ) => {
-      const result = await this.invokeWorkerAgent(worker, { task, context, quest });
-      delegations.push({
-        agentId: worker.id,
-        agentName: worker.name,
-        ok: !result.error,
-        summary: result.error ? `error: ${result.error}` : truncate(result.content, 400)
-      });
-      return result.error
-        ? { ok: false, error: result.error }
-        : { ok: true, content: result.content };
-    };
-    const handleDelegate = buildDelegateHandler(resolveWorker, invokeWorker);
-
-    const systemPrompt =
-      entryAgent.promptTemplate ??
-      "You are the RepoHelm supervisor. You do not write code, specs, or reviews yourself. " +
-        "Use the `delegate` tool to assign work to worker sub-agents, then synthesize their results into a concise summary. " +
-        "Available workers: " +
-        workerCatalog.map((w) => `${w.id} (${w.capabilities.join(",") || "general"})`).join("; ") +
-        ".";
-
-    const messages: LlmMessage[] = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: quest.requirement }
-    ];
-
-    let iterations = 0;
-    let finalContent = "";
-
-    while (iterations < MAX_TOOL_LOOP_ITERATIONS) {
-      iterations += 1;
-      const response = await entryBackend.run({
-        systemPrompt,
-        messages: messages.map((m) => ({
-          role: m.role === "tool" ? "assistant" : (m.role as "system" | "user" | "assistant"),
-          content: m.content
-        })),
-        tools: [delegateToolSpec],
-        worktrees: quest.worktrees,
-        quest
-      });
-
-      if (response.toolCalls.length > 0) {
-        messages.push({
-          role: "assistant",
-          content: response.content ?? "",
-          tool_calls: response.toolCalls
-        });
-        for (const call of response.toolCalls) {
-          const reply = await this.dispatchToolCall(call, handleDelegate);
-          messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: reply
-          });
-        }
-        continue;
-      }
-
-      finalContent = response.content || "";
-      break;
+  async executeApprovedPlan(questId: string, plan: OrchestrationPlan): Promise<OrchestratorQuestResult> {
+    const entryAgent = await this.service.getEntrySubAgent();
+    if (!entryAgent) {
+      throw new Error("No entry sub-agent configured");
+    }
+    const quest = await this.service.getQuest(questId);
+    if (!quest) {
+      throw new Error(`Quest ${questId} not found`);
     }
 
-    if (iterations >= MAX_TOOL_LOOP_ITERATIONS && !finalContent) {
-      finalContent =
-        "Supervisor reached the maximum iteration limit (" +
-        MAX_TOOL_LOOP_ITERATIONS +
-        ") without producing a final answer.";
+    const agentPool = await this.listDelegatableAgents(entryAgent.id);
+    const delegations: OrchestratorQuestResult["delegations"] = [];
+    const stepResults = new Map<string, string>();
+
+    const executed = new Set<string>();
+    const stepsToRun = [...plan.steps];
+
+    while (stepsToRun.length > 0) {
+      const ready = stepsToRun.filter(
+        (step) => step.dependencies.every((dep) => executed.has(dep))
+      );
+      if (ready.length === 0) {
+        break;
+      }
+
+      for (const step of ready) {
+        const agent = agentPool.find((a) => a.id === step.agentId);
+        if (!agent) {
+          delegations.push({
+            agentId: step.agentId,
+            agentName: step.agentName,
+            ok: false,
+            summary: `agent ${step.agentId} not found in pool`
+          });
+          executed.add(step.id);
+          stepsToRun.splice(stepsToRun.indexOf(step), 1);
+          continue;
+        }
+
+        const context: Record<string, unknown> = {
+          stepId: step.id,
+          questTitle: quest.title,
+          questRequirement: quest.requirement,
+          dependencies: step.dependencies.map((dep) => ({
+            stepId: dep,
+            result: stepResults.get(dep) || ""
+          }))
+        };
+
+        const result = await this.invokeWorkerAgent(agent, {
+          task: step.description,
+          context,
+          quest,
+          stepId: step.id
+        });
+
+        const summary = result.error ? `error: ${result.error}` : truncate(result.content, 400);
+        delegations.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          ok: !result.error,
+          summary
+        });
+
+        if (!result.error) {
+          stepResults.set(step.id, result.content);
+        }
+        executed.add(step.id);
+        stepsToRun.splice(stepsToRun.indexOf(step), 1);
+      }
     }
 
     await this.updateSubAgentUsage(entryAgent.id);
 
+    const finalContent = delegations.length === 0
+      ? "No steps were executed."
+      : delegations
+          .map((d, i) => `${i + 1}. ${d.agentName} (${d.ok ? "ok" : "fail"}): ${d.summary}`)
+          .join("\n");
+
     return {
       entryAgentId: entryAgent.id,
       entryAgentName: entryAgent.name,
-      finalContent,
+      finalContent: `${plan.summary}\n\n---\n\n${finalContent}`,
       delegations,
-      iterations
+      iterations: executed.size
     };
   }
 
-  private async dispatchToolCall(
-    call: LlmToolCall,
-    handleDelegate: (input: DelegateInput) => Promise<string>
-  ): Promise<string> {
-    if (call.function.name !== DELEGATE_TOOL_NAME) {
-      return JSON.stringify({ ok: false, error: `unknown tool ${call.function.name}` });
-    }
-    let parsed: DelegateInput;
-    try {
-      parsed = JSON.parse(call.function.arguments || "{}");
-    } catch (error) {
-      return JSON.stringify({
-        ok: false,
-        error: `invalid delegate arguments: ${error instanceof Error ? error.message : String(error)}`
-      });
-    }
-    return handleDelegate(parsed);
+  private async listDelegatableAgents(entryAgentId: string): Promise<SubAgent[]> {
+    const all = await this.service.listSubAgents();
+    return all.filter((agent) => agent.id !== entryAgentId);
   }
 
   private async invokeWorkerAgent(
     worker: SubAgent,
-    input: { task: string; context: Record<string, unknown>; quest: Quest }
+    input: { task: string; context: Record<string, unknown>; quest: Quest; stepId?: string }
   ): Promise<{ content: string; error?: string }> {
     try {
       const modelKit = await this.requireModelKit(worker);
@@ -191,7 +189,7 @@ export class SubAgentOrchestrator {
       const systemPrompt =
         worker.promptTemplate ??
         `You are a specialized worker agent named "${worker.name}". ` +
-          `Your capabilities: ${worker.capabilities.join(", ") || "general"}. ` +
+          `Your capabilities: ${worker.capabilities?.join(", ") || "general"}. ` +
           `Produce a concise, high-quality result for the task below.`;
       const userContent = input.context && Object.keys(input.context).length > 0
         ? `${input.task}\n\nContext:\n${JSON.stringify(input.context, null, 2)}`
@@ -204,7 +202,17 @@ export class SubAgentOrchestrator {
         quest: input.quest
       });
       await this.updateSubAgentUsage(worker.id);
-      return { content: result.content || "(worker returned no content)" };
+
+      const content = result.content || "(worker returned no content)";
+      if (input.stepId) {
+        await this.questWorkspace.writeWorkerArtifact(
+          input.quest.id,
+          input.stepId,
+          worker.name,
+          content
+        );
+      }
+      return { content };
     } catch (error) {
       return {
         content: "",
@@ -221,11 +229,6 @@ export class SubAgentOrchestrator {
     return modelKit;
   }
 
-  private async listWorkers(): Promise<SubAgent[]> {
-    const all = await this.service.listSubAgents();
-    return all.filter((agent) => agent.mode === "worker");
-  }
-
   private async updateSubAgentUsage(agentId: string): Promise<void> {
     try {
       await this.service.updateSubAgentUsage(agentId);
@@ -236,8 +239,6 @@ export class SubAgentOrchestrator {
 
   /**
    * Build a SubAgentBackend from a ModelKit.
-   * - type=byok: uses OpenAI-compatible chat completions with full tool-call loop support.
-   * - type=cli:  shells out via the configured external CLI (codex/claude/opencode), one-shot.
    */
   async createBackendFromModelKit(modelKit: ModelKit): Promise<SubAgentBackend> {
     if (modelKit.type === "byok") {
@@ -283,19 +284,36 @@ export class SubAgentOrchestrator {
 
   private createCliBackend(modelKit: ModelKit): SubAgentBackend {
     const backendId = modelKit.backendId;
-    const envVar = resolveCliEnvVar(backendId);
     return {
-      async run(input) {
-        const command = process.env[envVar];
+      run: async (input) => {
+        const envVar = resolveCliEnvVar(backendId);
+        let command = process.env[envVar];
+        let cliArgs: string[] = [];
+
+        if (!command && backendId) {
+          command = await this.service.resolveCliCommand(backendId);
+          const def = this.service.getCliDefinition(backendId);
+          if (def?.ping) {
+            const prompt = input.messages.map((m) => m.content).filter(Boolean).join("\n\n");
+            const model = modelKit.model !== "default" ? modelKit.model : undefined;
+            cliArgs = def.ping.build(prompt, model);
+          }
+        }
+
         if (!command) {
           throw new Error(
-            `CLI backend ${backendId} requires environment variable ${envVar} to be set.`
+            `CLI backend ${backendId} not found. Install it or set ${envVar} environment variable.`
           );
         }
-        const prompt = [input.systemPrompt, ...input.messages.map((m) => m.content)]
-          .filter(Boolean)
-          .join("\n\n---\n\n");
-        const { stdout, stderr } = await execFileAsync(command, [prompt], {
+
+        if (cliArgs.length === 0) {
+          const prompt = [input.systemPrompt, ...input.messages.map((m) => m.content)]
+            .filter(Boolean)
+            .join("\n\n---\n\n");
+          cliArgs = [prompt];
+        }
+
+        const { stdout, stderr } = await execFileAsync(command, cliArgs, {
           maxBuffer: 10 * 1024 * 1024
         }).catch((error: { stdout?: string; stderr?: string; message?: string }) => {
           throw new Error(

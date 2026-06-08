@@ -109,7 +109,8 @@ const questSchema = z.object({
   requirement: z.string().min(1),
   agentBackendId: z.enum(["mock", "codex-cli", "claude-code", "opencode", "openai-compatible"]).optional(),
   entrySubAgentId: z.string().optional(),
-  affectedProjectIds: z.array(z.string()).optional()
+  affectedProjectIds: z.array(z.string()).optional(),
+  autoApprovePlan: z.boolean().optional()
 });
 
 const createModelKitSchema = z.object({
@@ -146,12 +147,12 @@ const testModelSchema = z.object({
 
 // Sub-agent Schema 定义
 const createSubAgentSchema = z.object({
-  id: z.string().optional(), // 可选，不传则自动生成
+  id: z.string().optional(),
   name: z.string().min(1),
   role: z.string().min(1),
   capabilities: z.array(z.string()).optional(),
   modelKitId: z.string().min(1),
-  mode: z.enum(["entry", "worker"]),
+  mode: z.enum(["entry", "worker"]).optional(),
   permissions: z.object({
     allowedTools: z.array(z.string()),
     deniedTools: z.array(z.string()),
@@ -415,6 +416,35 @@ app.post("/api/quests/:id/capabilities/:capabilityId/accept", async (context) =>
 app.post("/api/quests/:id/capabilities/:capabilityId/dismiss", async (context) => {
   const quest = await service.dismissCapabilityRecommendation(context.req.param("id"), context.req.param("capabilityId"));
   return context.json(quest);
+});
+
+app.post("/api/quests/:id/approve-plan", async (context) => {
+  try {
+    const quest = await service.approvePlan(context.req.param("id"));
+    return context.json(quest);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+const rejectPlanSchema = z.object({ reason: z.string().optional() });
+
+app.post("/api/quests/:id/reject-plan", async (context) => {
+  try {
+    const input = rejectPlanSchema.parse(await context.req.json().catch(() => ({})));
+    const quest = await service.rejectPlan(context.req.param("id"), input.reason);
+    return context.json(quest);
+  } catch (error) {
+    return context.json({ error: String(error) }, 400);
+  }
+});
+
+app.get("/api/quests/:id/plan", async (context) => {
+  const plan = await service.getQuestPlan(context.req.param("id"));
+  if (!plan) {
+    return context.json({ error: "No plan found" }, 404);
+  }
+  return context.json(plan);
 });
 
 // POST /api/model-kits - 创建 ModelKit

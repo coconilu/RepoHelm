@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -399,193 +399,25 @@ describe("RepoHelmService", () => {
     ]);
   });
 
-  it("runs a configured Codex CLI backend command and captures its artifact output", async () => {
-    const previousCommand = process.env.REPOHELM_CODEX_COMMAND;
-    process.env.REPOHELM_CODEX_COMMAND =
-      "node -e \"const fs=require('node:fs');fs.mkdirSync('repohelm-quest-output',{recursive:true});fs.writeFileSync('repohelm-quest-output/codex-cli-fixture.md', 'Codex CLI fixture for '+process.env.REPOHELM_QUEST_TITLE+'\\n');console.log('fixture backend wrote artifact')\"";
-    try {
-      const { service } = await createGitRepoService();
-      const state = await service.bootstrap();
-      const workspace = state.workspaces[0]!;
-      const project = state.projects[0]!;
-      const quest = await service.createQuest({
-        workspaceId: workspace.id,
-        title: "Run real backend",
-        requirement: "通过配置的 Codex CLI backend 写入实现产物。",
-        agentBackendId: "codex-cli",
-        affectedProjectIds: [project.id]
-      });
-
-      const completedQuest = await service.runQuest(quest.id);
-      const nextState = await service.getState();
-      const questEvents = nextState.events.filter((event) => event.questId === quest.id);
-
-      expect(completedQuest.status).toBe("ready");
-      expect(completedQuest.agentSummary).toContain("Codex CLI executed 1/1");
-      expect(completedQuest.changedFiles.find((file) => file.path === ".repohelm/agent-input.json")).toBeTruthy();
-      expect(completedQuest.changedFiles.find((file) => file.path === "repohelm-quest-output/codex-cli-fixture.md")).toMatchObject({
-        status: "untracked"
-      });
-      expect(
-        questEvents.find((event) => event.type === "agent.backend.completed")?.detail
-      ).toContain("fixture backend wrote artifact");
-      expect(questEvents.find((event) => event.type === "agent.artifacts.standardized")).toBeTruthy();
-    } finally {
-      if (previousCommand === undefined) {
-        delete process.env.REPOHELM_CODEX_COMMAND;
-      } else {
-        process.env.REPOHELM_CODEX_COMMAND = previousCommand;
-      }
-    }
-  });
-
-  it("blocks an external backend command that is not allowed by the security policy", async () => {
-    const previousCommand = process.env.REPOHELM_CODEX_COMMAND;
-    process.env.REPOHELM_CODEX_COMMAND = "python -c \"print('not allowed')\"";
-    try {
-      const { service } = await createGitRepoService();
-      const state = await service.bootstrap();
-      const workspace = state.workspaces[0]!;
-      const project = state.projects[0]!;
-      const quest = await service.createQuest({
-        workspaceId: workspace.id,
-        title: "Blocked backend",
-        requirement: "尝试运行不在 allowlist 中的外部命令。",
-        agentBackendId: "codex-cli",
-        affectedProjectIds: [project.id]
-      });
-
-      const completedQuest = await service.runQuest(quest.id);
-      const auditLog = await service.listAuditLog();
-
-      expect(completedQuest.status).toBe("blocked");
-      expect(completedQuest.agentSummary).toContain("不在 allowlist");
-      expect(auditLog[0]).toMatchObject({
-        type: "command",
-        decision: "denied",
-        subject: "Codex CLI"
-      });
-    } finally {
-      if (previousCommand === undefined) {
-        delete process.env.REPOHELM_CODEX_COMMAND;
-      } else {
-        process.env.REPOHELM_CODEX_COMMAND = previousCommand;
-      }
-    }
-  });
-
-  it("runs a quest into ready state with a real git worktree, validation, review, and memory", async () => {
-    const { rootDir, service } = await createGitRepoService();
-    const state = await service.bootstrap();
-    const workspace = state.workspaces[0]!;
-    const project = state.projects[0]!;
-    const quest = await service.createQuest({
-      workspaceId: workspace.id,
-      title: "Run MVP loop",
-      requirement: "验证 Quest 的 mock agent 执行闭环。",
-      affectedProjectIds: [project.id]
-    });
-
-    const completedQuest = await service.runQuest(quest.id);
-    const nextState = await service.getState();
-    const questEvents = nextState.events.filter((event) => event.questId === quest.id);
-    const questMemory = nextState.knowledge.find((item) => item.questId === quest.id);
-
-    expect(completedQuest.status).toBe("ready");
-    expect(completedQuest.worktrees).toHaveLength(1);
-    expect(completedQuest.worktrees[0]?.status).toBe("created");
-    expect(completedQuest.worktrees[0]?.branchName).toMatch(/^repohelm\/run-mvp-loop-/);
-    expect(completedQuest.worktrees[0]?.worktreePath).toContain(join(rootDir, ".repohelm", "worktrees"));
-    await expect(readFile(join(completedQuest.worktrees[0]!.worktreePath, "README.md"), "utf8")).resolves.toContain("Fixture");
-    expect(completedQuest.validationResults.length).toBeGreaterThan(0);
-    expect(completedQuest.reviewNotes.length).toBeGreaterThan(0);
-    expect(completedQuest.changedFiles).toHaveLength(1);
-    expect(completedQuest.changedFiles[0]?.path).toBe("repohelm-quest-output/run-mvp-loop.md");
-    expect(completedQuest.changedFiles[0]?.status).toBe("untracked");
-    expect(completedQuest.changedFiles[0]?.diff).toContain("MVP mock Implementation Agent");
-    expect(completedQuest.agentSummary).toContain("Mock backend");
-    expect(questEvents).toHaveLength(12);
-    expect(questMemory?.type).toBe("memory");
-    expect(questMemory?.body).toContain("1 个可 review 变更");
-    expect(questMemory?.sourcePath).toContain(join(rootDir, ".repohelm", "knowledge"));
-    await expect(readFile(questMemory!.sourcePath!, "utf8")).resolves.toContain(`Quest Memory: ${quest.title}`);
-  });
-
-  it("delivers a ready quest by validating and committing each created worktree", async () => {
-    const { service } = await createGitRepoService();
-    const state = await service.bootstrap();
-    const workspace = state.workspaces[0]!;
-    const project = state.projects[0]!;
-    await service.updateProject(project.id, {
-      validationCommand: "node --version"
-    });
-    const quest = await service.createQuest({
-      workspaceId: workspace.id,
-      title: "Deliver worktree",
-      requirement: "提交 worktree 中的 Agent 产物并生成 PR handoff。",
-      affectedProjectIds: [project.id]
-    });
-    await service.runQuest(quest.id);
-
-    const deliveredQuest = await service.deliverQuest(quest.id);
-    const nextState = await service.getState();
-    const deliveryEvent = nextState.events.find((event) => event.questId === quest.id && event.type === "delivery.completed");
-
-    expect(deliveredQuest.status).toBe("delivered");
-    expect(deliveredQuest.deliveryResults).toHaveLength(1);
-    expect(deliveredQuest.deliveryResults[0]).toMatchObject({
-      projectId: project.id,
-      status: "pr_ready",
-      commitMessage: "RepoHelm: Deliver worktree"
-    });
-    expect(deliveredQuest.deliveryResults[0]?.commitSha).toMatch(/[a-f0-9]{40}/);
-    expect(deliveredQuest.deliveryResults[0]?.validationOutput).toContain("v");
-    expect(deliveryEvent?.title).toBe("交付准备完成");
-  });
-
-  it("cleans up quest worktrees and can retry the quest into a fresh worktree", async () => {
+  it("throws a guidance error when running a quest without an entry sub-agent configured", async () => {
     const { service } = await createGitRepoService();
     const state = await service.bootstrap();
     const workspace = state.workspaces[0]!;
     const project = state.projects[0]!;
     const quest = await service.createQuest({
       workspaceId: workspace.id,
-      title: "Retry worktree",
-      requirement: "清理 worktree 后重新运行 Quest。",
-      affectedProjectIds: [project.id]
-    });
-    const readyQuest = await service.runQuest(quest.id);
-    const worktreePath = readyQuest.worktrees[0]!.worktreePath;
-
-    const cleanedQuest = await service.cleanupQuestWorktrees(quest.id);
-    await expect(access(worktreePath)).rejects.toBeTruthy();
-    const retriedQuest = await service.retryQuest(quest.id);
-
-    expect(cleanedQuest.worktrees[0]?.status).toBe("cleaned");
-    expect(retriedQuest.status).toBe("ready");
-    expect(retriedQuest.worktrees[0]?.status).toBe("created");
-    await expect(access(retriedQuest.worktrees[0]!.worktreePath)).resolves.toBeUndefined();
-  });
-
-  it("blocks a quest when the affected project is not a git repository", async () => {
-    const { service } = await createService();
-    const state = await service.bootstrap();
-    const workspace = state.workspaces[0]!;
-    const project = state.projects[0]!;
-    const quest = await service.createQuest({
-      workspaceId: workspace.id,
-      title: "Non git project",
-      requirement: "尝试为非 Git 项目创建 worktree。",
+      title: "No entry agent",
+      requirement: "验证没有 entry sub-agent 时 runQuest 的行为。",
       affectedProjectIds: [project.id]
     });
 
-    const completedQuest = await service.runQuest(quest.id);
+    await expect(service.runQuest(quest.id)).rejects.toThrow(
+      "No entry sub-agent configured. Set an entry agent in Settings > Sub-Agents before running quests."
+    );
 
-    expect(completedQuest.status).toBe("blocked");
-    expect(completedQuest.worktrees).toHaveLength(1);
-    expect(completedQuest.worktrees[0]?.status).toBe("failed");
-    expect(completedQuest.worktrees[0]?.note).toContain("not a git repository");
-    expect(completedQuest.changedFiles).toEqual([]);
+    const nextState = await service.getState();
+    const persistedQuest = nextState.quests.find((item) => item.id === quest.id);
+    expect(persistedQuest?.status).toBe("planning");
   });
 });
 

@@ -5,8 +5,9 @@ import { AgentBackendRegistry } from "./agent.js";
 import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
-import { ProviderRegistry } from "./providers.js";
 import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
+import { ProviderRegistry } from "./providers.js";
+import { QuestWorkspaceManager } from "./quest-workspace.js";
 import { seedBuiltInSubAgents } from "./seed-agents.js";
 import type {
   AgentEvent,
@@ -25,6 +26,8 @@ import type {
   ListProviderModelsInput,
   LocalCliInfo,
   ModelKit,
+  OrchestrationPlan,
+  PlanApproval,
   Project,
   ProjectHealth,
   ProductReadiness,
@@ -69,6 +72,7 @@ export class RepoHelmService {
   private readonly cliRegistry = new LocalCliRegistry(undefined, this.providerRegistry);
   private readonly worktreeRootDir: string;
   private readonly knowledgeFileStore: KnowledgeFileStore;
+  private readonly questWorkspaceManager: QuestWorkspaceManager;
 
   /** Serializes read-modify-write cycles to prevent concurrent writes from clobbering each other. */
   private _mutationQueue: Promise<void> = Promise.resolve();
@@ -80,6 +84,19 @@ export class RepoHelmService {
   ) {
     this.worktreeRootDir = options.worktreeRootDir ?? join(rootDir, ".repohelm", "worktrees");
     this.knowledgeFileStore = new KnowledgeFileStore(options.knowledgeRootDir ?? join(rootDir, ".repohelm", "knowledge"));
+    this.questWorkspaceManager = new QuestWorkspaceManager(rootDir);
+  }
+
+  getRootDir(): string {
+    return this.rootDir;
+  }
+
+  async resolveCliCommand(backendId: string): Promise<string | undefined> {
+    return this.cliRegistry.resolveCommand(backendId);
+  }
+
+  getCliDefinition(backendId: string) {
+    return this.cliRegistry.get(backendId);
   }
 
   /**
@@ -684,10 +701,6 @@ export class RepoHelmService {
         throw new Error(`SubAgent ${idValue} not found`);
       }
 
-      if (subAgent.mode === "worker") {
-        throw new Error("Cannot set worker sub-agent as entry point");
-      }
-
       return { newState: { ...state, entrySubAgentId: idValue }, result: undefined };
     });
   }
@@ -954,6 +967,7 @@ export class RepoHelmService {
       reviewNotes: [],
       deliveryResults: [],
       capabilityRecommendations,
+      autoApprovePlan: input.autoApprovePlan ?? false,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -991,29 +1005,110 @@ export class RepoHelmService {
 
   async runQuest(questId: string): Promise<Quest> {
     const entryAgent = await this.resolveEntryAgentForQuest(questId);
-
     if (!entryAgent) {
-      return this.runQuestLegacy(questId);
+      throw new Error(
+        "No entry sub-agent configured. Set an entry agent in Settings > Sub-Agents before running quests."
+      );
     }
 
     const orchestrator = new SubAgentOrchestrator(this);
-    try {
-      const result: OrchestratorQuestResult = await orchestrator.executeQuest(questId);
-      return this.persistOrchestratorResult(questId, entryAgent, result);
-    } catch (error) {
-      console.error("Orchestration failed, falling back to legacy mode:", error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      await this.appendEvent(
-        this.event(
-          questId,
-          "orchestrator.failed",
-          "编排引擎失败，回退到传统模式",
-          `Supervisor 执行失败: ${errorMessage}`,
-          entryAgent.name
-        )
-      );
-      return this.runQuestLegacy(questId);
+    const plan = await orchestrator.generatePlan(questId);
+    const planPath = await orchestrator.questWorkspace.writePlan(questId, plan);
+
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
     }
+
+    const updatedQuest: Quest = {
+      ...quest,
+      planPath,
+      planApproval: { status: "pending" },
+      updatedAt: now()
+    };
+
+    const events: AgentEvent[] = [
+      this.event(
+        questId,
+        "plan.generated",
+        "编排计划已生成",
+        `Supervisor ${entryAgent.name} 生成了 ${plan.steps.length} 个步骤的执行计划。`,
+        entryAgent.name
+      )
+    ];
+
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      events: [...events, ...state.events]
+    });
+
+    if (quest.autoApprovePlan) {
+      return this.approvePlan(questId);
+    }
+
+    return updatedQuest;
+  }
+
+  async approvePlan(questId: string): Promise<Quest> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    if (quest.planApproval?.status !== "pending") {
+      throw new Error("Plan is not pending approval");
+    }
+
+    const orchestrator = new SubAgentOrchestrator(this);
+    const plan = await orchestrator.questWorkspace.readPlan(questId);
+    if (!plan) {
+      throw new Error("No plan file found for this quest");
+    }
+
+    const result = await orchestrator.executeApprovedPlan(questId, plan);
+    return this.persistOrchestratorResult(questId, plan, result);
+  }
+
+  async rejectPlan(questId: string, reason?: string): Promise<Quest> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    if (quest.planApproval?.status !== "pending") {
+      throw new Error("Plan is not pending approval");
+    }
+
+    const updatedQuest: Quest = {
+      ...quest,
+      status: "cancelled",
+      planApproval: { status: "rejected", rejectionReason: reason },
+      updatedAt: now()
+    };
+
+    const events: AgentEvent[] = [
+      this.event(
+        questId,
+        "plan.rejected",
+        "编排计划已拒绝",
+        reason || "用户拒绝了编排计划。",
+        "User"
+      )
+    ];
+
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      events: [...events, ...state.events]
+    });
+    return updatedQuest;
+  }
+
+  async getQuestPlan(questId: string): Promise<OrchestrationPlan | undefined> {
+    const orchestrator = new SubAgentOrchestrator(this);
+    return orchestrator.questWorkspace.readPlan(questId);
   }
 
   private async resolveEntryAgentForQuest(questId: string): Promise<SubAgent | undefined> {
@@ -1030,7 +1125,7 @@ export class RepoHelmService {
 
   private async persistOrchestratorResult(
     questId: string,
-    entryAgent: SubAgent,
+    plan: OrchestrationPlan,
     result: OrchestratorQuestResult
   ): Promise<Quest> {
     const state = await this.getState();
@@ -1041,7 +1136,7 @@ export class RepoHelmService {
 
     const delegationSummary =
       result.delegations.length === 0
-        ? "Supervisor 未委派任何子任务，直接给出答复。"
+        ? "No steps were executed."
         : result.delegations
             .map((d, idx) => `${idx + 1}. ${d.agentName} (${d.ok ? "ok" : "fail"}): ${d.summary}`)
             .join("\n");
@@ -1049,7 +1144,7 @@ export class RepoHelmService {
     const updatedQuest: Quest = {
       ...quest,
       status: "ready",
-      entrySubAgentId: entryAgent.id,
+      planApproval: { status: "approved", approvedAt: now() },
       agentSummary: result.finalContent || delegationSummary,
       updatedAt: now()
     };
@@ -1057,16 +1152,16 @@ export class RepoHelmService {
     const events: AgentEvent[] = [
       this.event(
         questId,
-        "orchestrator.started",
-        "Supervisor 开始编排",
-        `入口 Agent: ${entryAgent.name}。开始分析需求并分派给 worker sub-agents。`,
-        entryAgent.name
+        "plan.approved",
+        "编排计划已批准",
+        `开始执行 ${plan.steps.length} 个步骤。`,
+        "User"
       ),
       ...result.delegations.map((d) =>
         this.event(
           questId,
-          d.ok ? "orchestrator.delegated" : "orchestrator.delegation_failed",
-          `已委派给 ${d.agentName}`,
+          d.ok ? "step.completed" : "step.failed",
+          `步骤完成: ${d.agentName}`,
           d.summary,
           d.agentName
         )
@@ -1074,11 +1169,9 @@ export class RepoHelmService {
       this.event(
         questId,
         "orchestrator.completed",
-        "Supervisor 编排完成",
-        result.finalContent
-          ? `迭代 ${result.iterations} 次，最终答复: ${result.finalContent.slice(0, 300)}`
-          : `迭代 ${result.iterations} 次，无最终答复。`,
-        entryAgent.name
+        "编排执行完成",
+        `执行了 ${result.iterations} 个步骤。${result.finalContent ? result.finalContent.slice(0, 300) : ""}`,
+        result.entryAgentName
       )
     ];
 
@@ -1093,190 +1186,6 @@ export class RepoHelmService {
   private async appendEvent(event: AgentEvent): Promise<void> {
     const state = await this.getState();
     await this.store.write({ ...state, events: [event, ...state.events] });
-  }
-
-  /**
-   * 传统的单次 backend.run() 逻辑
-   */
-  private async runQuestLegacy(questId: string): Promise<Quest> {
-    const state = await this.getState();
-    const quest = state.quests.find((item) => item.id === questId);
-    if (!quest) {
-      throw new Error("Quest not found");
-    }
-    const workspace = state.workspaces.find((item) => item.id === quest.workspaceId);
-    if (!workspace) {
-      throw new Error("Workspace not found");
-    }
-
-    const branchSuffix = quest.id.replace(/^quest_/, "").toLowerCase().slice(0, 8);
-    const branchName = `repohelm/${slugify(quest.title)}-${branchSuffix}`;
-    const worktrees = await Promise.all(
-      quest.affectedProjectIds.map<Promise<WorktreeState>>(async (projectId) => {
-        const project = state.projects.find((item) => item.id === projectId);
-        const projectName = project?.name ?? projectId;
-        const worktreeRoot = workspace.worktreeRoot ? resolve(workspace.worktreeRoot) : this.worktreeRootDir;
-        const worktreePath = join(worktreeRoot, slugify(quest.title), slugify(projectName));
-        if (!project) {
-          return {
-            projectId,
-            branchName,
-            worktreePath,
-            status: "failed",
-            note: "Project not found"
-          };
-        }
-        const result = await this.gitWorktreeManager.createWorktree({
-          repoPath: project.path,
-          branchName,
-          worktreePath
-        });
-        return {
-          projectId,
-          branchName: result.branchName,
-          worktreePath: result.worktreePath,
-          status: result.status,
-          note: result.note,
-          repoRoot: result.repoRoot
-        };
-      })
-    );
-    const createdWorktrees = worktrees.filter((worktree) => worktree.status === "created");
-    const failedWorktrees = worktrees.filter((worktree) => worktree.status === "failed");
-    const backend = this.agentBackendRegistry.get(quest.agentBackendId ?? "mock");
-    const backendAvailability = await backend.getAvailability();
-    const backendPermission = this.evaluateCommandPermission(
-      state.securityPolicy,
-      backend.id,
-      backendAvailability.command ?? backend.id
-    );
-    const backendAudit = this.audit(
-      "command",
-      backendPermission.allowed ? "allowed" : "denied",
-      backend.name,
-      backendPermission.detail
-    );
-    const backendResult = backendPermission.allowed
-      ? await backend.run({ quest, worktrees })
-      : {
-          status: "blocked" as const,
-          summary: backendPermission.detail,
-          events: [
-            {
-              type: "security.command.denied",
-              title: "命令执行被安全策略阻止",
-              detail: backendPermission.detail,
-              agent: "Security Agent"
-            }
-          ]
-        };
-    const changedFiles = (
-      await Promise.all(
-        createdWorktrees.map((worktree) =>
-          this.gitWorktreeManager.getChangedFiles(worktree.projectId, worktree.worktreePath).catch(() => [])
-        )
-      )
-    ).flat();
-
-    const updatedQuest: Quest = {
-      ...quest,
-      status:
-        backendResult.status === "blocked" || (failedWorktrees.length > 0 && createdWorktrees.length === 0)
-          ? "blocked"
-          : "ready",
-      worktrees,
-      changedFiles,
-      agentSummary: backendResult.summary,
-      deliveryResults: [],
-      validationResults: [
-        `Agent backend: ${backend.name} (${backendResult.status})。`,
-        "Spec validation: Spec 覆盖了用户目标、受影响项目和验收标准。",
-        createdWorktrees.length > 0
-          ? `Worktree validation: 已创建 ${createdWorktrees.length} 个 Git worktree。`
-          : "Worktree validation: 没有成功创建 Git worktree。",
-        changedFiles.length > 0
-          ? `Diff validation: 检测到 ${changedFiles.length} 个文件变更，可进入 diff review。`
-          : "Diff validation: 未检测到文件变更。",
-        failedWorktrees.length > 0 ? `Worktree validation: ${failedWorktrees.length} 个项目创建失败。` : ""
-      ].filter(Boolean),
-      reviewNotes: [
-        backendResult.status === "blocked" ? `Review Agent: ${backendResult.summary}` : "",
-        changedFiles.length > 0
-          ? "Review Agent: 当前 worktree 中已有文件变更，可以进入 diff review。"
-          : "Review Agent: 当前 worktree 暂无文件变更，等待真实 implementation agent 写入代码。",
-        failedWorktrees.length > 0
-          ? "Review Agent: 部分项目 worktree 创建失败，需要先处理 Git 仓库或路径问题。"
-          : "Review Agent: Worktree 隔离已就绪，可以安全接入 implementation agent。"
-      ].filter(Boolean),
-      updatedAt: now()
-    };
-
-    const memory: KnowledgeItem = {
-      id: id("knowledge"),
-      workspaceId: workspace.id,
-      questId,
-      type: "memory",
-      title: `Quest Memory: ${quest.title}`,
-      body: `本次 Quest 记录了需求 "${quest.requirement}" 的 Spec，创建了 ${createdWorktrees.length} 个 Git worktree，并生成了 ${changedFiles.length} 个可 review 变更。`,
-      tags: ["quest", "memory"],
-      createdAt: now(),
-      updatedAt: now()
-    };
-    const persistedMemory: KnowledgeItem = {
-      ...memory,
-      sourcePath: await this.knowledgeFileStore.writeKnowledgeItem(memory)
-    };
-
-    const events = [
-      ...backendResult.events.map((event) => this.event(questId, event.type, event.title, event.detail, event.agent)),
-      this.event(
-        questId,
-        "worktree.created",
-        createdWorktrees.length > 0 ? "Worktree 已创建" : "Worktree 创建失败",
-        createdWorktrees.length > 0
-          ? `Worktree Manager 已为 ${createdWorktrees.length} 个项目创建隔离 worktree。`
-          : "Worktree Manager 未能创建任何 worktree。",
-        "Workspace Analyst"
-      ),
-      this.event(questId, "agent.completed", "Agent backend 已完成", backendResult.summary, backend.name),
-      this.event(questId, "validation.completed", "验证完成", "Test Agent 生成了 mock validation 结果。", "Test Agent"),
-      this.event(questId, "review.completed", "Review 完成", "Review Agent 已输出风险和下一步建议。", "Review Agent"),
-      this.event(questId, "knowledge.updated", "知识库已更新", "Knowledge Agent 记录了本次 Quest memory。", "Knowledge Agent")
-    ];
-
-    await this.store.write({
-      ...state,
-      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
-      events: [...events, ...state.events],
-      knowledge: [persistedMemory, ...state.knowledge],
-      auditLog: [backendAudit, ...state.auditLog]
-    });
-    return updatedQuest;
-  }
-
-  /**
-   * 更新 Quest 状态（用于编排引擎）
-   */
-  private async updateQuestStatus(questId: string, status: Quest["status"], result?: any): Promise<Quest> {
-    const state = await this.getState();
-    const quest = state.quests.find((item) => item.id === questId);
-    if (!quest) {
-      throw new Error("Quest not found");
-    }
-
-    const updatedQuest: Quest = {
-      ...quest,
-      status,
-      agentSummary: result ? JSON.stringify(result) : undefined,
-      updatedAt: now()
-    };
-
-    await this.store.write({
-      ...state,
-      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item))
-    });
-
-    return updatedQuest;
   }
 
   async listWorktrees(workspaceId?: string): Promise<Array<WorktreeState & { questId: string; questTitle: string }>> {
@@ -1700,7 +1609,8 @@ export class RepoHelmService {
       quests: state.quests.map((quest) => ({
         ...quest,
         deliveryResults: quest.deliveryResults ?? [],
-        capabilityRecommendations: quest.capabilityRecommendations ?? []
+        capabilityRecommendations: quest.capabilityRecommendations ?? [],
+        autoApprovePlan: quest.autoApprovePlan ?? false
       })),
       capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now()),
       securityPolicy: state.securityPolicy ?? this.seedSecurityPolicy(now()),

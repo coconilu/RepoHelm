@@ -67,6 +67,31 @@ export interface QuestSpec {
   openQuestions: string[];
 }
 
+export type PlanApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface PlanApproval {
+  status: PlanApprovalStatus;
+  approvedAt?: string;
+  rejectionReason?: string;
+}
+
+export interface OrchestrationPlanStep {
+  id: string;
+  description: string;
+  agentId: string;
+  agentName: string;
+  dependencies: string[];
+  expectedOutput: string;
+}
+
+export interface OrchestrationPlan {
+  questId: string;
+  summary: string;
+  steps: OrchestrationPlanStep[];
+  notes?: string;
+  generatedAt: string;
+}
+
 export interface WorktreeState {
   projectId: string;
   branchName: string;
@@ -187,6 +212,9 @@ export interface Quest {
   deliveryResults: DeliveryState[];
   capabilityRecommendations: CapabilityRecommendation[];
   agentSummary?: string;
+  autoApprovePlan: boolean;
+  planApproval?: PlanApproval;
+  planPath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -312,7 +340,7 @@ export interface SubAgent {
   role: string; // 角色描述
   capabilities: string[]; // 能力列表
   modelKitId: string; // 绑定的 ModelKit ID(一对一绑定关系)
-  mode: "entry" | "worker"; // 模式:入口 agent 或工作 agent
+  mode?: "entry" | "worker"; // 模式:入口 agent 或工作 agent（可选，仅作为提示）
   permissions: SubAgentPermissions; // 权限配置
   promptTemplate?: string; // 提示词模板(可选)
   metadata: SubAgentMetadata; // 元数据信息
@@ -393,6 +421,7 @@ export interface CreateQuestInput {
   agentBackendId?: AgentBackendId;
   entrySubAgentId?: string;
   affectedProjectIds?: string[];
+  autoApprovePlan?: boolean;
 }
 
 /**
@@ -445,7 +474,7 @@ export interface CreateSubAgentInput {
   role: string;
   capabilities?: string[];
   modelKitId: string;
-  mode: "entry" | "worker";
+  mode?: "entry" | "worker";
   permissions?: SubAgentPermissions;
   promptTemplate?: string;
 }

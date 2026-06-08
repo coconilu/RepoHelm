@@ -41,6 +41,7 @@ import {
   CliModelOption,
   LocalCliInfo,
   ModelKit,
+  OrchestrationPlan,
   Project,
   ProductReadiness,
   ProviderId,
@@ -78,7 +79,7 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
+type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
 type ResizeDivider = "sidebar" | "inspector";
 type SettingsTab = "repositories" | "models" | "modelkits" | "subagents";
 
@@ -133,6 +134,7 @@ export function App() {
     return defaultColumnWidths;
   });
   const [busy, setBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string>("");
   const [error, setError] = useState("");
   const resizeStartRef = useRef<{
     divider: ResizeDivider;
@@ -252,6 +254,7 @@ export function App() {
     setBusy(true);
     setError("");
     try {
+      setPendingAction("正在创建 Quest...");
       const quest = await api.createQuest({
         workspaceId: workspace.id,
         title: deriveRequestTitle(trimmedRequirement),
@@ -260,16 +263,18 @@ export function App() {
         entrySubAgentId: selectedEntrySubAgentId || undefined,
         affectedProjectIds: projects.map((project) => project.id)
       });
+      setSelectedQuestId(quest.id);
+      setPendingAction("Supervisor 正在生成编排计划...");
       await api.runQuest(quest.id);
       await load();
-      setSelectedQuestId(quest.id);
       setDraftWorkspaceId("");
       setQuestRequirement("");
-      setInspectorTab("spec");
+      setInspectorTab("plan");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setPendingAction("");
     }
   }
 
@@ -279,6 +284,7 @@ export function App() {
     }
     setBusy(true);
     setError("");
+    setPendingAction("正在验证、提交并准备 PR handoff...");
     try {
       await api.deliverQuest(selectedQuest.id);
       await load();
@@ -287,6 +293,41 @@ export function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+      setPendingAction("");
+    }
+  }
+
+  async function approvePlan() {
+    if (!selectedQuest) return;
+    setBusy(true);
+    setError("");
+    setPendingAction("计划已批准，Agent 正在执行步骤...");
+    try {
+      await api.approvePlan(selectedQuest.id);
+      await load();
+      setInspectorTab("plan");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setPendingAction("");
+    }
+  }
+
+  async function rejectPlan() {
+    if (!selectedQuest) return;
+    setBusy(true);
+    setError("");
+    setPendingAction("正在拒绝计划...");
+    try {
+      await api.rejectPlan(selectedQuest.id);
+      await load();
+      setInspectorTab("plan");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setPendingAction("");
     }
   }
 
@@ -569,14 +610,17 @@ export function App() {
           busy={busy}
           entrySubAgents={entrySubAgents}
           events={questEvents}
+          pendingAction={pendingAction}
           projects={projects}
           quest={selectedQuest}
           questRequirement={questRequirement}
           selectedEntrySubAgentId={selectedEntrySubAgentId}
           workspace={workspace}
+          onApprovePlan={approvePlan}
           onEntrySubAgentChange={setSelectedEntrySubAgentId}
           onCreateQuest={createQuest}
           onDeliverQuest={deliverQuest}
+          onRejectPlan={rejectPlan}
           onRequirementChange={setQuestRequirement}
         />
         <div
@@ -587,6 +631,7 @@ export function App() {
         />
         <Inspector
           auditLog={state.auditLog}
+          busy={busy}
           capabilities={state.capabilities}
           changedFiles={changedFiles}
           events={questEvents}
@@ -597,7 +642,9 @@ export function App() {
           selectedChangedFile={selectedChangedFile}
           tab={inspectorTab}
           onAcceptCapability={acceptCapability}
+          onApprovePlan={approvePlan}
           onDismissCapability={dismissCapability}
+          onRejectPlan={rejectPlan}
           onFileSelect={(file) => {
             setSelectedChangedFileKey(changedFileKey(file));
             setInspectorTab("diff");
@@ -797,7 +844,11 @@ function Sidebar({
                       >
                         <Circle size={10} />
                         <span>{quest.title}</span>
-                        <em className={statusClass[quest.status] ?? "badge"}>{statusLabel[quest.status]}</em>
+                        <em className={statusClass[quest.status] ?? "badge"}>
+                          {quest.status === "planning" && quest.planApproval?.status === "pending"
+                            ? "待确认"
+                            : statusLabel[quest.status]}
+                        </em>
                       </button>
                     ))}
                   </div>
@@ -823,14 +874,17 @@ function QuestStage({
   busy,
   entrySubAgents,
   events,
+  pendingAction,
   projects,
   quest,
   questRequirement,
   selectedEntrySubAgentId,
   workspace,
+  onApprovePlan,
   onEntrySubAgentChange,
   onCreateQuest,
   onDeliverQuest,
+  onRejectPlan,
   onRequirementChange
 }: {
   agentBackendId: AgentBackendId;
@@ -838,14 +892,17 @@ function QuestStage({
   busy: boolean;
   entrySubAgents: SubAgent[];
   events: AgentEvent[];
+  pendingAction: string;
   projects: Project[];
   quest?: Quest;
   questRequirement: string;
   selectedEntrySubAgentId: string;
   workspace: Workspace;
+  onApprovePlan: () => void;
   onEntrySubAgentChange: (id: string) => void;
   onCreateQuest: (event: FormEvent) => void;
   onDeliverQuest: () => void;
+  onRejectPlan: () => void;
   onRequirementChange: (value: string) => void;
 }) {
   const questBackend = agentBackends.find((backend) => backend.id === quest?.agentBackendId);
@@ -863,7 +920,7 @@ function QuestStage({
       return;
     }
     chatThread.scrollTop = chatThread.scrollHeight;
-  }, [events.length, quest?.id]);
+  }, [events.length, quest?.id, pendingAction]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -900,15 +957,37 @@ function QuestStage({
 
       <div className="chat-thread" ref={chatThreadRef}>
         {!quest ? (
-          <article className="chat-message assistant">
-            <div className="chat-avatar">
-              <Sparkles size={16} />
-            </div>
-            <div className="chat-bubble">
-              <strong>RepoHelm Agent</strong>
-              <p>描述你要完成的 request。Supervisor 会把任务分派给合适的 worker sub-agent 来完成。</p>
-            </div>
-          </article>
+          <>
+            <article className="chat-message assistant">
+              <div className="chat-avatar">
+                <Sparkles size={16} />
+              </div>
+              <div className="chat-bubble">
+                <strong>RepoHelm Agent</strong>
+                <p>描述你要完成的 request。Supervisor 会把任务分派给合适的 worker sub-agent 来完成。</p>
+              </div>
+            </article>
+            {pendingAction ? (
+              <>
+                <article className="chat-message user">
+                  <div className="chat-bubble">
+                    <strong>你</strong>
+                    <p>{questRequirement || "..."}</p>
+                  </div>
+                </article>
+                <article className="chat-message assistant compact">
+                  <div className="chat-avatar">
+                    <RefreshCw size={15} className="spin" />
+                  </div>
+                  <div className="chat-bubble">
+                    <strong>工作中</strong>
+                    <span>RepoHelm Agent</span>
+                    <p>{pendingAction}</p>
+                  </div>
+                </article>
+              </>
+            ) : null}
+          </>
         ) : (
           <>
             <article className="chat-message user">
@@ -940,6 +1019,48 @@ function QuestStage({
                 </div>
               </article>
             ))}
+            {quest.planApproval?.status === "pending" && !pendingAction ? (
+              <article className="chat-message assistant compact">
+                <div className="chat-avatar">
+                  <Route size={15} />
+                </div>
+                <div className="chat-bubble">
+                  <strong>编排计划已生成</strong>
+                  <span>Supervisor</span>
+                  <p>请在右侧 Plan 面板查看步骤，或直接在此确认：</p>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      className="btn primary"
+                      disabled={busy}
+                      onClick={onApprovePlan}
+                      type="button"
+                    >
+                      <CheckCircle2 size={14} /> Approve & Execute
+                    </button>
+                    <button
+                      className="btn"
+                      disabled={busy}
+                      onClick={onRejectPlan}
+                      type="button"
+                    >
+                      <X size={14} /> Reject
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ) : null}
+            {pendingAction ? (
+              <article className="chat-message assistant compact">
+                <div className="chat-avatar">
+                  <RefreshCw size={15} className="spin" />
+                </div>
+                <div className="chat-bubble">
+                  <strong>工作中</strong>
+                  <span>RepoHelm Agent</span>
+                  <p>{pendingAction}</p>
+                </div>
+              </article>
+            ) : null}
           </>
         )}
       </div>
@@ -1011,6 +1132,7 @@ function QuestStage({
 
 function Inspector({
   auditLog,
+  busy,
   capabilities,
   changedFiles,
   events,
@@ -1021,11 +1143,14 @@ function Inspector({
   selectedChangedFile,
   tab,
   onAcceptCapability,
+  onApprovePlan,
   onDismissCapability,
   onFileSelect,
+  onRejectPlan,
   onTabChange
 }: {
   auditLog: AuditLogEntry[];
+  busy: boolean;
   capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
   events: AgentEvent[];
@@ -1036,13 +1161,16 @@ function Inspector({
   selectedChangedFile?: ChangedFile;
   tab: InspectorTab;
   onAcceptCapability: (capabilityId: string) => void;
+  onApprovePlan: () => void;
   onDismissCapability: (capabilityId: string) => void;
   onFileSelect: (file: ChangedFile) => void;
+  onRejectPlan: () => void;
   onTabChange: (tab: InspectorTab) => void;
 }) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const tabs: Array<{ id: InspectorTab; label: string }> = [
     { id: "spec", label: "Spec" },
+    { id: "plan", label: "Plan" },
     { id: "overview", label: "概要" },
     { id: "capabilities", label: "能力" },
     { id: "security", label: "安全" },
@@ -1069,6 +1197,7 @@ function Inspector({
 
       <div className="inspector-body">
         {tab === "spec" ? <SpecPanel quest={quest} /> : null}
+        {tab === "plan" ? <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} /> : null}
         {tab === "overview" ? (
           <OverviewPanel changedFiles={changedFiles} events={events} projects={projects} quest={quest} />
         ) : null}
@@ -1111,6 +1240,115 @@ function SpecPanel({ quest }: { quest?: Quest }) {
         <SpecBlock title="验收标准" items={quest.spec.acceptanceCriteria} />
         <SpecBlock title="暂不做" items={quest.spec.outOfScope} />
       </InspectorSection>
+    </div>
+  );
+}
+
+function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean; quest?: Quest; onApprovePlan: () => void; onRejectPlan: () => void }) {
+  const [plan, setPlan] = useState<OrchestrationPlan | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!quest?.planPath) {
+      setPlan(null);
+      return;
+    }
+    setLoading(true);
+    api.getQuestPlan(quest.id)
+      .then((p) => setPlan(p))
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [quest?.id, quest?.planPath]);
+
+  if (!quest) {
+    return (
+      <div className="inspector-empty">
+        <Route size={18} />
+        <p>运行 Quest 后会生成编排计划，在此查看和确认。</p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return <div className="inspector-stack"><p className="muted">加载编排计划中...</p></div>;
+  }
+
+  if (error) {
+    return <div className="inspector-stack"><p className="muted">{error}</p></div>;
+  }
+
+  if (!plan) {
+    return (
+      <div className="inspector-stack">
+        <p className="muted">
+          {quest.planApproval?.status === "pending"
+            ? "正在生成编排计划..."
+            : "暂无编排计划。点击 Run 后 Supervisor 会生成计划。"}
+        </p>
+      </div>
+    );
+  }
+
+  const isPending = quest.planApproval?.status === "pending";
+
+  return (
+    <div className="inspector-stack">
+      <InspectorSection title="编排计划">
+        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>{plan.summary}</p>
+        {plan.steps.map((step, index) => (
+          <div key={step.id} style={{ padding: "8px 0", borderBottom: index < plan.steps.length - 1 ? "1px solid var(--border)" : undefined }}>
+            <div style={{ fontWeight: 500, fontSize: 13 }}>
+              {index + 1}. {step.description}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+              Agent: {step.agentName}
+              {step.dependencies.length > 0 ? ` · 依赖: ${step.dependencies.join(", ")}` : ""}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
+              预期输出: {step.expectedOutput}
+            </div>
+          </div>
+        ))}
+        {plan.notes ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
+            <strong>备注:</strong> {plan.notes}
+          </div>
+        ) : null}
+      </InspectorSection>
+      {isPending ? (
+        <InspectorSection title="确认计划">
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "0 0 8px" }}>
+            确认编排计划后，Agent 将按步骤执行。
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              className="btn primary"
+              disabled={busy}
+              onClick={onApprovePlan}
+            >
+              {busy ? "执行中..." : <><CheckCircle2 size={14} /> Approve & Execute</>}
+            </button>
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={onRejectPlan}
+            >
+              {busy ? "处理中..." : <><X size={14} /> Reject</>}
+            </button>
+          </div>
+        </InspectorSection>
+      ) : null}
+      {quest.planApproval?.status === "approved" ? (
+        <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--green)" }}>
+          Plan approved at {quest.planApproval.approvedAt}
+        </div>
+      ) : null}
+      {quest.planApproval?.status === "rejected" ? (
+        <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--red)" }}>
+          Plan rejected{quest.planApproval.rejectionReason ? `: ${quest.planApproval.rejectionReason}` : ""}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2896,7 +3134,7 @@ function SubAgentDialog({
     role: string;
     capabilities: string[];
     modelKitId: string;
-    mode: "entry" | "worker";
+    mode?: "entry" | "worker";
     allowedTools: string[];
     deniedTools: string[];
     maxSteps?: number;
