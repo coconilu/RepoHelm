@@ -1803,7 +1803,7 @@ code {
   justify-content: space-between;
 }
 
-.settings-section-heading span {
+.settings-section-heading > span {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 800;

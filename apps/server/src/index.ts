@@ -542,6 +542,36 @@ service
     console.warn("[startup] ensureBuiltInSubAgents skipped:", error instanceof Error ? error.message : String(error));
   });
 
-serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`RepoHelm API listening on http://localhost:${info.port}`);
+const SERVE_RETRIES = 5;
+const SERVE_RETRY_DELAY_MS = 500;
+
+async function startServer() {
+  let lastError;
+  for (let attempt = 1; attempt <= SERVE_RETRIES; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const server = serve({ fetch: app.fetch, port }, (info) => {
+          console.log(`RepoHelm API listening on http://localhost:${info.port}`);
+          resolve();
+        });
+        server.once("error", reject);
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE" || attempt === SERVE_RETRIES) {
+        throw error;
+      }
+      console.warn(
+        `[startup] port ${port} still busy (attempt ${attempt}/${SERVE_RETRIES}), retrying in ${SERVE_RETRY_DELAY_MS}ms`,
+      );
+      await new Promise((r) => setTimeout(r, SERVE_RETRY_DELAY_MS));
+    }
+  }
+  throw lastError;
+}
+
+startServer().catch((error) => {
+  console.error("[startup] failed to start server:", error);
+  process.exit(1);
 });
