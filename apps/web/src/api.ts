@@ -236,6 +236,31 @@ export interface KnowledgeItem {
   updatedAt: string;
 }
 
+export type ProjectKnowledgeStatus = "empty" | "indexing" | "ready" | "stale" | "error";
+
+export interface RepoWikiPage {
+  id: string;
+  projectId: string;
+  slug: "overview" | "architecture" | "modules" | "key-flows" | "conventions" | "decisions";
+  title: string;
+  body: string;
+  sourcePath: string;
+  updatedAtSha?: string;
+  updatedAt: string;
+}
+
+export interface ProjectKnowledgeView {
+  projectId: string;
+  knowledgeBranch: string;
+  status: ProjectKnowledgeStatus;
+  pendingCommits: number;
+  head?: string;
+  lastIndexedSha?: string;
+  lastIndexedAt?: string;
+  error?: string;
+  pages: RepoWikiPage[];
+}
+
 export interface CliModelOption {
   id: string;
   label: string;
@@ -460,6 +485,15 @@ export const api = {
     ),
   searchKnowledge: (workspaceId: string, query: string) =>
     request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
+  getProjectKnowledge: (projectId: string) =>
+    request<ProjectKnowledgeView>(`/api/projects/${projectId}/knowledge`),
+  syncProjectKnowledge: (projectId: string) =>
+    request<ProjectKnowledgeView>(`/api/projects/${projectId}/knowledge/sync`, { method: "POST" }),
+  setKnowledgeBranch: (projectId: string, knowledgeBranch: string) =>
+    request<Project>(`/api/projects/${projectId}/knowledge`, {
+      method: "PATCH",
+      body: JSON.stringify({ knowledgeBranch })
+    }),
   createWorkspace: (input: { name: string; description?: string; worktreeRoot?: string }) =>
     request<Workspace>("/api/workspaces", {
       method: "POST",
