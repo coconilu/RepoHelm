@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertCircle,
   ArrowLeft,
   Boxes,
   ChevronDown,
@@ -24,6 +25,18 @@ const SLUG_ORDER: RepoWikiPage["slug"][] = [
   "decisions"
 ];
 
+/** Simple toast for sync feedback */
+function useToast() {
+  const [msg, setMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const show = useCallback((text: string, type: "success" | "error" = "success") => {
+    setMsg({ text, type });
+    clearTimeout(timer.current ?? undefined);
+    timer.current = setTimeout(() => setMsg(null), 3000);
+  }, []);
+  return { msg, show };
+}
+
 export function KnowledgeCenter({
   projects,
   knowledge,
@@ -46,28 +59,56 @@ export function KnowledgeCenter({
   const [syncing, setSyncing] = useState(false);
   const [selectedMemoryId, setSelectedMemoryId] = useState(knowledge[0]?.id ?? "");
 
+  // Track which projects have been loaded (to avoid re-fetching)
+  const loadedRef = useRef(new Set<string>());
+  // Track which projects are currently loading (to prevent duplicate concurrent loads)
+  const loadingRef = useRef(new Set<string>());
+
+  const toast = useToast();
+
   const loadView = useCallback(async (projectId: string) => {
     if (!projectId) return;
-    let proceed = false;
-    setLoadingIds((ids) => {
-      if (ids.includes(projectId)) return ids;
-      proceed = true;
-      return [...ids, projectId];
-    });
-    if (!proceed) return;
+    // Use a loading ref to prevent duplicate concurrent loads
+    if (loadingRef.current.has(projectId)) return;
+    if (loadedRef.current.has(projectId)) return;
+
+    loadingRef.current.add(projectId);
+    setLoadingIds((ids) => [...ids, projectId]);
+
     try {
       const view = await api.getProjectKnowledge(projectId);
       setViews((prev) => ({ ...prev, [projectId]: view }));
+      loadedRef.current.add(projectId);
+    } catch (err) {
+      console.error('[KnowledgeCenter] error loading:', projectId, err);
     } finally {
+      loadingRef.current.delete(projectId);
       setLoadingIds((ids) => ids.filter((id) => id !== projectId));
     }
   }, []);
 
+  // Load view for selected project on mount and when selection changes
   useEffect(() => {
-    if (selectedProjectId && !views[selectedProjectId]) {
+    if (selectedProjectId) {
       loadView(selectedProjectId);
     }
-  }, [selectedProjectId, views, loadView]);
+  }, [selectedProjectId, loadView]);
+
+  // Auto-select first page when a project's view loads
+  useEffect(() => {
+    if (selectedProjectId && !selectedSlug) {
+      const view = views[selectedProjectId];
+      if (view && view.pages.length > 0) {
+        // Find first available page in SLUG_ORDER
+        for (const slug of SLUG_ORDER) {
+          if (view.pages.some((p) => p.slug === slug)) {
+            setSelectedSlug(slug);
+            break;
+          }
+        }
+      }
+    }
+  }, [selectedProjectId, selectedSlug, views]);
 
   const activeView = selectedProjectId ? views[selectedProjectId] : undefined;
   const activePage = activeView?.pages.find((page) => page.slug === selectedSlug);
@@ -78,11 +119,13 @@ export function KnowledgeCenter({
       const willExpand = !ids.includes(projectId);
       if (willExpand) {
         setSelectedProjectId(projectId);
-        setSelectedSlug(null);
+        setSelectedSlug(null); // Will be auto-set by effect when view loads
       }
       return willExpand ? [...ids, projectId] : ids.filter((id) => id !== projectId);
     });
-    if (!views[projectId]) loadView(projectId);
+    if (!loadedRef.current.has(projectId) && !loadingRef.current.has(projectId)) {
+      loadView(projectId);
+    }
   }
 
   function selectPage(projectId: string, slug: RepoWikiPage["slug"]) {
@@ -96,6 +139,11 @@ export function KnowledgeCenter({
     try {
       const view = await api.syncProjectKnowledge(selectedProjectId);
       setViews((prev) => ({ ...prev, [selectedProjectId]: view }));
+      loadedRef.current.add(selectedProjectId);
+      toast.show("知识库更新成功", "success");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "同步失败";
+      toast.show(msg, "error");
     } finally {
       setSyncing(false);
     }
@@ -103,7 +151,9 @@ export function KnowledgeCenter({
 
   function syncLabel() {
     if (syncing) return "索引中…";
-    if (!activeView || activeView.status === "empty") return "建立知识库";
+    if (!activeView) return "建立知识库";
+    if (activeView.error) return "重试";
+    if (activeView.status === "empty") return "建立知识库";
     if (activeView.status === "stale" && activeView.pendingCommits > 0)
       return `有 ${activeView.pendingCommits} 个新提交,更新`;
     return "重新生成";
@@ -112,7 +162,16 @@ export function KnowledgeCenter({
   const currentSyncLabel = syncLabel();
 
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredProjects = projects.filter((p) => p.name.toLowerCase().includes(normalizedQuery));
+
+  // Search projects by name AND their page titles
+  const filteredProjects = projects.filter((p) => {
+    if (!normalizedQuery) return true;
+    if (p.name.toLowerCase().includes(normalizedQuery)) return true;
+    const view = views[p.id];
+    if (view?.pages.some((page) => page.title.toLowerCase().includes(normalizedQuery))) return true;
+    return false;
+  });
+
   const memoryItems = knowledge.filter((item) => {
     if (!normalizedQuery) return true;
     return (
@@ -124,6 +183,16 @@ export function KnowledgeCenter({
 
   return (
     <div className="knowledge-center" style={{ gridColumn: "3 / 6" }}>
+      {/* Toast notification */}
+      {toast.msg && (
+        <div
+          className={`knowledge-toast ${toast.msg.type === "error" ? "error" : "success"}`}
+          role="alert"
+        >
+          {toast.msg.text}
+        </div>
+      )}
+
       <nav className="knowledge-nav">
         <header className="knowledge-nav-head">
           <button className="knowledge-back" onClick={onClose} type="button">
@@ -149,8 +218,8 @@ export function KnowledgeCenter({
           <div className="knowledge-search">
             <Search size={14} />
             <input
-              aria-label={activeTab === "wiki" ? "搜索 Repo Wiki" : "搜索记忆"}
-              placeholder={activeTab === "wiki" ? "搜索 Repo Wiki" : "搜索记忆"}
+              aria-label={activeTab === "wiki" ? "搜索项目和页面" : "搜索记忆"}
+              placeholder={activeTab === "wiki" ? "搜索项目和页面" : "搜索记忆"}
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -167,6 +236,8 @@ export function KnowledgeCenter({
               const expanded = expandedIds.includes(project.id);
               const view = views[project.id];
               const loading = loadingIds.includes(project.id);
+              const hasError = view?.error;
+              const isEmpty = view && view.pages.length === 0 && !view.error;
               return (
                 <div className="knowledge-tree-node" key={project.id}>
                   <button
@@ -177,10 +248,15 @@ export function KnowledgeCenter({
                     {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     <Boxes size={14} />
                     <span>{project.name}</span>
+                    {hasError ? (
+                      <AlertCircle size={13} className="knowledge-error-icon" />
+                    ) : null}
                   </button>
                   {expanded ? (
                     <div className="knowledge-page-list">
-                      {loading && !view ? <p className="muted knowledge-empty">加载中…</p> : null}
+                      {loading && !view ? (
+                        <p className="muted knowledge-empty">加载中…</p>
+                      ) : null}
                       {view
                         ? SLUG_ORDER.map((slug) => {
                             const page = view.pages.find((p) => p.slug === slug);
@@ -202,8 +278,13 @@ export function KnowledgeCenter({
                             );
                           })
                         : null}
-                      {view && view.pages.length === 0 ? (
-                        <p className="muted knowledge-empty">暂无内容,点右侧重新生成。</p>
+                      {isEmpty ? (
+                        <p className="muted knowledge-empty">暂无内容,点击右上角建立。</p>
+                      ) : null}
+                      {hasError ? (
+                        <p className="knowledge-tree-error" title={view.error}>
+                          索引失败,点击右侧重试。
+                        </p>
                       ) : null}
                     </div>
                   ) : null}
@@ -213,7 +294,11 @@ export function KnowledgeCenter({
           </div>
         ) : (
           <div className="knowledge-memory-list">
-            {memoryItems.length === 0 ? <p className="muted knowledge-empty">暂无记忆。</p> : null}
+            {memoryItems.length === 0 ? (
+              <p className="muted knowledge-empty">
+                {normalizedQuery ? "没有匹配的记忆。" : "暂无记忆。"}
+              </p>
+            ) : null}
             {memoryItems.map((item) => (
               <button
                 className={
@@ -241,7 +326,7 @@ export function KnowledgeCenter({
                 <div className="knowledge-content-meta">
                   <strong>{activeProjectName}</strong>
                   {activeView ? (
-                    <span className="knowledge-branch">⌥ {activeView.knowledgeBranch}</span>
+                    <span className="knowledge-branch"> {activeView.knowledgeBranch}</span>
                   ) : null}
                   {activeView?.lastIndexedAt ? (
                     <span className="muted">
@@ -274,7 +359,7 @@ export function KnowledgeCenter({
                     </button>
                   </div>
                   <button
-                    className="knowledge-regenerate"
+                    className={`knowledge-regenerate ${activeView?.error ? "error" : ""}`}
                     disabled={syncing}
                     onClick={handleSync}
                     type="button"
@@ -296,6 +381,10 @@ export function KnowledgeCenter({
                   ) : (
                     <pre className="knowledge-source">{activePage.body}</pre>
                   )
+                ) : activeView.error ? (
+                  <div className="knowledge-placeholder">
+                    索引失败,请检查仓库配置后点击右上角「重试」。
+                  </div>
                 ) : activeView.pages.length === 0 ? (
                   <div className="knowledge-placeholder">
                     还没有知识库内容,点击右上角「{currentSyncLabel}」建立。
@@ -328,7 +417,9 @@ export function KnowledgeCenter({
             </div>
           </>
         ) : (
-          <div className="knowledge-placeholder">选择左侧的记忆条目查看。</div>
+          <div className="knowledge-placeholder">
+            {normalizedQuery ? "没有匹配的记忆。" : "选择左侧的记忆条目查看。"}
+          </div>
         )}
       </section>
     </div>

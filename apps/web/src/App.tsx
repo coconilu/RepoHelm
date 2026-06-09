@@ -576,7 +576,7 @@ export function App() {
         }
       >
         <Sidebar
-          knowledgeCount={knowledge.length}
+          knowledgeCount={state.projects.filter((p) => p.knowledge?.status === "ready" || p.knowledge?.status === "stale").length}
           quests={quests}
           draftWorkspaceId={draftWorkspaceId}
           selectedQuest={selectedQuest}

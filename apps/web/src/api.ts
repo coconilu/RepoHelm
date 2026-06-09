@@ -59,6 +59,8 @@ export interface Project {
   defaultBranch: string;
   validationCommand: string;
   health: ProjectHealth;
+  knowledgeBranch?: string;
+  knowledge?: ProjectKnowledgeMeta;
   createdAt: string;
   updatedAt: string;
 }
@@ -237,6 +239,13 @@ export interface KnowledgeItem {
 }
 
 export type ProjectKnowledgeStatus = "empty" | "indexing" | "ready" | "stale" | "error";
+
+export interface ProjectKnowledgeMeta {
+  lastIndexedSha?: string;
+  lastIndexedAt?: string;
+  status: ProjectKnowledgeStatus;
+  error?: string;
+}
 
 export interface RepoWikiPage {
   id: string;
