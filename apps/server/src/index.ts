@@ -113,6 +113,10 @@ const questSchema = z.object({
   autoApprovePlan: z.boolean().optional()
 });
 
+const enhanceRequirementSchema = z.object({
+  text: z.string().min(1)
+});
+
 const createModelKitSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
@@ -382,6 +386,21 @@ app.post("/api/projects/:id/open-directory", async (context) => {
   return context.json({ ok: true });
 });
 
+app.post("/api/workspaces/:id/worktrees/:projectId/open-directory", async (context) => {
+  const state = await service.getState();
+  const workspace = state.workspaces.find((item) => item.id === context.req.param("id"));
+  if (!workspace) {
+    return context.json({ error: "Workspace not found" }, 404);
+  }
+  const worktree = workspace.worktrees.find((item) => item.projectId === context.req.param("projectId"));
+  if (!worktree) {
+    return context.json({ error: "Worktree not found" }, 404);
+  }
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  spawn(opener, [worktree.worktreePath], { detached: true, stdio: "ignore" }).unref();
+  return context.json({ ok: true });
+});
+
 app.post("/api/quests", async (context) => {
   const input = questSchema.parse(await context.req.json());
   const quest = await service.createQuest(input);
@@ -391,6 +410,16 @@ app.post("/api/quests", async (context) => {
 app.post("/api/quests/:id/run", async (context) => {
   const quest = await service.runQuest(context.req.param("id"));
   return context.json(quest);
+});
+
+app.post("/api/assist/enhance-requirement", async (context) => {
+  try {
+    const body = enhanceRequirementSchema.parse(await context.req.json());
+    const requirement = await service.enhanceRequirement(body.text);
+    return context.json({ requirement });
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
 });
 
 app.post("/api/quests/:id/retry", async (context) => {

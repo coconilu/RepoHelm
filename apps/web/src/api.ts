@@ -303,6 +303,7 @@ export interface RepoHelmState {
   capabilities: CapabilityDefinition[];
   securityPolicy: SecurityPolicy;
   auditLog: AuditLogEntry[];
+  engine: EngineConfig;
   subAgents: Record<string, SubAgent>;
   entrySubAgentId?: string;
 }
@@ -470,7 +471,7 @@ export const api = {
     requirement: string;
     agentBackendId?: AgentBackendId;
     entrySubAgentId?: string;
-    affectedProjectIds: string[];
+    affectedProjectIds?: string[];
     autoApprovePlan?: boolean;
   }) =>
     request<Quest>("/api/quests", {
@@ -480,6 +481,11 @@ export const api = {
   runQuest: (questId: string) =>
     request<Quest>(`/api/quests/${questId}/run`, {
       method: "POST"
+    }),
+  enhanceRequirement: (text: string) =>
+    request<{ requirement: string }>("/api/assist/enhance-requirement", {
+      method: "POST",
+      body: JSON.stringify({ text })
     }),
   retryQuest: (questId: string) =>
     request<Quest>(`/api/quests/${questId}/retry`, {
@@ -551,6 +557,10 @@ export const api = {
     }),
   openProjectDirectory: (projectId: string) =>
     request<{ ok: boolean }>(`/api/projects/${projectId}/open-directory`, {
+      method: "POST"
+    }),
+  openWorktreeDirectory: (workspaceId: string, projectId: string) =>
+    request<{ ok: boolean }>(`/api/workspaces/${workspaceId}/worktrees/${projectId}/open-directory`, {
       method: "POST"
     }),
   pickDirectory: () =>

@@ -135,6 +135,7 @@ export function App() {
   });
   const [busy, setBusy] = useState(false);
   const [pendingAction, setPendingAction] = useState<string>("");
+  const [pendingRequirement, setPendingRequirement] = useState<string>("");
   const [error, setError] = useState("");
   const resizeStartRef = useRef<{
     divider: ResizeDivider;
@@ -208,6 +209,14 @@ export function App() {
   const selectedChangedFile =
     changedFiles.find((file) => changedFileKey(file) === selectedChangedFileKey) ?? changedFiles[0];
   const activeBackend = agentBackends.find((backend) => backend.id === agentBackendId);
+  // The pill should reflect what actually answers: the entry agent + its model.
+  const activeEntryAgentGlobal = state?.entrySubAgentId ? state.subAgents[state.entrySubAgentId] : undefined;
+  const activeEntryModelKit = activeEntryAgentGlobal
+    ? state?.engine.modelKits[activeEntryAgentGlobal.modelKitId]
+    : undefined;
+  const enginePillLabel = activeEntryAgentGlobal
+    ? `${activeEntryAgentGlobal.name}${activeEntryModelKit ? ` · ${activeEntryModelKit.model || activeEntryModelKit.name}` : ""}`
+    : activeBackend?.name ?? "未配置 Agent";
   const entrySubAgents = useMemo(() => {
     const all = state?.subAgents ? Object.values(state.subAgents) : [];
     return all.filter((agent) => agent.mode === "entry").sort((a, b) => a.name.localeCompare(b.name));
@@ -253,6 +262,9 @@ export function App() {
     }
     setBusy(true);
     setError("");
+    // Clear the composer immediately on send; keep an optimistic copy for the bubble.
+    setQuestRequirement("");
+    setPendingRequirement(trimmedRequirement);
     try {
       setPendingAction("正在创建 Quest...");
       const quest = await api.createQuest({
@@ -260,21 +272,22 @@ export function App() {
         title: deriveRequestTitle(trimmedRequirement),
         requirement: trimmedRequirement,
         agentBackendId,
-        entrySubAgentId: selectedEntrySubAgentId || undefined,
-        affectedProjectIds: projects.map((project) => project.id)
+        entrySubAgentId: selectedEntrySubAgentId || undefined
       });
       setSelectedQuestId(quest.id);
       setPendingAction("Supervisor 正在生成编排计划...");
       await api.runQuest(quest.id);
       await load();
       setDraftWorkspaceId("");
-      setQuestRequirement("");
       setInspectorTab("plan");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      // Restore the text so the user doesn't lose their input on failure.
+      setQuestRequirement(trimmedRequirement);
     } finally {
       setBusy(false);
       setPendingAction("");
+      setPendingRequirement("");
     }
   }
 
@@ -529,9 +542,12 @@ export function App() {
           </div>
         </div>
         <div className="toolbar-controls">
-          <span className={activeBackend?.available ? "backend-pill available" : "backend-pill"}>
+          <span
+            className={activeEntryModelKit || activeBackend?.available ? "backend-pill available" : "backend-pill"}
+            title="当前执行 Agent 与模型"
+          >
             <Bot size={14} />
-            {activeBackend?.name ?? "Backend"}
+            {enginePillLabel}
           </span>
           <button
             aria-label={theme === "dark" ? "切换到浅色" : "切换到深色"}
@@ -611,6 +627,7 @@ export function App() {
           entrySubAgents={entrySubAgents}
           events={questEvents}
           pendingAction={pendingAction}
+          pendingRequirement={pendingRequirement}
           projects={projects}
           quest={selectedQuest}
           questRequirement={questRequirement}
@@ -843,7 +860,12 @@ function Sidebar({
                         type="button"
                       >
                         <Circle size={10} />
-                        <span>{quest.title}</span>
+                        <span className="quest-row-main">
+                          <span className="quest-row-title">{quest.title}</span>
+                          <time className="quest-row-time" dateTime={quest.createdAt}>
+                            {formatQuestStamp(quest.createdAt)}
+                          </time>
+                        </span>
                         <em className={statusClass[quest.status] ?? "badge"}>
                           {quest.status === "planning" && quest.planApproval?.status === "pending"
                             ? "待确认"
@@ -875,6 +897,7 @@ function QuestStage({
   entrySubAgents,
   events,
   pendingAction,
+  pendingRequirement,
   projects,
   quest,
   questRequirement,
@@ -893,6 +916,7 @@ function QuestStage({
   entrySubAgents: SubAgent[];
   events: AgentEvent[];
   pendingAction: string;
+  pendingRequirement: string;
   projects: Project[];
   quest?: Quest;
   questRequirement: string;
@@ -911,8 +935,31 @@ function QuestStage({
     entrySubAgents.find((agent) => agent.id === quest?.entrySubAgentId) ??
     entrySubAgents[0];
   const [contextListToast, setContextListToast] = useState<string>("");
+  const [enhancing, setEnhancing] = useState(false);
   const chatThreadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  async function enhanceRequirement() {
+    const text = questRequirement.trim();
+    if (!text || enhancing || busy) {
+      return;
+    }
+    setEnhancing(true);
+    setContextListToast("正在智能增强需求…");
+    try {
+      const { requirement } = await api.enhanceRequirement(text);
+      onRequirementChange(requirement);
+      setContextListToast("需求已增强");
+    } catch (err) {
+      setContextListToast(err instanceof Error ? err.message : "智能增强失败");
+    } finally {
+      setEnhancing(false);
+      window.setTimeout(() => setContextListToast(""), 3000);
+    }
+  }
+
+  const affectedProjectCount = quest ? quest.affectedProjectIds.length : projects.length;
+  const canDeliver = Boolean(quest && quest.changedFiles.length > 0);
 
   useEffect(() => {
     const chatThread = chatThreadRef.current;
@@ -944,11 +991,17 @@ function QuestStage({
             <ChevronDown size={14} />
             <span>{activeEntryAgent?.name ?? (questBackend?.name ?? "未选择 Agent")}</span>
             <ChevronDown size={14} />
-            <span>{projects.length} project{projects.length === 1 ? "" : "s"}</span>
+            <span>{affectedProjectCount} project{affectedProjectCount === 1 ? "" : "s"}</span>
           </div>
         </div>
         {quest ? (
-          <button className="request-delivery-action" disabled={busy} onClick={onDeliverQuest} type="button">
+          <button
+            className="request-delivery-action"
+            disabled={busy || !canDeliver}
+            title={canDeliver ? "提交变更并准备 PR handoff" : "没有可交付的文件变更"}
+            onClick={onDeliverQuest}
+            type="button"
+          >
             <GitPullRequest size={15} />
             <span>交付</span>
           </button>
@@ -972,7 +1025,7 @@ function QuestStage({
                 <article className="chat-message user">
                   <div className="chat-bubble">
                     <strong>你</strong>
-                    <p>{questRequirement || "..."}</p>
+                    <p>{pendingRequirement || questRequirement || "..."}</p>
                   </div>
                 </article>
                 <article className="chat-message assistant compact">
@@ -1007,18 +1060,20 @@ function QuestStage({
                 </p>
               </div>
             </article>
-            {events.map((event) => (
-              <article className="chat-message assistant compact" key={event.id}>
-                <div className="chat-avatar">
-                  <CheckCircle2 size={15} />
-                </div>
-                <div className="chat-bubble">
-                  <strong>{event.title}</strong>
-                  <span>{event.agent}</span>
-                  <p>{event.detail}</p>
-                </div>
-              </article>
-            ))}
+            {[...events]
+              .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+              .map((event) => (
+                <article className="chat-message assistant compact" key={event.id}>
+                  <div className="chat-avatar">
+                    <CheckCircle2 size={15} />
+                  </div>
+                  <div className="chat-bubble">
+                    <strong>{event.title}</strong>
+                    <span>{event.agent}</span>
+                    <p>{event.detail}</p>
+                  </div>
+                </article>
+              ))}
             {quest.planApproval?.status === "pending" && !pendingAction ? (
               <article className="chat-message assistant compact">
                 <div className="chat-avatar">
@@ -1027,25 +1082,7 @@ function QuestStage({
                 <div className="chat-bubble">
                   <strong>编排计划已生成</strong>
                   <span>Supervisor</span>
-                  <p>请在右侧 Plan 面板查看步骤，或直接在此确认：</p>
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                    <button
-                      className="btn primary"
-                      disabled={busy}
-                      onClick={onApprovePlan}
-                      type="button"
-                    >
-                      <CheckCircle2 size={14} /> Approve & Execute
-                    </button>
-                    <button
-                      className="btn"
-                      disabled={busy}
-                      onClick={onRejectPlan}
-                      type="button"
-                    >
-                      <X size={14} /> Reject
-                    </button>
-                  </div>
+                  <p>请在右侧 Plan 面板查看执行步骤并确认（Approve &amp; Execute / Reject）。</p>
                 </div>
               </article>
             ) : null}
@@ -1068,6 +1105,8 @@ function QuestStage({
       <form className="quest-composer" onSubmit={onCreateQuest}>
         <textarea
           aria-label="需求"
+          id="quest-requirement"
+          name="quest-requirement"
           placeholder="描述计划，@ 引用上下文，/ 使用命令"
           ref={textareaRef}
           value={questRequirement}
@@ -1112,8 +1151,15 @@ function QuestStage({
             </button>
           </div>
           <div className="composer-actions">
-            <button aria-label="智能增强" className="spark-action" type="button">
-              <Sparkles size={17} />
+            <button
+              aria-label="智能增强"
+              className="spark-action"
+              type="button"
+              disabled={enhancing || busy || !questRequirement.trim() || entrySubAgents.length === 0}
+              title="用模型把需求改写得更清晰"
+              onClick={enhanceRequirement}
+            >
+              {enhancing ? <RefreshCw size={17} className="spin" /> : <Sparkles size={17} />}
             </button>
             <button
               aria-label="发送给 Agent"
@@ -1212,9 +1258,9 @@ function Inspector({
         {tab === "security" ? <SecurityPanel auditLog={auditLog} policy={securityPolicy} /> : null}
         {tab === "product" ? <ProductPanel readiness={productReadiness} /> : null}
         {tab === "files" ? (
-          <FilesPanel changedFiles={changedFiles} projectById={projectById} onFileSelect={onFileSelect} />
+          <FilesPanel changedFiles={changedFiles} projectById={projectById} quest={quest} onFileSelect={onFileSelect} />
         ) : null}
-        {tab === "diff" ? <DiffPanel file={selectedChangedFile} projectById={projectById} /> : null}
+        {tab === "diff" ? <DiffPanel file={selectedChangedFile} projectById={projectById} quest={quest} /> : null}
         {tab === "logs" ? <Timeline events={events} /> : null}
       </div>
     </aside>
@@ -1323,19 +1369,18 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
           </p>
           <div style={{ display: "flex", gap: 8 }}>
             <button
-              className="btn primary"
+              className="secondary-action"
               disabled={busy}
               onClick={onApprovePlan}
+              type="button"
             >
               {busy ? "执行中..." : <><CheckCircle2 size={14} /> Approve & Execute</>}
             </button>
-            <button
-              className="btn"
-              disabled={busy}
-              onClick={onRejectPlan}
-            >
-              {busy ? "处理中..." : <><X size={14} /> Reject</>}
-            </button>
+            {!busy ? (
+              <button className="ghost-action" onClick={onRejectPlan} type="button">
+                <X size={14} /> Reject
+              </button>
+            ) : null}
           </div>
         </InspectorSection>
       ) : null}
@@ -1588,18 +1633,35 @@ function ReadinessRow({ item }: { item: { label: string; status: string; detail:
   );
 }
 
+/** A quest has executed once its plan was approved (or it reached a post-run status). */
+function questHasExecuted(quest?: Quest): boolean {
+  if (!quest) {
+    return false;
+  }
+  if (quest.planApproval?.status === "approved") {
+    return true;
+  }
+  return ["validating", "reviewing", "ready", "delivered", "blocked"].includes(quest.status);
+}
+
 function FilesPanel({
   changedFiles,
   projectById,
+  quest,
   onFileSelect
 }: {
   changedFiles: ChangedFile[];
   projectById: Map<string, Project>;
+  quest?: Quest;
   onFileSelect: (file: ChangedFile) => void;
 }) {
   return (
     <div className="changed-file-list">
-      {changedFiles.length === 0 ? <p className="muted">运行 Quest 后会展示变更文件。</p> : null}
+      {changedFiles.length === 0 ? (
+        <p className="muted">
+          {questHasExecuted(quest) ? "本次执行没有产生文件变更。" : "运行 Quest 后会展示变更文件。"}
+        </p>
+      ) : null}
       {changedFiles.map((file, index) => (
         <motion.button
           className="changed-file-row"
@@ -1619,9 +1681,13 @@ function FilesPanel({
   );
 }
 
-function DiffPanel({ file, projectById }: { file?: ChangedFile; projectById: Map<string, Project> }) {
+function DiffPanel({ file, projectById, quest }: { file?: ChangedFile; projectById: Map<string, Project>; quest?: Quest }) {
   if (!file) {
-    return <p className="muted">选择文件后会在这里审查 diff。</p>;
+    return (
+      <p className="muted">
+        {questHasExecuted(quest) ? "本次执行没有产生文件变更，暂无 diff。" : "运行 Quest 并产生变更后，在此审查 diff。"}
+      </p>
+    );
   }
   return (
     <div className="diff-review">
@@ -2693,6 +2759,7 @@ function WorkspaceConfigDialog({
     worktreeRoot: workspace.worktreeRoot
   });
   const [linkTarget, setLinkTarget] = useState("");
+  const [tab, setTab] = useState<"basic" | "repos">("basic");
 
   useEffect(() => {
     setWorkspaceDraft({
@@ -2737,9 +2804,17 @@ function WorkspaceConfigDialog({
             <X size={17} />
           </button>
         </header>
+        <div className="settings-tabs" role="tablist" aria-label="Workspace 配置分类">
+          <button className={tab === "basic" ? "active" : ""} onClick={() => setTab("basic")} role="tab" type="button">
+            基本信息
+          </button>
+          <button className={tab === "repos" ? "active" : ""} onClick={() => setTab("repos")} role="tab" type="button">
+            关联仓库
+          </button>
+        </div>
         <div className="modal-body">
+          {tab === "basic" ? (
           <form className="config-section" onSubmit={submitWorkspace}>
-            <h3>Workspace</h3>
             <div className="config-grid">
               <label>
                 <span>名称</span>
@@ -2771,7 +2846,7 @@ function WorkspaceConfigDialog({
               保存 Workspace
             </button>
           </form>
-
+          ) : (
           <section className="config-section">
             <div className="settings-section-heading">
               <h3>关联仓库</h3>
@@ -2802,34 +2877,65 @@ function WorkspaceConfigDialog({
               {workspace.worktrees.map((worktree) => {
                 const project = projectById.get(worktree.projectId);
                 return (
-                  <article className="settings-project-row" key={worktree.projectId}>
-                    <div>
-                      <strong>{project?.name ?? worktree.projectId}</strong>
-                      <code>{worktree.worktreePath}</code>
+                  <article className="worktree-row" key={worktree.projectId}>
+                    <div className="worktree-row-head">
+                      <div className="worktree-row-title">
+                        <strong>{project?.name ?? worktree.projectId}</strong>
+                        {project ? <span className="role-pill">{project.role}</span> : null}
+                      </div>
+                      <div className="worktree-row-status">
+                        <span>{worktree.branchName}</span>
+                        <span>base: {worktree.baseBranch}</span>
+                        <span className={`health-pill ${worktree.status === "created" ? "ok" : "invalid"}`}>
+                          {worktree.status}
+                        </span>
+                        <button
+                          className="danger-action"
+                          disabled={busy}
+                          onClick={() => onUnlinkProject(worktree.projectId)}
+                          type="button"
+                        >
+                          <Trash2 size={14} />
+                          <span>删除</span>
+                        </button>
+                      </div>
                     </div>
-                    <div className="settings-meta">
-                      <span>{worktree.branchName}</span>
-                      <span>base: {worktree.baseBranch}</span>
-                      <span className={`health-pill ${worktree.status === "created" ? "ok" : "invalid"}`}>
-                        {worktree.status}
-                      </span>
-                    </div>
-                    <div className="settings-row-actions">
-                      <button
-                        className="danger-action"
-                        disabled={busy}
-                        onClick={() => onUnlinkProject(worktree.projectId)}
-                        type="button"
-                      >
-                        <Trash2 size={14} />
-                        <span>删除</span>
-                      </button>
+                    <div className="worktree-row-paths">
+                      {project ? (
+                        <div className="path-row">
+                          <span className="path-label">仓库地址</span>
+                          <code title={project.path}>{project.path}</code>
+                          <button
+                            aria-label="打开仓库目录"
+                            className="ghost-action icon-only"
+                            onClick={() => api.openProjectDirectory(project.id)}
+                            title="打开仓库目录"
+                            type="button"
+                          >
+                            <FolderOpen size={14} />
+                          </button>
+                        </div>
+                      ) : null}
+                      <div className="path-row">
+                        <span className="path-label">Worktree</span>
+                        <code title={worktree.worktreePath}>{worktree.worktreePath}</code>
+                        <button
+                          aria-label="打开 worktree 目录"
+                          className="ghost-action icon-only"
+                          onClick={() => api.openWorktreeDirectory(workspace.id, worktree.projectId)}
+                          title="打开 worktree 目录"
+                          type="button"
+                        >
+                          <FolderOpen size={14} />
+                        </button>
+                      </div>
                     </div>
                   </article>
                 );
               })}
             </div>
           </section>
+          )}
         </div>
       </section>
     </div>
@@ -3074,6 +3180,15 @@ function deriveRequestTitle(requirement: string) {
     return "Untitled Request";
   }
   return firstLine.length > 42 ? `${firstLine.slice(0, 42)}...` : firstLine;
+}
+
+function formatQuestStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function costTierLabel(tier: "free" | "low" | "medium" | "high"): string {

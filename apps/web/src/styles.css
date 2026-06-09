@@ -723,6 +723,19 @@ kbd {
   min-width: 0;
 }
 
+.quest-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quest-row-time {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
 .quest-row em {
   flex: 0 0 auto;
 }
@@ -1856,6 +1869,109 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.worktree-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  transition: border-color 130ms var(--ease), background-color 130ms var(--ease);
+}
+
+.worktree-row:hover {
+  border-color: var(--border-strong);
+}
+
+.worktree-row-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.worktree-row-title {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.worktree-row-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-row-status {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.worktree-row-status > span {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 7px;
+}
+
+.worktree-row-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.role-pill {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  flex: none;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+}
+
+.path-row {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.path-row .path-label {
+  color: var(--text-faint, var(--text-muted));
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  width: 64px;
+}
+
+.path-row code {
+  display: block;
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghost-action.icon-only {
+  flex: none;
+  padding: 4px;
 }
 
 .settings-meta,

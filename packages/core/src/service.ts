@@ -14,6 +14,7 @@ import type {
   AuditLogEntry,
   CapabilityDefinition,
   CapabilityRecommendation,
+  ChangedFile,
   CliTestResult,
   CreateModelKitInput,
   CreateProjectInput,
@@ -35,6 +36,7 @@ import type {
   ProviderModelsResult,
   Quest,
   QuestSpec,
+  QuestStatus,
   RepoHelmState,
   SecurityPolicy,
   SubAgent,
@@ -727,6 +729,43 @@ export class RepoHelmService {
   }
 
   /**
+   * Refine a freeform request into a clearer, more actionable requirement using the
+   * entry agent's ModelKit (BYOK or CLI). Throws a descriptive error when no model is
+   * configured so the UI can surface real feedback.
+   */
+  async enhanceRequirement(text: string): Promise<string> {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      throw new Error("需求内容为空，无法增强。");
+    }
+    const state = await this.getState();
+    const entryAgent = state.entrySubAgentId ? state.subAgents[state.entrySubAgentId] : undefined;
+    const candidateKits = Object.values(state.engine.modelKits);
+    const modelKit =
+      (entryAgent ? state.engine.modelKits[entryAgent.modelKitId] : undefined) ??
+      candidateKits.find((kit) => kit.type === "byok") ??
+      candidateKits[0];
+    if (!modelKit) {
+      throw new Error("智能增强需要一个模型。请先在设置中配置 BYOK 或 CLI ModelKit。");
+    }
+    const orchestrator = new SubAgentOrchestrator(this);
+    const backend = await orchestrator.createBackendFromModelKit(modelKit);
+    const result = await backend.run({
+      systemPrompt:
+        "你是一名需求澄清助手。把用户的开发需求改写得更清晰、具体、可执行：补全隐含的目标、范围和验收要点，保持原意，使用与输入相同的语言。只返回改写后的需求正文，不要加任何解释、标题或代码块。",
+      messages: [{ role: "user", content: trimmed }],
+      tools: [],
+      worktrees: [],
+      quest: { id: "enhance", requirement: trimmed } as Quest
+    });
+    const enhanced = result.content?.trim();
+    if (!enhanced) {
+      throw new Error("模型未返回增强内容，请重试。");
+    }
+    return enhanced;
+  }
+
+  /**
    * 更新 SubAgent 使用统计
    */
   async updateSubAgentUsage(agentId: string): Promise<void> {
@@ -934,6 +973,24 @@ export class RepoHelmService {
     return updatedProject;
   }
 
+  /**
+   * Best-effort scope inference: if the requirement text names specific linked
+   * projects, target only those; otherwise fall back to every project in the workspace.
+   */
+  private inferAffectedProjectIds(
+    state: RepoHelmState,
+    workspaceProjectIds: string[],
+    requirement: string
+  ): string[] {
+    const haystack = requirement.toLowerCase();
+    const matched = workspaceProjectIds.filter((projectId) => {
+      const project = state.projects.find((item) => item.id === projectId);
+      const name = project?.name?.trim().toLowerCase();
+      return name ? haystack.includes(name) : false;
+    });
+    return matched.length > 0 ? matched : workspaceProjectIds;
+  }
+
   async createQuest(input: CreateQuestInput): Promise<Quest> {
     const state = await this.getState();
     const workspace = state.workspaces.find((item) => item.id === input.workspaceId);
@@ -944,7 +1001,7 @@ export class RepoHelmService {
     const affectedProjectIds =
       input.affectedProjectIds && input.affectedProjectIds.length > 0
         ? input.affectedProjectIds
-        : workspace.projectIds;
+        : this.inferAffectedProjectIds(state, workspace.projectIds, input.requirement);
     const timestamp = now();
     const questId = id("quest");
     const relatedKnowledge = this.searchKnowledgeItems(state.knowledge, input.workspaceId, input.requirement).slice(0, 3);
@@ -1067,8 +1124,110 @@ export class RepoHelmService {
       throw new Error("No plan file found for this quest");
     }
 
+    // Provision real git worktrees so workers have an isolated place to write files.
+    await this.provisionQuestWorktrees(questId);
+
     const result = await orchestrator.executeApprovedPlan(questId, plan);
-    return this.persistOrchestratorResult(questId, plan, result);
+
+    // Read back what actually changed on disk before reporting status.
+    const changedFiles = await this.collectQuestChangedFiles(questId);
+    return this.persistOrchestratorResult(questId, plan, result, changedFiles);
+  }
+
+  /**
+   * Create an isolated git worktree for every affected project that is a usable git
+   * repo, persist them onto the quest, and move the quest into the `executing` state.
+   * Returns only the successfully created worktrees.
+   */
+  async provisionQuestWorktrees(questId: string): Promise<WorktreeState[]> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    const workspace = state.workspaces.find((item) => item.id === quest.workspaceId);
+    const worktreeRoot = workspace?.worktreeRoot ? resolve(workspace.worktreeRoot) : this.worktreeRootDir;
+    const branchName = `repohelm/${slugify(quest.title)}-${quest.id.slice(-4)}`;
+
+    const results: WorktreeState[] = [];
+    const events: AgentEvent[] = [];
+    for (const projectId of quest.affectedProjectIds) {
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        results.push({ projectId, branchName, worktreePath: "", status: "failed", note: "Project not found" });
+        continue;
+      }
+      // Reuse an existing created worktree (e.g. on retry) when present.
+      const existing = quest.worktrees.find((item) => item.projectId === projectId && item.status === "created");
+      if (existing) {
+        results.push(existing);
+        continue;
+      }
+      const worktreePath = join(worktreeRoot, "quests", quest.id, slugify(project.name));
+      const created = await this.gitWorktreeManager.createWorktree({
+        repoPath: project.path,
+        branchName,
+        worktreePath,
+        baseBranch: project.defaultBranch
+      });
+      results.push({
+        projectId,
+        branchName: created.branchName,
+        worktreePath: created.worktreePath,
+        status: created.status === "created" ? "created" : "failed",
+        note: created.note,
+        repoRoot: created.repoRoot
+      });
+      events.push(
+        this.event(
+          questId,
+          created.status === "created" ? "worktree.created" : "worktree.failed",
+          created.status === "created" ? "Worktree 已创建" : "Worktree 创建失败",
+          `${project.name}: ${created.note}`,
+          "Worktree Manager"
+        )
+      );
+    }
+
+    const updatedQuest: Quest = {
+      ...quest,
+      worktrees: results,
+      status: "executing",
+      updatedAt: now()
+    };
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+      events: [...events, ...state.events]
+    });
+    return results.filter((item) => item.status === "created");
+  }
+
+  /** Read changed files from every created worktree and persist them onto the quest. */
+  async collectQuestChangedFiles(questId: string): Promise<ChangedFile[]> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    const collected: ChangedFile[] = [];
+    for (const worktree of quest.worktrees) {
+      if (worktree.status !== "created" || !worktree.worktreePath) {
+        continue;
+      }
+      try {
+        const files = await this.gitWorktreeManager.getChangedFiles(worktree.projectId, worktree.worktreePath);
+        collected.push(...files);
+      } catch {
+        // a worktree that can't be diffed contributes no changed files
+      }
+    }
+    const updatedQuest: Quest = { ...quest, changedFiles: collected, updatedAt: now() };
+    await this.store.write({
+      ...state,
+      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item))
+    });
+    return collected;
   }
 
   async rejectPlan(questId: string, reason?: string): Promise<Quest> {
@@ -1126,7 +1285,8 @@ export class RepoHelmService {
   private async persistOrchestratorResult(
     questId: string,
     plan: OrchestrationPlan,
-    result: OrchestratorQuestResult
+    result: OrchestratorQuestResult,
+    changedFiles: ChangedFile[] = []
   ): Promise<Quest> {
     const state = await this.getState();
     const quest = state.quests.find((item) => item.id === questId);
@@ -1141,11 +1301,25 @@ export class RepoHelmService {
             .map((d, idx) => `${idx + 1}. ${d.agentName} (${d.ok ? "ok" : "fail"}): ${d.summary}`)
             .join("\n");
 
+    const createdWorktrees = quest.worktrees.filter((item) => item.status === "created");
+    const hasFailures = result.delegations.some((d) => !d.ok);
+    // Only claim "ready to deliver" when the execution actually produced file changes.
+    const produced = changedFiles.length > 0;
+    const status: QuestStatus = produced ? "ready" : "blocked";
+
+    const reviewNote = produced
+      ? `执行产生了 ${changedFiles.length} 个文件变更，可进入交付。`
+      : createdWorktrees.length === 0
+        ? "执行未创建任何 worktree（受影响项目不是可用的 Git 仓库），没有可交付内容。"
+        : "执行完成但未产生任何文件变更，无可交付内容。请检查需求或在 worktree 中确认 Agent 输出。";
+
     const updatedQuest: Quest = {
       ...quest,
-      status: "ready",
+      status,
+      changedFiles,
       planApproval: { status: "approved", approvedAt: now() },
       agentSummary: result.finalContent || delegationSummary,
+      reviewNotes: [...quest.reviewNotes, reviewNote],
       updatedAt: now()
     };
 
@@ -1168,9 +1342,11 @@ export class RepoHelmService {
       ),
       this.event(
         questId,
-        "orchestrator.completed",
-        "编排执行完成",
-        `执行了 ${result.iterations} 个步骤。${result.finalContent ? result.finalContent.slice(0, 300) : ""}`,
+        produced ? "orchestrator.completed" : "orchestrator.no_changes",
+        produced ? "编排执行完成" : hasFailures ? "编排执行失败" : "编排执行完成（无文件变更）",
+        produced
+          ? `执行了 ${result.iterations} 个步骤，产生 ${changedFiles.length} 个文件变更。`
+          : `执行了 ${result.iterations} 个步骤，但没有产生文件变更。${reviewNote}`,
         result.entryAgentName
       )
     ];
@@ -1272,23 +1448,28 @@ export class RepoHelmService {
             createdAt: now()
           };
         }
-        const permission = this.evaluateCommandPermission(
-          state.securityPolicy,
-          `validation:${project.id}`,
-          project.validationCommand || "validation:skipped"
-        );
-        auditEntries.push(
-          this.audit("command", permission.allowed ? "allowed" : "denied", project.validationCommand || "validation:skipped", permission.detail)
-        );
-        if (!permission.allowed) {
-          return {
-            projectId: project.id,
-            worktreePath: worktree.worktreePath,
-            status: "failed",
-            commitMessage,
-            note: permission.detail,
-            createdAt: now()
-          };
+        // Only gate on the command allowlist when there is an actual validation
+        // command to run; an unconfigured (empty) command has nothing to approve.
+        const validationCommand = project.validationCommand?.trim() ?? "";
+        if (validationCommand) {
+          const permission = this.evaluateCommandPermission(
+            state.securityPolicy,
+            `validation:${project.id}`,
+            validationCommand
+          );
+          auditEntries.push(
+            this.audit("command", permission.allowed ? "allowed" : "denied", validationCommand, permission.detail)
+          );
+          if (!permission.allowed) {
+            return {
+              projectId: project.id,
+              worktreePath: worktree.worktreePath,
+              status: "failed",
+              commitMessage,
+              note: permission.detail,
+              createdAt: now()
+            };
+          }
         }
         const validation = await this.gitWorktreeManager.runValidation(worktree.worktreePath, project.validationCommand);
         if (validation.status === "failed") {
@@ -1333,32 +1514,43 @@ export class RepoHelmService {
       })
     );
     const failed = deliveryResults.filter((result) => result.status === "failed");
+    const succeeded = deliveryResults.length - failed.length;
+    const nothingToDeliver = deliveryResults.length === 0;
+    // Keep the quest where it was when there is genuinely nothing to deliver, rather
+    // than implying a successful handoff.
+    const nextStatus: QuestStatus = nothingToDeliver
+      ? quest.status
+      : failed.length === 0
+        ? "delivered"
+        : "ready";
     const updatedQuest: Quest = {
       ...quest,
-      status: deliveryResults.length > 0 && failed.length === 0 ? "delivered" : "ready",
+      status: nextStatus,
       deliveryResults,
       validationResults: [
         ...quest.validationResults,
-        deliveryResults.length > 0
-          ? `Delivery validation: ${deliveryResults.length - failed.length}/${deliveryResults.length} 个项目完成交付准备。`
-          : "Delivery validation: 没有可交付的 worktree。"
+        nothingToDeliver
+          ? "Delivery validation: 没有可交付的 worktree 或文件变更，已跳过交付。"
+          : `Delivery validation: ${succeeded}/${deliveryResults.length} 个项目完成交付准备。`
       ],
       reviewNotes: [
         ...quest.reviewNotes,
-        failed.length > 0
-          ? "Delivery Agent: 部分项目交付失败，请查看 delivery results。"
-          : "Delivery Agent: 交付前验证和 commit 已完成，可进入 PR handoff。"
+        nothingToDeliver
+          ? "Delivery Agent: 没有可交付内容，请先让 Agent 在 worktree 中产生文件变更。"
+          : failed.length > 0
+            ? "Delivery Agent: 部分项目交付失败，请查看 delivery results。"
+            : "Delivery Agent: 交付前验证和 commit 已完成，可进入 PR handoff。"
       ],
       updatedAt: now()
     };
     const events = [
       this.event(
         questId,
-        "delivery.completed",
-        failed.length === 0 ? "交付准备完成" : "交付准备部分失败",
-        deliveryResults.length > 0
-          ? `${deliveryResults.length - failed.length}/${deliveryResults.length} 个项目已完成验证、commit 和 PR handoff。`
-          : "没有可交付的 worktree。",
+        nothingToDeliver ? "delivery.skipped" : failed.length === 0 ? "delivery.completed" : "delivery.partial",
+        nothingToDeliver ? "无可交付内容" : failed.length === 0 ? "交付准备完成" : "交付准备部分失败",
+        nothingToDeliver
+          ? "没有可交付的 worktree 或文件变更，交付已跳过。"
+          : `${succeeded}/${deliveryResults.length} 个项目已完成验证、commit 和 PR handoff。`,
         "Delivery Agent"
       )
     ];

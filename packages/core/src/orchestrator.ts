@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { basename } from "node:path";
 import { promisify } from "node:util";
 import { RepoHelmService } from "./service.js";
 import {
@@ -15,6 +16,7 @@ import {
   delegateToolSpec,
   type DelegateInput
 } from "./tools/delegate.js";
+import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL, fsToolSpecs } from "./tools/fs.js";
 import type { ModelKit, OrchestrationPlan, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -141,7 +143,13 @@ export class SubAgentOrchestrator {
           stepId: step.id
         });
 
-        const summary = result.error ? `error: ${result.error}` : truncate(result.content, 400);
+        const filesNote =
+          result.writtenFiles && result.writtenFiles.length > 0
+            ? `\n写入文件: ${result.writtenFiles.join(", ")}`
+            : "";
+        const summary = result.error
+          ? `error: ${result.error}`
+          : `${truncate(result.content, 400)}${filesNote}`;
         delegations.push({
           agentId: agent.id,
           agentName: agent.name,
@@ -182,11 +190,10 @@ export class SubAgentOrchestrator {
   private async invokeWorkerAgent(
     worker: SubAgent,
     input: { task: string; context: Record<string, unknown>; quest: Quest; stepId?: string }
-  ): Promise<{ content: string; error?: string }> {
+  ): Promise<{ content: string; error?: string; writtenFiles?: string[] }> {
     try {
       const modelKit = await this.requireModelKit(worker);
-      const backend = await this.createBackendFromModelKit(modelKit);
-      const systemPrompt =
+      const basePrompt =
         worker.promptTemplate ??
         `You are a specialized worker agent named "${worker.name}". ` +
           `Your capabilities: ${worker.capabilities?.join(", ") || "general"}. ` +
@@ -194,16 +201,64 @@ export class SubAgentOrchestrator {
       const userContent = input.context && Object.keys(input.context).length > 0
         ? `${input.task}\n\nContext:\n${JSON.stringify(input.context, null, 2)}`
         : input.task;
-      const result = await backend.run({
-        systemPrompt,
-        messages: [{ role: "user", content: userContent }],
-        tools: [],
-        worktrees: input.quest.worktrees,
-        quest: input.quest
-      });
+
+      const worktree = input.quest.worktrees.find((item) => item.status === "created" && item.worktreePath);
+
+      let content: string;
+      const writtenFiles = new Set<string>();
+
+      if (worktree) {
+        const projectDir = basename(worktree.worktreePath);
+        const systemPrompt =
+          `${basePrompt}\n\n` +
+          `You are implementing changes inside an isolated git worktree which IS the project root: "${worktree.worktreePath}". ` +
+          `Output EVERY file you create or modify as a fenced code block whose info string is the file path relative to the project root, e.g.:\n` +
+          "```index.html\n<full file contents>\n```\n" +
+          `Provide complete file contents (not diffs). Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".`;
+
+        if (modelKit.type === "byok") {
+          // Tool-capable models can write files directly via the file-system tools.
+          const loop = await this.runWorkerWithFsTools(modelKit, systemPrompt, userContent, worktree.worktreePath);
+          content = loop.content || "";
+          loop.written.forEach((file) => writtenFiles.add(file));
+        } else {
+          // CLI / other backends: run in the worktree and capture their answer.
+          const backend = await this.createBackendFromModelKit(modelKit);
+          const result = await backend.run({
+            systemPrompt,
+            messages: [{ role: "user", content: userContent }],
+            tools: [],
+            worktrees: input.quest.worktrees,
+            quest: input.quest
+          });
+          content = result.content || "";
+        }
+
+        // Backend-agnostic safety net: materialize any files described in the answer
+        // into the worktree (covers print-mode CLIs and models that emit code blocks).
+        const fsHandlers = buildFsToolHandlers(worktree.worktreePath);
+        for (const file of extractFilesFromContent(content, projectDir)) {
+          await fsHandlers.handle(FS_WRITE_TOOL, { path: file.path, content: file.content });
+        }
+        fsHandlers.written.forEach((file) => writtenFiles.add(file));
+
+        if (!content) {
+          content = writtenFiles.size > 0 ? `Wrote ${writtenFiles.size} file(s).` : "(worker returned no content)";
+        }
+      } else {
+        const backend = await this.createBackendFromModelKit(modelKit);
+        const result = await backend.run({
+          systemPrompt: basePrompt,
+          messages: [{ role: "user", content: userContent }],
+          tools: [],
+          worktrees: input.quest.worktrees,
+          quest: input.quest
+        });
+        content = result.content || "(worker returned no content)";
+      }
+
       await this.updateSubAgentUsage(worker.id);
 
-      const content = result.content || "(worker returned no content)";
       if (input.stepId) {
         await this.questWorkspace.writeWorkerArtifact(
           input.quest.id,
@@ -212,13 +267,53 @@ export class SubAgentOrchestrator {
           content
         );
       }
-      return { content };
+      return { content, writtenFiles: [...writtenFiles] };
     } catch (error) {
       return {
         content: "",
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  /**
+   * Run a worker BYOK model in a bounded tool-calling loop, letting it write real
+   * files into the worktree. Returns the worker's final text and the list of files
+   * it created/overwrote (worktree-relative paths).
+   */
+  private async runWorkerWithFsTools(
+    modelKit: ModelKit,
+    systemPrompt: string,
+    userContent: string,
+    worktreeRoot: string
+  ): Promise<{ content: string; written: string[] }> {
+    const fs = buildFsToolHandlers(worktreeRoot);
+    const messages: LlmMessage[] = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent }
+    ];
+    let finalContent = "";
+    for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
+      const result = await callLlmWithModelKit({ modelKit, messages, tools: fsToolSpecs });
+      if (result.content) {
+        finalContent = result.content;
+      }
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        break;
+      }
+      messages.push({ role: "assistant", content: result.content ?? "", tool_calls: result.toolCalls });
+      for (const call of result.toolCalls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
+        const output = await fs.handle(call.function.name, args);
+        messages.push({ role: "tool", tool_call_id: call.id, content: output });
+      }
+    }
+    return { content: finalContent, written: [...fs.written] };
   }
 
   private async requireModelKit(agent: SubAgent): Promise<ModelKit> {
@@ -290,13 +385,22 @@ export class SubAgentOrchestrator {
         let command = process.env[envVar];
         let cliArgs: string[] = [];
 
+        // Run the CLI inside the created worktree so any edits it makes land there.
+        const createdWorktree = input.worktrees.find((item) => item.status === "created" && item.worktreePath);
+        // The full prompt must carry the system instructions (worktree path + output
+        // convention), not just the task — earlier this was dropped on the CLI path.
+        const prompt = [input.systemPrompt, ...input.messages.map((m) => m.content)]
+          .filter(Boolean)
+          .join("\n\n---\n\n");
+
         if (!command && backendId) {
           command = await this.service.resolveCliCommand(backendId);
           const def = this.service.getCliDefinition(backendId);
-          if (def?.ping) {
-            const prompt = input.messages.map((m) => m.content).filter(Boolean).join("\n\n");
-            const model = modelKit.model !== "default" ? modelKit.model : undefined;
-            cliArgs = def.ping.build(prompt, model);
+          const model = modelKit.model !== "default" ? modelKit.model : undefined;
+          // Prefer the edit-capable `exec` invocation when we have a worktree to write into.
+          const builder = createdWorktree && def?.exec ? def.exec : def?.ping;
+          if (builder) {
+            cliArgs = builder.build(prompt, model);
           }
         }
 
@@ -307,14 +411,12 @@ export class SubAgentOrchestrator {
         }
 
         if (cliArgs.length === 0) {
-          const prompt = [input.systemPrompt, ...input.messages.map((m) => m.content)]
-            .filter(Boolean)
-            .join("\n\n---\n\n");
           cliArgs = [prompt];
         }
 
         const { stdout, stderr } = await execFileAsync(command, cliArgs, {
-          maxBuffer: 10 * 1024 * 1024
+          maxBuffer: 10 * 1024 * 1024,
+          cwd: createdWorktree?.worktreePath
         }).catch((error: { stdout?: string; stderr?: string; message?: string }) => {
           throw new Error(
             `CLI backend ${backendId} failed: ${error.message}\n${error.stderr ?? ""}`

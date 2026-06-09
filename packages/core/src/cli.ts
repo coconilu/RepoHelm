@@ -33,6 +33,11 @@ export interface CliDefinition {
    * the CLI's own auth (OAuth/subscription/keychain), so it works without an env API key.
    */
   ping?: { build: (prompt: string, model?: string) => string[]; timeoutMs?: number };
+  /**
+   * Non-interactive *agentic* invocation used to actually execute a worker task — like
+   * `ping`, but permitted to edit files (run from the quest worktree as the cwd).
+   */
+  exec?: { build: (prompt: string, model?: string) => string[]; timeoutMs?: number };
   /** Underlying provider — when set, live models can be pulled via the provider REST API using an env key. */
   providerId?: ProviderId;
   /** CLI-only aliases (e.g. sonnet/opus) kept even when live provider models are merged in. */
@@ -49,6 +54,13 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     fallbackBins: ["openclaude"],
     versionArgs: ["--version"],
     ping: { build: (prompt, model) => (model ? ["-p", prompt, "--model", model] : ["-p", prompt]) },
+    // Agentic run: auto-accept file edits so the agent can actually write into the worktree.
+    exec: {
+      build: (prompt, model) =>
+        model
+          ? ["-p", prompt, "--model", model, "--permission-mode", "acceptEdits"]
+          : ["-p", prompt, "--permission-mode", "acceptEdits"]
+    },
     providerId: "anthropic",
     aliasModels: [
       { id: "sonnet", label: "Sonnet (alias)" },
