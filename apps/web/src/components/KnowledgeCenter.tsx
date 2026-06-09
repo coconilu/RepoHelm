@@ -48,7 +48,13 @@ export function KnowledgeCenter({
 
   const loadView = useCallback(async (projectId: string) => {
     if (!projectId) return;
-    setLoadingIds((ids) => (ids.includes(projectId) ? ids : [...ids, projectId]));
+    let proceed = false;
+    setLoadingIds((ids) => {
+      if (ids.includes(projectId)) return ids;
+      proceed = true;
+      return [...ids, projectId];
+    });
+    if (!proceed) return;
     try {
       const view = await api.getProjectKnowledge(projectId);
       setViews((prev) => ({ ...prev, [projectId]: view }));
@@ -58,19 +64,24 @@ export function KnowledgeCenter({
   }, []);
 
   useEffect(() => {
-    if (selectedProjectId && !views[selectedProjectId] && !loadingIds.includes(selectedProjectId)) {
+    if (selectedProjectId && !views[selectedProjectId]) {
       loadView(selectedProjectId);
     }
-  }, [selectedProjectId, views, loadingIds, loadView]);
+  }, [selectedProjectId, views, loadView]);
 
   const activeView = selectedProjectId ? views[selectedProjectId] : undefined;
   const activePage = activeView?.pages.find((page) => page.slug === selectedSlug);
   const activeProjectName = projects.find((p) => p.id === selectedProjectId)?.name ?? "";
 
   function toggleProject(projectId: string) {
-    setExpandedIds((ids) =>
-      ids.includes(projectId) ? ids.filter((id) => id !== projectId) : [...ids, projectId]
-    );
+    setExpandedIds((ids) => {
+      const willExpand = !ids.includes(projectId);
+      if (willExpand) {
+        setSelectedProjectId(projectId);
+        setSelectedSlug(null);
+      }
+      return willExpand ? [...ids, projectId] : ids.filter((id) => id !== projectId);
+    });
     if (!views[projectId]) loadView(projectId);
   }
 
@@ -97,6 +108,8 @@ export function KnowledgeCenter({
       return `有 ${activeView.pendingCommits} 个新提交,更新`;
     return "重新生成";
   }
+
+  const currentSyncLabel = syncLabel();
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredProjects = projects.filter((p) => p.name.toLowerCase().includes(normalizedQuery));
@@ -138,6 +151,7 @@ export function KnowledgeCenter({
             <input
               aria-label={activeTab === "wiki" ? "搜索 Repo Wiki" : "搜索记忆"}
               placeholder={activeTab === "wiki" ? "搜索 Repo Wiki" : "搜索记忆"}
+              type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -242,6 +256,7 @@ export function KnowledgeCenter({
                   <div className="knowledge-mode-toggle">
                     <button
                       aria-label="预览"
+                      aria-pressed={mode === "preview"}
                       className={mode === "preview" ? "active" : ""}
                       onClick={() => setMode("preview")}
                       type="button"
@@ -250,6 +265,7 @@ export function KnowledgeCenter({
                     </button>
                     <button
                       aria-label="源码"
+                      aria-pressed={mode === "code"}
                       className={mode === "code" ? "active" : ""}
                       onClick={() => setMode("code")}
                       type="button"
@@ -264,7 +280,7 @@ export function KnowledgeCenter({
                     type="button"
                   >
                     <RefreshCw className={syncing ? "spin" : ""} size={14} />
-                    <span>{syncLabel()}</span>
+                    <span>{currentSyncLabel}</span>
                   </button>
                 </div>
               </header>
@@ -282,7 +298,7 @@ export function KnowledgeCenter({
                   )
                 ) : activeView.pages.length === 0 ? (
                   <div className="knowledge-placeholder">
-                    还没有知识库内容,点击右上角「{syncLabel()}」建立。
+                    还没有知识库内容,点击右上角「{currentSyncLabel}」建立。
                   </div>
                 ) : (
                   <div className="knowledge-placeholder">从左侧选择一个页面查看。</div>
