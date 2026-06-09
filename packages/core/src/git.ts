@@ -30,6 +30,22 @@ export interface GitOperationResult {
   prUrl?: string;
 }
 
+export interface RepoCommitSummary {
+  sha: string;
+  subject: string;
+}
+
+export interface RepoFileChange {
+  path: string;
+  status: string; // git name-status letter (A/M/D/R...)
+  diff: string;
+}
+
+export interface RepoChangeSet {
+  commits: RepoCommitSummary[];
+  files: RepoFileChange[];
+}
+
 export class GitWorktreeManager {
   async inspectRepository(path: string, defaultBranch: string): Promise<ProjectHealth> {
     try {
@@ -246,6 +262,49 @@ export class GitWorktreeManager {
         note: this.formatError(error)
       };
     }
+  }
+
+  async resolveRef(repoPath: string, ref: string): Promise<string> {
+    return (await this.git(repoPath, ["rev-parse", ref])).trim();
+  }
+
+  async countCommitsBetween(repoPath: string, from: string, toRef: string): Promise<number> {
+    const out = (await this.git(repoPath, ["rev-list", "--count", `${from}..${toRef}`])).trim();
+    return Number.parseInt(out || "0", 10);
+  }
+
+  async listTrackedFiles(repoPath: string, ref: string): Promise<string[]> {
+    const out = await this.git(repoPath, ["ls-tree", "-r", "--name-only", ref]);
+    return out.split("\n").map((l) => l.trim()).filter(Boolean);
+  }
+
+  async collectChangesBetween(repoPath: string, from: string, toRef: string): Promise<RepoChangeSet> {
+    const logOut = await this.git(repoPath, [
+      "log",
+      "--no-merges",
+      "--pretty=format:%H%x1f%s",
+      `${from}..${toRef}`
+    ]);
+    const commits: RepoCommitSummary[] = logOut
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [sha, subject] = line.split("\x1f");
+        return { sha: sha ?? "", subject: subject ?? "" };
+      });
+
+    const nameStatus = await this.git(repoPath, ["diff", "--name-status", `${from}..${toRef}`]);
+    const files: RepoFileChange[] = [];
+    for (const line of nameStatus.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const parts = line.split(/\t+/);
+      const status = parts[0] ?? "M";
+      const path = parts[parts.length - 1] ?? "";
+      if (!path) continue;
+      const diff = await this.gitAllowingDiffExit(repoPath, ["diff", `${from}..${toRef}`, "--", path]);
+      files.push({ path, status, diff });
+    }
+    return { commits, files };
   }
 
   private parseStatusLine(line: string): { path: string; status: ChangeKind } {
