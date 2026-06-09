@@ -19,6 +19,7 @@
 - [apps/web/src/api.ts](file://apps/web/src/api.ts)
 - [packages/core/src/service.test.ts](file://packages/core/src/service.test.ts)
 - [README.md](file://README.md)
+- [AGENTS.md](file://AGENTS.md)
 </cite>
 
 ## 更新摘要
@@ -72,7 +73,7 @@ SA["seed-agents.ts<br/>内置种子代理"]
 CL["cli.ts<br/>本地 CLI 探测与测试"]
 PR["providers.ts<br/>Provider 注册与模型列表"]
 SV["service.ts<br/>RepoHelmService 协调器"]
-GT["git.ts<br/>Git 巽树管理"]
+GT["git.ts<br/>Git 工作树管理"]
 TP["types.ts<br/>类型定义"]
 ST["store.ts<br/>状态存储"]
 KL["knowledge.ts<br/>知识库文件写入"]
@@ -103,12 +104,12 @@ WEB --> SRV
 - [packages/core/src/seed-agents.ts:1-133](file://packages/core/src/seed-agents.ts#L1-L133)
 - [packages/core/src/cli.ts:1-368](file://packages/core/src/cli.ts#L1-L368)
 - [packages/core/src/providers.ts:1-304](file://packages/core/src/providers.ts#L1-L304)
-- [packages/core/src/service.ts:1-2017](file://packages/core/src/service.ts#L1-L2017)
+- [packages/core/src/service.ts:1-2202](file://packages/core/src/service.ts#L1-L2202)
 - [packages/core/src/git.ts:1-343](file://packages/core/src/git.ts#L1-L343)
-- [packages/core/src/types.ts:1-494](file://packages/core/src/types.ts#L1-L494)
+- [packages/core/src/types.ts:1-559](file://packages/core/src/types.ts#L1-L559)
 - [packages/core/src/store.ts:1-166](file://packages/core/src/store.ts#L1-L166)
 - [packages/core/src/knowledge.ts:1-68](file://packages/core/src/knowledge.ts#L1-L68)
-- [apps/server/src/index.ts:1-637](file://apps/server/src/index.ts#L1-L637)
+- [apps/server/src/index.ts:1-660](file://apps/server/src/index.ts#L1-L660)
 - [apps/web/src/api.ts:1-619](file://apps/web/src/api.ts#L1-L619)
 
 **章节来源**
@@ -154,12 +155,12 @@ WEB --> SRV
 - [packages/core/src/quest-workspace.ts:5-121](file://packages/core/src/quest-workspace.ts#L5-L121)
 - [packages/core/src/orchestrator.ts:26-461](file://packages/core/src/orchestrator.ts#L26-L461)
 - [packages/core/src/seed-agents.ts:4-133](file://packages/core/src/seed-agents.ts#L4-L133)
-- [packages/core/src/types.ts:77-347](file://packages/core/src/types.ts#L77-L347)
-- [packages/core/src/service.ts:1110-1299](file://packages/core/src/service.ts#L1110-L1299)
+- [packages/core/src/types.ts:77-518](file://packages/core/src/types.ts#L77-L518)
+- [packages/core/src/service.ts:1110-1559](file://packages/core/src/service.ts#L1110-L1559)
 - [packages/core/src/cli.ts:112-368](file://packages/core/src/cli.ts#L112-L368)
 - [packages/core/src/providers.ts:163-304](file://packages/core/src/providers.ts#L163-L304)
 - [packages/core/src/git.ts:33-343](file://packages/core/src/git.ts#L33-L343)
-- [packages/core/src/service.ts:56-2017](file://packages/core/src/service.ts#L56-L2017)
+- [packages/core/src/service.ts:56-2202](file://packages/core/src/service.ts#L56-L2202)
 - [packages/core/src/store.ts:86-166](file://packages/core/src/store.ts#L86-L166)
 - [packages/core/src/knowledge.ts:12-68](file://packages/core/src/knowledge.ts#L12-L68)
 
@@ -196,9 +197,9 @@ API-->>Client : 返回 Quest 状态
 ```
 
 **图表来源**
-- [apps/server/src/index.ts:450-477](file://apps/server/src/index.ts#L450-L477)
-- [packages/core/src/service.ts:1110-1135](file://packages/core/src/service.ts#L1110-L1135)
-- [packages/core/src/orchestrator.ts:67-183](file://packages/core/src/orchestrator.ts#L67-L183)
+- [apps/server/src/index.ts:473-500](file://apps/server/src/index.ts#L473-L500)
+- [packages/core/src/service.ts:1296-1320](file://packages/core/src/service.ts#L1296-L1320)
+- [packages/core/src/orchestrator.ts:90-183](file://packages/core/src/orchestrator.ts#L90-L183)
 - [packages/core/src/planning.ts:36-67](file://packages/core/src/planning.ts#L36-L67)
 - [packages/core/src/quest-workspace.ts:18-34](file://packages/core/src/quest-workspace.ts#L18-L34)
 
@@ -365,7 +366,7 @@ G --> H["执行并记录 allowed"]
 
 **章节来源**
 - [packages/core/src/types.ts:160-168](file://packages/core/src/types.ts#L160-L168)
-- [packages/core/src/service.ts:898-914](file://packages/core/src/service.ts#L898-914)
+- [packages/core/src/service.ts:898-914](file://packages/core/src/service.ts#L898-L914)
 - [packages/core/src/service.ts:590-615](file://packages/core/src/service.ts#L590-L615)
 - [packages/core/src/service.ts:783-801](file://packages/core/src/service.ts#L783-L801)
 
@@ -506,12 +507,12 @@ stateDiagram-v2
 ```
 
 **图表来源**
-- [packages/core/src/types.ts:70-76](file://packages/core/src/types.ts#L70-L76)
-- [packages/core/src/service.ts:1110-1299](file://packages/core/src/service.ts#L1110-L1299)
+- [packages/core/src/types.ts:70-78](file://packages/core/src/types.ts#L70-L78)
+- [packages/core/src/service.ts:1296-1451](file://packages/core/src/service.ts#L1296-L1451)
 
 **章节来源**
-- [packages/core/src/types.ts:70-76](file://packages/core/src/types.ts#L70-L76)
-- [packages/core/src/service.ts:1110-1299](file://packages/core/src/service.ts#L1110-L1299)
+- [packages/core/src/types.ts:70-78](file://packages/core/src/types.ts#L70-L78)
+- [packages/core/src/service.ts:1296-1451](file://packages/core/src/service.ts#L1296-L1451)
 
 ### 计划 API 端点
 新增完整的计划管理 API 端点：
@@ -521,7 +522,7 @@ stateDiagram-v2
 - **GET /api/quests/:id/plan**：获取编排计划
 
 **章节来源**
-- [apps/server/src/index.ts:450-477](file://apps/server/src/index.ts#L450-L477)
+- [apps/server/src/index.ts:473-500](file://apps/server/src/index.ts#L473-L500)
 - [apps/web/src/api.ts:510-520](file://apps/web/src/api.ts#L510-L520)
 
 ### 计划读取与持久化
@@ -532,7 +533,7 @@ stateDiagram-v2
 - **事件记录**：记录计划审批、执行过程和结果
 
 **章节来源**
-- [packages/core/src/service.ts:1267-1360](file://packages/core/src/service.ts#L1267-L1360)
+- [packages/core/src/service.ts:1453-1545](file://packages/core/src/service.ts#L1453-L1545)
 
 ## 子代理管理能力
 
@@ -567,11 +568,11 @@ SeedAgents --> SubAgent : "创建"
 
 **图表来源**
 - [packages/core/src/seed-agents.ts:8-133](file://packages/core/src/seed-agents.ts#L8-L133)
-- [packages/core/src/types.ts:337-347](file://packages/core/src/types.ts#L337-L347)
+- [packages/core/src/types.ts:397-410](file://packages/core/src/types.ts#L397-L410)
 
 **章节来源**
 - [packages/core/src/seed-agents.ts:8-133](file://packages/core/src/seed-agents.ts#L8-L133)
-- [packages/core/src/types.ts:337-347](file://packages/core/src/types.ts#L337-L347)
+- [packages/core/src/types.ts:397-410](file://packages/core/src/types.ts#L397-L410)
 
 ### 代理权限控制
 子代理具备精细的权限控制机制：
@@ -582,7 +583,7 @@ SeedAgents --> SubAgent : "创建"
 - **使用统计**：usageCount（使用次数）、lastUsedAt（最后使用时间）
 
 **章节来源**
-- [packages/core/src/types.ts:319-332](file://packages/core/src/types.ts#L319-L332)
+- [packages/core/src/types.ts:382-396](file://packages/core/src/types.ts#L382-L396)
 - [packages/core/src/seed-agents.ts:14-54](file://packages/core/src/seed-agents.ts#L14-L54)
 
 ### 子代理 API 管理
@@ -596,7 +597,7 @@ SeedAgents --> SubAgent : "创建"
 - **GET /api/sub-agents/entry**：获取入口子代理
 
 **章节来源**
-- [apps/server/src/index.ts:528-585](file://apps/server/src/index.ts#L528-L585)
+- [apps/server/src/index.ts:551-608](file://apps/server/src/index.ts#L551-L608)
 - [apps/web/src/api.ts:596-618](file://apps/web/src/api.ts#L596-L618)
 
 ### 代理使用统计
@@ -705,7 +706,7 @@ SeedAgents --> Service["RepoHelmService"]
 **章节来源**
 - [apps/server/src/index.ts:130-148](file://apps/server/src/index.ts#L130-L148)
 - [packages/core/src/git.ts:159-187](file://packages/core/src/git.ts#L159-L187)
-- [packages/core/src/service.ts:1233-1266](file://packages/core/src/service.ts#L1233-L1266)
+- [packages/core/src/service.ts:1418-1451](file://packages/core/src/service.ts#L1418-L1451)
 - [packages/core/src/service.ts:680-760](file://packages/core/src/service.ts#L680-L760)
 
 ## 结论
@@ -740,5 +741,5 @@ RepoHelm Agent 后端系统通过清晰的抽象与注册表机制，实现了�
 **章节来源**
 - [README.md:62-77](file://README.md#L62-L77)
 - [apps/server/src/index.ts:194-203](file://apps/server/src/index.ts#L194-L203)
-- [apps/server/src/index.ts:450-585](file://apps/server/src/index.ts#L450-L585)
+- [apps/server/src/index.ts:473-608](file://apps/server/src/index.ts#L473-L608)
 - [packages/core/src/seed-agents.ts:82-133](file://packages/core/src/seed-agents.ts#L82-L133)
