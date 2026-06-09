@@ -75,7 +75,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(201);
-      const data = await res.json<any>();
+      const data = (await res.json()) as any;
       expect(data.type).toBe("cli");
       expect(data.backendId).toBe("mock");
       expect(data.name).toBe("Test CLI Kit");
@@ -101,7 +101,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       // 由于没有真实的 API key,这个测试会失败,但我们应该验证 schema 验证是通过的
-      const data = await res.json<any>();
+      const data = (await res.json()) as any;
       
       if (res.status === 400) {
         // 如果是 400,应该是测试失败(网络/认证错误),而不是 schema 验证失败
@@ -137,7 +137,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(400);
-      const data = await res.json<any>();
+      const data = (await res.json()) as any;
       expect(data.error).toContain("providerId");
     });
 
@@ -156,7 +156,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(400);
-      const data = await res.json<any>();
+      const data = (await res.json()) as any;
       expect(data.error).toContain("backendId");
     });
 
@@ -254,7 +254,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(200);
-      const data = await res.json<any[]>();
+      const data = (await res.json()) as any[];
       expect(Array.isArray(data)).toBe(true);
     });
 
@@ -276,7 +276,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(200);
-      const data = await res.json<any[]>();
+      const data = (await res.json()) as any[];
       expect(data.length).toBeGreaterThan(0);
       expect(data.some((kit) => kit.name === "List Test Kit")).toBe(true);
     });
@@ -296,7 +296,7 @@ describe("Server API - ModelKit Endpoints", () => {
         })
       });
 
-      const createdKit = await createRes.json<any>();
+      const createdKit = (await createRes.json()) as any;
 
       // 删除它
       const deleteRes = await app.request(`/api/model-kits/${createdKit.id}`, {
@@ -304,14 +304,14 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(deleteRes.status).toBe(200);
-      const deleteData = await deleteRes.json<any>();
+      const deleteData = (await deleteRes.json()) as any;
       expect(deleteData.ok).toBe(true);
 
       // 验证已被删除
       const listRes = await app.request("/api/model-kits", {
         method: "GET"
       });
-      const kits = await listRes.json<any[]>();
+      const kits = (await listRes.json()) as any[];
       expect(kits.find((k) => k.id === createdKit.id)).toBeUndefined();
     });
 
@@ -321,7 +321,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(400);
-      const data = await res.json<any>();
+      const data = (await res.json()) as any;
       expect(data.error).toContain("not found");
     });
   });
@@ -362,7 +362,7 @@ describe("Server API - ModelKit Endpoints", () => {
       });
 
       expect(res.status).toBe(201);
-      const data = await res.json<any>();
+      const data = (await res.json()) as any;
       expect(data.metadata.costTier).toBe("medium"); // 默认值
       expect(data.metadata.performanceProfile).toBe("balanced"); // 默认值
     });
