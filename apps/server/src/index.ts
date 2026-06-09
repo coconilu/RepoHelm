@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { RepoHelmService, SqliteStateStore } from "@repohelm/core";
+import { RepoHelmService, SqliteStateStore, SqliteWikiStore } from "@repohelm/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -34,7 +34,11 @@ const knowledgeRootDir = process.env.REPOHELM_KNOWLEDGE_ROOT
     ? join(rootDir, ".repohelm", "knowledge")
     : join(stateRootDir, "knowledge");
 const port = Number(process.env.REPOHELM_PORT ?? 4300);
-const service = new RepoHelmService(new SqliteStateStore(stateRootDir), rootDir, { knowledgeRootDir, worktreeRootDir });
+const service = new RepoHelmService(new SqliteStateStore(stateRootDir), rootDir, {
+  knowledgeRootDir,
+  worktreeRootDir,
+  wikiStore: new SqliteWikiStore(stateRootDir)
+});
 
 const app = new Hono();
 
@@ -287,6 +291,24 @@ app.get("/api/product-readiness", async (context) => {
 app.get("/api/workspaces/:id/knowledge", async (context) => {
   const knowledge = await service.searchKnowledge(context.req.param("id"), context.req.query("q") ?? "");
   return context.json(knowledge);
+});
+
+app.get("/api/projects/:id/knowledge", async (context) => {
+  const view = await service.getProjectKnowledge(context.req.param("id"));
+  return context.json(view);
+});
+
+app.post("/api/projects/:id/knowledge/sync", async (context) => {
+  const view = await service.syncProjectKnowledge(context.req.param("id"));
+  return context.json(view);
+});
+
+const knowledgeBranchSchema = z.object({ knowledgeBranch: z.string().min(1) });
+
+app.patch("/api/projects/:id/knowledge", async (context) => {
+  const input = knowledgeBranchSchema.parse(await context.req.json());
+  const project = await service.setProjectKnowledgeBranch(context.req.param("id"), input.knowledgeBranch);
+  return context.json(project);
 });
 
 app.get("/api/worktrees", async (context) => {
