@@ -9,4 +9,5 @@ export * from "./providers.js";
 export * from "./quest-workspace.js";
 export * from "./store.js";
 export * from "./vector.js";
+export * from "./wiki-store.js";
 export * from "./types.js";
