@@ -46,7 +46,8 @@ It composes specialized collaborators, all in `packages/core/src`:
 - `llm.ts` — OpenAI-compatible chat/tool-call client driven by a **ModelKit** (resolves baseUrl/model/apiKey).
 - `orchestrator.ts` — `SubAgentOrchestrator`: runs an entry sub-agent in a tool-calling loop (`MAX_TOOL_LOOP_ITERATIONS`), delegating to other sub-agents via the `delegate` tool (`tools/delegate.ts`).
 - `planning.ts` — generates the orchestration plan that the user approves/rejects before a Quest runs.
-- `knowledge.ts` / `quest-workspace.ts` — knowledge as Markdown files (`.repohelm/knowledge/`) + SQLite metadata; per-quest workspace scaffolding.
+- `knowledge.ts` / `quest-workspace.ts` — per-quest workspace scaffolding + the per-repo Markdown writer (`writeWikiPage`).
+- `repo-wiki.ts` / `wiki-store.ts` / `vector.ts` — repo-bound knowledge base. Each Project owns 6 structured wiki pages (`overview/architecture/modules/key-flows/conventions/decisions`) under `.repohelm/knowledge/<projectId>/` (Markdown = source of truth) plus chunk embeddings. `RepoWikiManager` runs **bootstrap** (full index) / **incremental** (diff `lastIndexedSha..HEAD` on the tracked branch → LLM rewrites only affected pages, appends a `decisions` entry) / **search** (embed query → cosine top-k, keyword fallback when no embedding ModelKit). `WikiStore` persists pages + `float[]` vectors in separate `wiki_pages`/`wiki_embeddings` SQLite tables (same `state.sqlite`, WAL). The knowledge panel lazily detects new commits and offers an update; service methods `getProjectKnowledge`/`syncProjectKnowledge`/`setProjectKnowledgeBranch`/`searchProjectKnowledge`. Indexing needs a BYOK chat ModelKit; vector retrieval needs `engine.embeddingModelKitId`. `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns canned model output for tests/e2e.
 - `types.ts` — single source of truth for all domain types; `index.ts` re-exports everything.
 
 ### Engine config: two execution modes

@@ -35,7 +35,7 @@ Playwright config clears all proxy env vars (`NO_PROXY`, `HTTP_PROXY`, etc.) to 
 - Server: Hono + Zod + tsx (dev) / tsc (build)
 - Web: React 19, Tailwind CSS 4, Radix UI, Motion, cmdk, lucide-react
 - State: SQLite (`.repohelm/state.sqlite`) with auto-migration from legacy JSON
-- Knowledge: Markdown files in `.repohelm/knowledge/` + SQLite metadata
+- Knowledge: repo-bound Repo Wiki. Each Project owns 6 Markdown wiki pages under `.repohelm/knowledge/<projectId>/` (overview/architecture/modules/key-flows/conventions/decisions; Markdown = source of truth) plus chunk embeddings in `wiki_pages`/`wiki_embeddings` tables (same sqlite file, WAL). Opening the knowledge panel lazily compares the tracked branch HEAD to `lastIndexedSha`; new commits offer an incremental update. Indexing needs a BYOK chat ModelKit; vector retrieval needs `engine.embeddingModelKitId` (else keyword fallback). `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns canned model output for e2e.
 
 ## Commit Style
 
