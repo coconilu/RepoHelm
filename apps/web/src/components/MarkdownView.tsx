@@ -8,7 +8,7 @@ export function MarkdownView({ body, theme }: { body: string; theme: "light" | "
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ className, children, ...props }) {
+          code({ className, children, node: _node, ...props }) {
             const text = String(children ?? "").replace(/\n$/, "");
             if (/\blanguage-mermaid\b/.test(className ?? "")) {
               return <MermaidDiagram code={text} theme={theme} />;

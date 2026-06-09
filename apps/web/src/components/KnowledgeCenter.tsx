@@ -307,24 +307,26 @@ export function KnowledgeCenter({
             </>
           )
         ) : selectedMemory ? (
-          <div className="knowledge-content-body">
+          <>
             <header className="knowledge-content-head">
               <div className="knowledge-content-meta">
                 <strong>{selectedMemory.title}</strong>
                 <span className="muted">{new Date(selectedMemory.updatedAt).toLocaleString()}</span>
               </div>
             </header>
-            <MarkdownView body={selectedMemory.body} theme={theme} />
-            {selectedMemory.tags.length > 0 ? (
-              <div className="knowledge-tags">
-                {selectedMemory.tags.map((tag) => (
-                  <span className="knowledge-tag" key={tag}>
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
+            <div className="knowledge-content-body">
+              <MarkdownView body={selectedMemory.body} theme={theme} />
+              {selectedMemory.tags.length > 0 ? (
+                <div className="knowledge-tags">
+                  {selectedMemory.tags.map((tag) => (
+                    <span className="knowledge-tag" key={tag}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </>
         ) : (
           <div className="knowledge-placeholder">选择左侧的记忆条目查看。</div>
         )}
