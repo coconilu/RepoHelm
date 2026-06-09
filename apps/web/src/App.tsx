@@ -43,7 +43,6 @@ import {
   ModelKit,
   OrchestrationPlan,
   Project,
-  ProjectKnowledgeView,
   ProductReadiness,
   ProviderId,
   Quest,
@@ -58,6 +57,7 @@ import {
 import { motion } from "motion/react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Select } from "./components/Select";
+import { KnowledgeCenter } from "./components/KnowledgeCenter";
 
 const statusLabel: Record<string, string> = {
   draft: "草稿",
@@ -590,6 +590,7 @@ export function App() {
           onCreateWorkspace={() => setWorkspaceCreateOpen(true)}
           onKnowledgeOpen={() => setKnowledgeOpen(true)}
           onNewQuest={(workspaceId) => {
+            setKnowledgeOpen(false);
             setSelectedWorkspaceId(workspaceId);
             setSelectedQuestId("");
             setDraftWorkspaceId(workspaceId);
@@ -598,11 +599,13 @@ export function App() {
             setInspectorTab("spec");
           }}
           onSelectQuest={(questId) => {
+            setKnowledgeOpen(false);
             setSelectedQuestId(questId);
             setDraftWorkspaceId("");
             setInspectorTab("spec");
           }}
           onSelectWorkspace={(workspaceId) => {
+            setKnowledgeOpen(false);
             setSelectedWorkspaceId(workspaceId);
             setSelectedQuestId("");
             setDraftWorkspaceId("");
@@ -621,54 +624,65 @@ export function App() {
           onPointerDown={(event) => startColumnResize("sidebar", event)}
           role="separator"
         />
-        <QuestStage
-          agentBackendId={agentBackendId}
-          agentBackends={agentBackends}
-          busy={busy}
-          entrySubAgents={entrySubAgents}
-          events={questEvents}
-          pendingAction={pendingAction}
-          pendingRequirement={pendingRequirement}
-          projects={projects}
-          quest={selectedQuest}
-          questRequirement={questRequirement}
-          selectedEntrySubAgentId={selectedEntrySubAgentId}
-          workspace={workspace}
-          onApprovePlan={approvePlan}
-          onEntrySubAgentChange={setSelectedEntrySubAgentId}
-          onCreateQuest={createQuest}
-          onDeliverQuest={deliverQuest}
-          onRejectPlan={rejectPlan}
-          onRequirementChange={setQuestRequirement}
-        />
-        <div
-          aria-label="调整右侧栏宽度"
-          className="resize-handle resize-handle-right"
-          onPointerDown={(event) => startColumnResize("inspector", event)}
-          role="separator"
-        />
-        <Inspector
-          auditLog={state.auditLog}
-          busy={busy}
-          capabilities={state.capabilities}
-          changedFiles={changedFiles}
-          events={questEvents}
-          projects={projects}
-          productReadiness={productReadiness}
-          quest={selectedQuest}
-          securityPolicy={state.securityPolicy}
-          selectedChangedFile={selectedChangedFile}
-          tab={inspectorTab}
-          onAcceptCapability={acceptCapability}
-          onApprovePlan={approvePlan}
-          onDismissCapability={dismissCapability}
-          onRejectPlan={rejectPlan}
-          onFileSelect={(file) => {
-            setSelectedChangedFileKey(changedFileKey(file));
-            setInspectorTab("diff");
-          }}
-          onTabChange={setInspectorTab}
-        />
+        {knowledgeOpen ? (
+          <KnowledgeCenter
+            projects={state.projects}
+            knowledge={knowledge}
+            theme={theme}
+            onClose={() => setKnowledgeOpen(false)}
+          />
+        ) : (
+          <>
+            <QuestStage
+              agentBackendId={agentBackendId}
+              agentBackends={agentBackends}
+              busy={busy}
+              entrySubAgents={entrySubAgents}
+              events={questEvents}
+              pendingAction={pendingAction}
+              pendingRequirement={pendingRequirement}
+              projects={projects}
+              quest={selectedQuest}
+              questRequirement={questRequirement}
+              selectedEntrySubAgentId={selectedEntrySubAgentId}
+              workspace={workspace}
+              onApprovePlan={approvePlan}
+              onEntrySubAgentChange={setSelectedEntrySubAgentId}
+              onCreateQuest={createQuest}
+              onDeliverQuest={deliverQuest}
+              onRejectPlan={rejectPlan}
+              onRequirementChange={setQuestRequirement}
+            />
+            <div
+              aria-label="调整右侧栏宽度"
+              className="resize-handle resize-handle-right"
+              onPointerDown={(event) => startColumnResize("inspector", event)}
+              role="separator"
+            />
+            <Inspector
+              auditLog={state.auditLog}
+              busy={busy}
+              capabilities={state.capabilities}
+              changedFiles={changedFiles}
+              events={questEvents}
+              projects={projects}
+              productReadiness={productReadiness}
+              quest={selectedQuest}
+              securityPolicy={state.securityPolicy}
+              selectedChangedFile={selectedChangedFile}
+              tab={inspectorTab}
+              onAcceptCapability={acceptCapability}
+              onApprovePlan={approvePlan}
+              onDismissCapability={dismissCapability}
+              onRejectPlan={rejectPlan}
+              onFileSelect={(file) => {
+                setSelectedChangedFileKey(changedFileKey(file));
+                setInspectorTab("diff");
+              }}
+              onTabChange={setInspectorTab}
+            />
+          </>
+        )}
       </section>
 
       {workspaceCreateOpen ? (
@@ -712,13 +726,6 @@ export function App() {
           onLinkProject={linkProject}
           onSaveWorkspace={saveWorkspaceConfig}
           onUnlinkProject={unlinkProject}
-        />
-      ) : null}
-
-      {knowledgeOpen ? (
-        <KnowledgeDialog
-          projects={state?.projects ?? []}
-          onClose={() => setKnowledgeOpen(false)}
         />
       ) : null}
 
@@ -3058,128 +3065,6 @@ function ProjectFields({
         />
         <span className="field-hint">默认分支会作为 worktree 和知识库的 base。</span>
       </label>
-    </div>
-  );
-}
-
-function KnowledgeDialog({
-  projects,
-  onClose
-}: {
-  projects: Project[];
-  onClose: () => void;
-}) {
-  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? "");
-  const [view, setView] = useState<ProjectKnowledgeView | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-
-  const loadView = useCallback(async (projectId: string) => {
-    if (!projectId) return;
-    setLoading(true);
-    try {
-      setView(await api.getProjectKnowledge(projectId));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (selectedProjectId) {
-      loadView(selectedProjectId);
-    }
-  }, [selectedProjectId, loadView]);
-
-  async function handleSync() {
-    if (!selectedProjectId) return;
-    setSyncing(true);
-    try {
-      setView(await api.syncProjectKnowledge(selectedProjectId));
-    } finally {
-      setSyncing(false);
-    }
-  }
-
-  function getSyncLabel() {
-    if (syncing) return "索引中…";
-    if (!view) return "建立知识库";
-    if (view.status === "empty") return "建立知识库";
-    if (view.status === "stale" && view.pendingCommits > 0)
-      return `有 ${view.pendingCommits} 个新提交，更新知识库`;
-    return "重新索引";
-  }
-
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section aria-labelledby="knowledge-title" className="modal-panel knowledge-modal" role="dialog">
-        <header className="modal-header">
-          <div>
-            <p className="eyebrow">Knowledge Center</p>
-            <h2 id="knowledge-title">知识中心</h2>
-          </div>
-          <button aria-label="关闭知识中心" className="icon-button" onClick={onClose} type="button">
-            <X size={17} />
-          </button>
-        </header>
-        <div className="modal-body">
-          {projects.length === 0 ? (
-            <p className="muted">请先在全局设置里绑定仓库。</p>
-          ) : (
-            <>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <select
-                  aria-label="选择仓库"
-                  value={selectedProjectId}
-                  onChange={(e) => setSelectedProjectId(e.target.value)}
-                  style={{ flex: 1 }}
-                >
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <button
-                  className="secondary-action"
-                  disabled={syncing || loading || !selectedProjectId}
-                  onClick={handleSync}
-                  type="button"
-                >
-                  {getSyncLabel()}
-                </button>
-              </div>
-              {loading ? (
-                <p className="muted">加载中…</p>
-              ) : view ? (
-                <>
-                  <div className="repo-knowledge-status">
-                    <span className="muted">分支：<strong>{view.knowledgeBranch}</strong></span>
-                    <span className="muted">状态：<strong>{view.status}</strong></span>
-                    {view.lastIndexedAt ? (
-                      <span className="muted">
-                        最后索引：{new Date(view.lastIndexedAt).toLocaleString()}
-                      </span>
-                    ) : null}
-                  </div>
-                  {view.error ? (
-                    <p className="repo-knowledge-error">{view.error}</p>
-                  ) : null}
-                  {view.pages.length === 0 ? (
-                    <p className="muted">还没有知识库内容，点击上面的按钮建立。</p>
-                  ) : (
-                    <div className="repo-knowledge-pages">
-                      {view.pages.map((page) => (
-                        <div key={page.id} className="repo-knowledge-page">
-                          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{page.title}</h3>
-                          <pre className="repo-knowledge-body">{page.body}</pre>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : null}
-            </>
-          )}
-        </div>
-      </section>
     </div>
   );
 }
