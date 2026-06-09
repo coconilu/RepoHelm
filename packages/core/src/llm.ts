@@ -117,3 +117,35 @@ export async function callLlmWithModelKit(options: LlmCallOptions): Promise<LlmC
       : undefined
   };
 }
+
+/**
+ * OpenAI-compatible embeddings call. Returns one vector per input, ordered to match `texts`.
+ */
+export async function embedWithModelKit(
+  modelKit: ModelKit,
+  texts: string[],
+  signal?: AbortSignal
+): Promise<number[][]> {
+  if (texts.length === 0) {
+    return [];
+  }
+  const { apiKey, baseUrl, model } = resolveByok(modelKit);
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/embeddings`;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, input: texts }),
+    signal
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Embeddings call to ${endpoint} failed (${response.status}): ${response.statusText} ${text}`);
+  }
+
+  const payload = (await response.json()) as { data?: Array<{ index?: number; embedding: number[] }> };
+  const data = payload.data ?? [];
+  const ordered = [...data].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  return ordered.map((d) => d.embedding);
+}
