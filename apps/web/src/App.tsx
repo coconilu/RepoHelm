@@ -23,7 +23,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AgentBackendId,
   AgentBackendInfo,
@@ -43,6 +43,7 @@ import {
   ModelKit,
   OrchestrationPlan,
   Project,
+  ProjectKnowledgeView,
   ProductReadiness,
   ProviderId,
   Quest,
@@ -716,8 +717,7 @@ export function App() {
 
       {knowledgeOpen ? (
         <KnowledgeDialog
-          knowledge={knowledge}
-          workspace={workspace}
+          projects={(state?.projects ?? []).filter((p) => workspace?.projectIds.includes(p.id))}
           onClose={() => setKnowledgeOpen(false)}
         />
       ) : null}
@@ -3047,30 +3047,50 @@ function ProjectFields({
 }
 
 function KnowledgeDialog({
-  knowledge,
-  workspace,
+  projects,
   onClose
 }: {
-  knowledge: KnowledgeItem[];
-  workspace: Workspace;
+  projects: Project[];
   onClose: () => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState(knowledge);
-  const [searching, setSearching] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? "");
+  const [view, setView] = useState<ProjectKnowledgeView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const loadView = useCallback(async (projectId: string) => {
+    if (!projectId) return;
+    setLoading(true);
+    try {
+      setView(await api.getProjectKnowledge(projectId));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    setResults(knowledge);
-  }, [knowledge]);
-
-  async function submitSearch(event: FormEvent) {
-    event.preventDefault();
-    setSearching(true);
-    try {
-      setResults(await api.searchKnowledge(workspace.id, query));
-    } finally {
-      setSearching(false);
+    if (selectedProjectId) {
+      loadView(selectedProjectId);
     }
+  }, [selectedProjectId, loadView]);
+
+  async function handleSync() {
+    if (!selectedProjectId) return;
+    setSyncing(true);
+    try {
+      setView(await api.syncProjectKnowledge(selectedProjectId));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function getSyncLabel() {
+    if (syncing) return "索引中…";
+    if (!view) return "建立知识库";
+    if (view.status === "empty") return "建立知识库";
+    if (view.status === "stale" && view.pendingCommits > 0)
+      return `有 ${view.pendingCommits} 个新提交，更新知识库`;
+    return "重新索引";
   }
 
   return (
@@ -3086,18 +3106,62 @@ function KnowledgeDialog({
           </button>
         </header>
         <div className="modal-body">
-          <form className="knowledge-search" onSubmit={submitSearch}>
-            <input
-              aria-label="搜索知识"
-              placeholder="搜索 memory、project summary 或 architecture"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            <button className="secondary-action" disabled={searching} type="submit">
-              搜索
-            </button>
-          </form>
-          <KnowledgePanel knowledge={results} />
+          {projects.length === 0 ? (
+            <p className="muted">请先在全局设置里绑定仓库。</p>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <select
+                  aria-label="选择仓库"
+                  value={selectedProjectId}
+                  onChange={(e) => setSelectedProjectId(e.target.value)}
+                  style={{ flex: 1 }}
+                >
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <button
+                  className="secondary-action"
+                  disabled={syncing || loading || !selectedProjectId}
+                  onClick={handleSync}
+                  type="button"
+                >
+                  {getSyncLabel()}
+                </button>
+              </div>
+              {loading ? (
+                <p className="muted">加载中…</p>
+              ) : view ? (
+                <>
+                  <div className="repo-knowledge-status">
+                    <span className="muted">分支：<strong>{view.knowledgeBranch}</strong></span>
+                    <span className="muted">状态：<strong>{view.status}</strong></span>
+                    {view.lastIndexedAt ? (
+                      <span className="muted">
+                        最后索引：{new Date(view.lastIndexedAt).toLocaleString()}
+                      </span>
+                    ) : null}
+                  </div>
+                  {view.error ? (
+                    <p className="repo-knowledge-error">{view.error}</p>
+                  ) : null}
+                  {view.pages.length === 0 ? (
+                    <p className="muted">还没有知识库内容，点击上面的按钮建立。</p>
+                  ) : (
+                    <div className="repo-knowledge-pages">
+                      {view.pages.map((page) => (
+                        <div key={page.id} className="repo-knowledge-page">
+                          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>{page.title}</h3>
+                          <pre className="repo-knowledge-body">{page.body}</pre>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </>
+          )}
         </div>
       </section>
     </div>

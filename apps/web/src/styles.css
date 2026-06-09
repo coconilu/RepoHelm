@@ -2925,3 +2925,40 @@ code {
 .spin {
   animation: spin 1s linear infinite;
 }
+
+.repo-knowledge-status {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+
+.repo-knowledge-pages {
+  display: grid;
+  gap: 16px;
+}
+
+.repo-knowledge-page {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+}
+
+.repo-knowledge-body {
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin: 8px 0 0;
+  overflow-x: auto;
+}
+
+.repo-knowledge-error {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
