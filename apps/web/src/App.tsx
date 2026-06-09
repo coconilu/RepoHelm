@@ -717,7 +717,7 @@ export function App() {
 
       {knowledgeOpen ? (
         <KnowledgeDialog
-          projects={(state?.projects ?? []).filter((p) => workspace?.projectIds.includes(p.id))}
+          projects={state?.projects ?? []}
           onClose={() => setKnowledgeOpen(false)}
         />
       ) : null}
