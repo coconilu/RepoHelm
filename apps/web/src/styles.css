@@ -2444,6 +2444,22 @@ code {
 }
 
 /* ModelKit styles */
+.modelkit-embedding-field {
+  margin-bottom: 16px;
+}
+
+.modelkit-embedding-field label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modelkit-embedding-field label > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .modelkit-list {
   display: flex;
   flex-direction: column;

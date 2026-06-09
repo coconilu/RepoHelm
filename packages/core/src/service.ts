@@ -630,6 +630,10 @@ export class RepoHelmService {
         cliModels: input.cliModels ? { ...state.engine.cliModels, ...input.cliModels } : state.engine.cliModels,
         byokProviders,
         activeByokProviderId: input.activeByokProviderId ?? state.engine.activeByokProviderId,
+        embeddingModelKitId:
+          input.embeddingModelKitId === undefined
+            ? state.engine.embeddingModelKitId
+            : input.embeddingModelKitId || undefined,
         updatedAt: now()
       };
       return { newState: { ...state, engine }, result: engine };

@@ -316,6 +316,7 @@ export interface EngineConfig {
   byokProviders: Record<string, ByokConfig>;
   activeByokProviderId: string;
   modelKits: Record<string, ModelKit>; // 新增
+  embeddingModelKitId?: string;
   updatedAt: string;
 }
 

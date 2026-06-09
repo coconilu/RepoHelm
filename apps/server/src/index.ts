@@ -89,7 +89,8 @@ const engineSchema = z.object({
       })
     )
     .optional(),
-  activeByokProviderId: z.string().optional()
+  activeByokProviderId: z.string().optional(),
+  embeddingModelKitId: z.string().optional()
 });
 
 const providerModelsSchema = z.object({

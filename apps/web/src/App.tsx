@@ -2477,7 +2477,23 @@ function AppSettingsDialog({
                 <h3>ModelKits ({modelKits.length})</h3>
               </div>
               <p className="muted">管理已保存的模型配置,方便在不同场景下快速切换。</p>
-                        
+
+              <div className="modelkit-embedding-field">
+                <label>
+                  <span>Embedding 模型（向量检索）</span>
+                  <select
+                    value={engine?.embeddingModelKitId ?? ""}
+                    onChange={(e) => patchEngine({ embeddingModelKitId: e.target.value })}
+                  >
+                    <option value="">未启用（关键词检索）</option>
+                    {modelKits.filter((k) => k.type === "byok").map((kit) => (
+                      <option key={kit.id} value={kit.id}>{kit.name || kit.model}</option>
+                    ))}
+                  </select>
+                  <span className="field-hint">未配置时知识库使用关键词检索。</span>
+                </label>
+              </div>
+
               {modelKits.length === 0 ? (
                 <p className="muted">暂无 ModelKits。在“模型管理”标签页中测试通过后,可以保存为 ModelKit。</p>
               ) : (
