@@ -52,6 +52,8 @@ export interface Project {
   defaultBranch: string;
   validationCommand: string;
   health: ProjectHealth;
+  knowledgeBranch?: string;          // KB truth branch; defaults to defaultBranch
+  knowledge?: ProjectKnowledgeMeta;  // persisted index metadata
   createdAt: string;
   updatedAt: string;
 }
@@ -233,6 +235,67 @@ export interface KnowledgeItem {
   updatedAt: string;
 }
 
+export type RepoWikiSlug =
+  | "overview"
+  | "architecture"
+  | "modules"
+  | "key-flows"
+  | "conventions"
+  | "decisions";
+
+export const REPO_WIKI_SLUGS: RepoWikiSlug[] = [
+  "overview",
+  "architecture",
+  "modules",
+  "key-flows",
+  "conventions",
+  "decisions"
+];
+
+export interface RepoWikiPage {
+  id: string;            // wiki_<projectId>_<slug>
+  projectId: string;
+  slug: RepoWikiSlug;
+  title: string;
+  body: string;          // Markdown, source of truth
+  sourcePath: string;    // .repohelm/knowledge/<projectId>/<slug>.md
+  updatedAtSha?: string;
+  updatedAt: string;
+}
+
+export interface WikiChunkEmbedding {
+  id: string;            // chunk_<pageId>_<idx>
+  projectId: string;
+  pageId: string;
+  slug: RepoWikiSlug;
+  chunkText: string;
+  vector: number[];
+  model: string;         // embedding model that produced the vector
+  createdAt: string;
+}
+
+export type ProjectKnowledgeStatus = "empty" | "indexing" | "ready" | "stale" | "error";
+
+export interface ProjectKnowledgeMeta {
+  lastIndexedSha?: string;
+  lastIndexedAt?: string;
+  status: ProjectKnowledgeStatus;
+  error?: string;
+}
+
+/** Read model returned to the UI: pages + freshly computed staleness. */
+export interface ProjectKnowledgeView {
+  projectId: string;
+  knowledgeBranch: string;
+  status: ProjectKnowledgeStatus;
+  pendingCommits: number;   // commits in lastIndexedSha..HEAD; 0 when fresh/unknown
+  head?: string;
+  lastIndexedSha?: string;
+  lastIndexedAt?: string;
+  error?: string;
+  pages: RepoWikiPage[];
+}
+
 export interface CliModelOption {
   id: string;
   label: string;
@@ -353,6 +416,7 @@ export interface EngineConfig {
   byokProviders: Record<string, ByokConfig>;
   activeByokProviderId: string;
   modelKits: Record<string, ModelKit>; // ModelKit 集合，按 ID 索引
+  embeddingModelKitId?: string;      // BYOK ModelKit used for /embeddings; unset => keyword fallback
   updatedAt: string;
 }
 
@@ -362,6 +426,7 @@ export interface UpdateEngineInput {
   cliModels?: Record<string, string>;
   byokProviders?: Record<string, Partial<ByokConfig>>;
   activeByokProviderId?: string;
+  embeddingModelKitId?: string;
 }
 
 export interface RepoHelmState {
