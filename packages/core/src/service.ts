@@ -1,14 +1,17 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { AgentBackendRegistry } from "./agent.js";
 import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
+import { embedWithModelKit, callLlmWithModelKit } from "./llm.js";
 import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
 import { ProviderRegistry } from "./providers.js";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
+import { RepoWikiManager, type RepoWikiDeps, type KeyFile } from "./repo-wiki.js";
 import { seedBuiltInSubAgents } from "./seed-agents.js";
+import { InMemoryWikiStore, type WikiStore } from "./wiki-store.js";
 import type {
   AgentEvent,
   AuditLogEntry,
@@ -31,6 +34,8 @@ import type {
   PlanApproval,
   Project,
   ProjectHealth,
+  ProjectKnowledgeMeta,
+  ProjectKnowledgeView,
   ProductReadiness,
   ProviderInfo,
   ProviderModelsResult,
@@ -38,6 +43,7 @@ import type {
   QuestSpec,
   QuestStatus,
   RepoHelmState,
+  RepoWikiPage,
   SecurityPolicy,
   SubAgent,
   TestModelInput,
@@ -75,6 +81,8 @@ export class RepoHelmService {
   private readonly worktreeRootDir: string;
   private readonly knowledgeFileStore: KnowledgeFileStore;
   private readonly questWorkspaceManager: QuestWorkspaceManager;
+  private readonly wikiStore: WikiStore;
+  private readonly repoWiki: RepoWikiManager;
 
   /** Serializes read-modify-write cycles to prevent concurrent writes from clobbering each other. */
   private _mutationQueue: Promise<void> = Promise.resolve();
@@ -82,15 +90,208 @@ export class RepoHelmService {
   constructor(
     private readonly store: StateStore,
     private readonly rootDir: string,
-    options: { knowledgeRootDir?: string; worktreeRootDir?: string } = {}
+    options: { knowledgeRootDir?: string; worktreeRootDir?: string; wikiStore?: WikiStore } = {}
   ) {
     this.worktreeRootDir = options.worktreeRootDir ?? join(rootDir, ".repohelm", "worktrees");
     this.knowledgeFileStore = new KnowledgeFileStore(options.knowledgeRootDir ?? join(rootDir, ".repohelm", "knowledge"));
     this.questWorkspaceManager = new QuestWorkspaceManager(rootDir);
+    this.wikiStore = options.wikiStore ?? new InMemoryWikiStore();
+    this.repoWiki = new RepoWikiManager(this.wikiStore, this.buildWikiDeps(), (page) =>
+      this.knowledgeFileStore.writeWikiPage(page)
+    );
   }
 
   getRootDir(): string {
     return this.rootDir;
+  }
+
+  private buildWikiDeps(): RepoWikiDeps {
+    return {
+      resolveHead: (repoPath, ref) => this.gitWorktreeManager.resolveRef(repoPath, ref),
+      countNewCommits: (repoPath, from, ref) => this.gitWorktreeManager.countCommitsBetween(repoPath, from, ref),
+      listKeyFiles: (repoPath, ref) => this.collectKeyFiles(repoPath, ref),
+      collectChanges: (repoPath, from, ref) => this.gitWorktreeManager.collectChangesBetween(repoPath, from, ref),
+      chatJson: (prompt) => this.chatJson(prompt),
+      embed: (texts) => this.embedTexts(texts)
+    };
+  }
+
+  private async resolveChatModelKit(): Promise<ModelKit> {
+    const state = await this.getState();
+    const kits = Object.values(state.engine.modelKits ?? {});
+    const kit = kits.find((k) => k.type === "byok");
+    if (!kit) {
+      throw new Error("没有可用于知识库生成的 BYOK ModelKit。请在引擎设置里配置。");
+    }
+    return kit;
+  }
+
+  private async resolveEmbeddingModelKit(): Promise<ModelKit | undefined> {
+    const state = await this.getState();
+    const id = state.engine.embeddingModelKitId;
+    if (!id) return undefined;
+    return state.engine.modelKits?.[id];
+  }
+
+  private async chatJson(prompt: string): Promise<any> {
+    if (process.env.REPOHELM_FAKE_MODELS === "1") {
+      return JSON.parse(process.env.REPOHELM_FAKE_CHAT_JSON ?? "{}");
+    }
+    const kit = await this.resolveChatModelKit();
+    const result = await callLlmWithModelKit({
+      modelKit: kit,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2
+    });
+    const text = result.content.trim().replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+    return JSON.parse(text);
+  }
+
+  private async embedTexts(texts: string[]): Promise<number[][]> {
+    if (process.env.REPOHELM_FAKE_MODELS === "1") {
+      return texts.map((_, i) => [Math.sin(i + 1), Math.cos(i + 1)]);
+    }
+    const kit = await this.resolveEmbeddingModelKit();
+    if (!kit) {
+      throw new Error("EMBEDDING_DISABLED");
+    }
+    return embedWithModelKit(kit, texts);
+  }
+
+  private async collectKeyFiles(repoPath: string, ref: string): Promise<KeyFile[]> {
+    const KEY = ["README.md", "package.json", "Cargo.toml", "pyproject.toml", "go.mod", "AGENTS.md", "CLAUDE.md"];
+    const tracked = await this.gitWorktreeManager.listTrackedFiles(repoPath, ref);
+    const picks = tracked.filter((f) => KEY.includes(f.split("/").pop() ?? "")).slice(0, 12);
+    const files: KeyFile[] = [];
+    for (const path of picks) {
+      try {
+        const content = await readFile(join(repoPath, path), "utf8");
+        files.push({ path, content });
+      } catch {
+        // skip unreadable files
+      }
+    }
+    if (files.length === 0) {
+      files.push({ path: "(file tree)", content: tracked.slice(0, 200).join("\n") });
+    }
+    return files;
+  }
+
+  async getProjectKnowledge(projectId: string): Promise<ProjectKnowledgeView> {
+    const state = await this.getState();
+    const project = state.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found");
+    const branch = project.knowledgeBranch ?? project.defaultBranch;
+    const meta = project.knowledge;
+    const pages = await this.wikiStore.listPages(projectId);
+
+    const base: ProjectKnowledgeView = {
+      projectId,
+      knowledgeBranch: branch,
+      status: meta?.status ?? "empty",
+      pendingCommits: 0,
+      lastIndexedSha: meta?.lastIndexedSha,
+      lastIndexedAt: meta?.lastIndexedAt,
+      error: meta?.error,
+      pages
+    };
+
+    if (!meta?.lastIndexedSha) {
+      return { ...base, status: pages.length > 0 ? base.status : "empty" };
+    }
+    try {
+      const head = await this.gitWorktreeManager.resolveRef(project.path, branch);
+      base.head = head;
+      if (head !== meta.lastIndexedSha) {
+        base.pendingCommits = await this.gitWorktreeManager.countCommitsBetween(project.path, meta.lastIndexedSha, branch);
+        base.status = base.status === "indexing" ? "indexing" : "stale";
+      } else {
+        base.status = "ready";
+      }
+    } catch {
+      // repo unreachable / not git: keep persisted status, no staleness
+    }
+    return base;
+  }
+
+  async syncProjectKnowledge(projectId: string): Promise<ProjectKnowledgeView> {
+    const project = (await this.getState()).projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found");
+    const branch = project.knowledgeBranch ?? project.defaultBranch;
+    await this.patchProjectKnowledgeMeta(projectId, { status: "indexing", error: undefined });
+    try {
+      const from = project.knowledge?.lastIndexedSha;
+      const result = from
+        ? await this.repoWiki.incremental(projectId, project.path, branch, from)
+        : await this.repoWiki.bootstrap(projectId, project.path, branch);
+      await this.patchProjectKnowledgeMeta(projectId, {
+        status: "ready",
+        lastIndexedSha: result.lastIndexedSha,
+        lastIndexedAt: result.lastIndexedAt,
+        error: undefined
+      });
+    } catch (error) {
+      await this.patchProjectKnowledgeMeta(projectId, {
+        status: "error",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return this.getProjectKnowledge(projectId);
+  }
+
+  async setProjectKnowledgeBranch(projectId: string, branch: string): Promise<Project> {
+    return this.mutateState(async (state) => {
+      const project = state.projects.find((p) => p.id === projectId);
+      if (!project) throw new Error("Project not found");
+      const updated: Project = { ...project, knowledgeBranch: branch, updatedAt: now() };
+      const projects = state.projects.map((p) => (p.id === projectId ? updated : p));
+      return { newState: { ...state, projects }, result: updated };
+    });
+  }
+
+  async searchProjectKnowledge(projectIds: string[], query: string): Promise<RepoWikiPage[]> {
+    if (projectIds.length === 0) return [];
+    try {
+      const hits = await this.repoWiki.search(projectIds, query, 6);
+      const pages = (await Promise.all(projectIds.map((pid) => this.wikiStore.listPages(pid)))).flat();
+      const byId = new Map(pages.map((p) => [p.id, p]));
+      const seen = new Set<string>();
+      const result: RepoWikiPage[] = [];
+      for (const hit of hits) {
+        if (seen.has(hit.pageId)) continue;
+        seen.add(hit.pageId);
+        const page = byId.get(hit.pageId);
+        if (page) result.push(page);
+      }
+      return result;
+    } catch {
+      const pages = (await Promise.all(projectIds.map((pid) => this.wikiStore.listPages(pid)))).flat();
+      return this.keywordSearchPages(pages, query).slice(0, 6);
+    }
+  }
+
+  private keywordSearchPages(pages: RepoWikiPage[], query: string): RepoWikiPage[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return pages;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return pages.filter((p) => {
+      const hay = `${p.title}\n${p.body}`.toLowerCase();
+      return tokens.some((t) => hay.includes(t));
+    });
+  }
+
+  private async patchProjectKnowledgeMeta(
+    projectId: string,
+    patch: Partial<ProjectKnowledgeMeta>
+  ): Promise<void> {
+    await this.mutateState(async (state) => {
+      const project = state.projects.find((p) => p.id === projectId);
+      if (!project) return { newState: state, result: undefined };
+      const knowledge: ProjectKnowledgeMeta = { status: "empty", ...project.knowledge, ...patch };
+      const updated: Project = { ...project, knowledge, updatedAt: now() };
+      const projects = state.projects.map((p) => (p.id === projectId ? updated : p));
+      return { newState: { ...state, projects }, result: undefined };
+    });
   }
 
   async resolveCliCommand(backendId: string): Promise<string | undefined> {
@@ -152,30 +353,11 @@ export class RepoHelmService {
       createdAt: timestamp,
       updatedAt: timestamp
     };
-    const architectureKnowledge: KnowledgeItem = {
-      id: "knowledge_architecture_seed",
-      workspaceId: workspace.id,
-      projectId: project.id,
-      type: "architecture",
-      title: "RepoHelm 产品方向",
-      body: "RepoHelm 聚焦 Quest 工作区：虚拟 workspace、多项目任务、Spec 驱动、worktree 隔离、知识库和多 Agent 编排。",
-      tags: ["architecture", "mvp"],
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-    const knowledge = [
-      {
-        ...architectureKnowledge,
-        sourcePath: await this.knowledgeFileStore.writeKnowledgeItem(architectureKnowledge)
-      },
-      await this.knowledgeFileStore.writeProjectSummary(project, timestamp)
-    ];
-
     const nextState: RepoHelmState = {
       ...state,
       workspaces: [workspace],
       projects: [project],
-      knowledge,
+      knowledge: [],
       capabilities: this.seedCapabilities(timestamp)
     };
     await this.store.write(nextState);
@@ -261,11 +443,9 @@ export class RepoHelmService {
       updatedAt: now()
     };
 
-    const projectSummary = await this.knowledgeFileStore.writeProjectSummary(project, now());
     await this.store.write({
       ...state,
-      projects: [project, ...state.projects],
-      knowledge: [projectSummary, ...state.knowledge]
+      projects: [project, ...state.projects]
     });
     return project;
   }
@@ -294,9 +474,7 @@ export class RepoHelmService {
       updatedAt: now()
     };
     const projects = state.projects.map((item) => (item.id === projectId ? updatedProject : item));
-    const projectSummary = await this.knowledgeFileStore.writeProjectSummary(updatedProject, now());
-    const knowledge = [projectSummary, ...state.knowledge.filter((item) => item.id !== projectSummary.id)];
-    await this.store.write({ ...state, projects, knowledge });
+    await this.store.write({ ...state, projects });
     return updatedProject;
   }
 
@@ -1004,7 +1182,10 @@ export class RepoHelmService {
         : this.inferAffectedProjectIds(state, workspace.projectIds, input.requirement);
     const timestamp = now();
     const questId = id("quest");
-    const relatedKnowledge = this.searchKnowledgeItems(state.knowledge, input.workspaceId, input.requirement).slice(0, 3);
+    const relatedPages = workspace
+      ? await this.searchProjectKnowledge(workspace.projectIds, input.requirement)
+      : [];
+    const relatedKnowledge = relatedPages.slice(0, 3);
     const spec = this.generateSpec(input.requirement, relatedKnowledge);
     const capabilityRecommendations = this.recommendCapabilities(state.capabilities, input.requirement, timestamp);
     const entrySubAgentId = input.entrySubAgentId ?? state.entrySubAgentId;
@@ -1714,7 +1895,7 @@ export class RepoHelmService {
     return this.updateCapabilityRecommendation(questId, capabilityId, "dismissed");
   }
 
-  private generateSpec(requirement: string, relatedKnowledge: KnowledgeItem[] = []): QuestSpec {
+  private generateSpec(requirement: string, relatedKnowledge: Array<{ title: string }> = []): QuestSpec {
     return {
       background:
         relatedKnowledge.length > 0

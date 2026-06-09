@@ -42,6 +42,19 @@ export class KnowledgeFileStore {
     };
   }
 
+  async writeWikiPage(page: {
+    projectId: string;
+    slug: string;
+    title: string;
+    body: string;
+  }): Promise<string> {
+    const dir = join(this.rootDir, page.projectId);
+    await mkdir(dir, { recursive: true });
+    const filePath = join(dir, `${page.slug}.md`);
+    await writeFile(filePath, `# ${page.title}\n\n${page.body}\n`, "utf8");
+    return filePath;
+  }
+
   private renderKnowledgeItem(item: KnowledgeItem) {
     return [
       "---",

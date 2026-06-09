@@ -40,14 +40,12 @@ describe("RepoHelmService", () => {
 
     expect(state.workspaces).toHaveLength(1);
     expect(state.projects).toHaveLength(1);
-    expect(state.knowledge).toHaveLength(2);
+    expect(state.knowledge).toHaveLength(0);
     expect(state.workspaces[0]?.projectIds).toEqual([state.projects[0]?.id]);
     expect(state.workspaces[0]?.worktreeRoot).toContain(join(rootDir, ".repohelm", "worktrees"));
     expect(state.projects[0]?.path).toBe(rootDir);
     expect(state.projects[0]?.validationCommand).toBe("pnpm test:all");
     expect(state.projects[0]?.health.status).toBe("unknown");
-    expect(state.knowledge.every((item) => item.sourcePath)).toBe(true);
-    await expect(access(state.knowledge[0]!.sourcePath!)).resolves.toBeUndefined();
     await expect(access(join(rootDir, ".repohelm", "state.sqlite"))).resolves.toBeUndefined();
     expect(persisted.workspaces[0]?.id).toBe(state.workspaces[0]?.id);
   });
@@ -321,10 +319,9 @@ describe("RepoHelmService", () => {
     expect(quest.affectedProjectIds).toEqual(workspace.projectIds);
     expect(quest.spec.userGoal).toContain("隔离 worktree");
     expect(quest.spec.acceptanceCriteria).toHaveLength(3);
-    expect(quest.spec.background).toContain("workspace 知识");
+    expect(quest.spec.background).toContain("Quest 工作流");
     expect(quest.capabilityRecommendations.length).toBeGreaterThan(0);
-    expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(5);
-    expect(await service.searchKnowledge(workspace.id, "RepoHelm")).not.toHaveLength(0);
+    expect(nextState.events.filter((event) => event.questId === quest.id)).toHaveLength(4);
   });
 
   it("recommends auditable capabilities and records manual acceptance", async () => {
