@@ -294,22 +294,37 @@ app.get("/api/workspaces/:id/knowledge", async (context) => {
   return context.json(knowledge);
 });
 
+const knowledgeErrorStatus = (error: unknown): 404 | 400 =>
+  error instanceof Error && error.message === "Project not found" ? 404 : 400;
+
 app.get("/api/projects/:id/knowledge", async (context) => {
-  const view = await service.getProjectKnowledge(context.req.param("id"));
-  return context.json(view);
+  try {
+    const view = await service.getProjectKnowledge(context.req.param("id"));
+    return context.json(view);
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message : String(error) }, knowledgeErrorStatus(error));
+  }
 });
 
 app.post("/api/projects/:id/knowledge/sync", async (context) => {
-  const view = await service.syncProjectKnowledge(context.req.param("id"));
-  return context.json(view);
+  try {
+    const view = await service.syncProjectKnowledge(context.req.param("id"));
+    return context.json(view);
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message : String(error) }, knowledgeErrorStatus(error));
+  }
 });
 
 const knowledgeBranchSchema = z.object({ knowledgeBranch: z.string().min(1) });
 
 app.patch("/api/projects/:id/knowledge", async (context) => {
-  const input = knowledgeBranchSchema.parse(await context.req.json());
-  const project = await service.setProjectKnowledgeBranch(context.req.param("id"), input.knowledgeBranch);
-  return context.json(project);
+  try {
+    const input = knowledgeBranchSchema.parse(await context.req.json());
+    const project = await service.setProjectKnowledgeBranch(context.req.param("id"), input.knowledgeBranch);
+    return context.json(project);
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message : String(error) }, knowledgeErrorStatus(error));
+  }
 });
 
 app.get("/api/worktrees", async (context) => {
