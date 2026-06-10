@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { setupSSE, formatSSE } from "./sse.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -815,6 +816,27 @@ app.get("/api/expert/session/:id/references", async (c) => {
   const session = await service.getExpertSession(c.req.param("id"));
   if (!session) return c.json({ error: "Not found" }, 404);
   return c.json({ references: { knowledge: session.research, preferences: [], failurePatterns: [] } });
+});
+
+// SSE stream
+app.get("/api/expert/session/:id/stream", async (c) => {
+  const sessionId = c.req.param("id");
+  const session = await service.getExpertSession(sessionId);
+  if (!session) return c.json({ error: "Not found" }, 404);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      // 发送初始连接确认
+      controller.enqueue(new TextEncoder().encode(formatSSE("connected", { sessionId })));
+      // 发送当前 session 状态
+      controller.enqueue(new TextEncoder().encode(formatSSE("session_update", { session })));
+      // TODO: 后续接入 ExpertOrchestrator 的事件订阅
+      // 当前先关闭连接
+      controller.close();
+    },
+  });
+
+  return setupSSE(c, stream);
 });
 
 app.get("/api/expert/session/:id/research", async (c) => {
