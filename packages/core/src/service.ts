@@ -5,8 +5,11 @@ import { AgentBackendRegistry } from "./agent.js";
 import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
-import { embedWithModelKit, callLlmWithModelKit } from "./llm.js";
+import { embedWithModelKit, callLlmWithModelKit, type LlmMessage } from "./llm.js";
 import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
+import { buildKnowledgeToolHandlers, knowledgeToolSpecs } from "./tools/knowledge.js";
+import { buildHabitsToolHandlers, habitsToolSpecs } from "./tools/habits.js";
+import { buildFailureToolHandlers, failureToolSpecs } from "./tools/failure.js";
 import { ProviderRegistry } from "./providers.js";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
 import { RepoWikiManager, type RepoWikiDeps, type KeyFile } from "./repo-wiki.js";
@@ -278,6 +281,40 @@ export class RepoHelmService {
       const hay = `${p.title}\n${p.body}`.toLowerCase();
       return tokens.some((t) => hay.includes(t));
     });
+  }
+
+  /**
+   * Write or update a single wiki page for a project.
+   * Creates the page if it doesn't exist, merges content if it does.
+   */
+  async writeWikiPage(
+    projectId: string,
+    input: { slug: string; title: string; body: string }
+  ): Promise<RepoWikiPage> {
+    const timestamp = now();
+    const pageId = `wiki_${projectId}_${input.slug}`;
+
+    // Also persist as markdown file; returns the source path
+    const sourcePath = await this.knowledgeFileStore.writeWikiPage({
+      projectId,
+      slug: input.slug,
+      title: input.title,
+      body: input.body
+    });
+
+    const page: RepoWikiPage = {
+      id: pageId,
+      projectId,
+      slug: input.slug as RepoWikiPage["slug"],
+      title: input.title,
+      body: input.body,
+      sourcePath,
+      updatedAt: timestamp
+    };
+
+    await this.wikiStore.upsertPages([page]);
+
+    return page;
   }
 
   /**
@@ -792,6 +829,7 @@ export class RepoHelmService {
         capabilities: input.capabilities || [],
         modelKitId: input.modelKitId,
         mode: input.mode,
+        systemRole: input.systemRole,
         permissions: input.permissions || { allowedTools: [], deniedTools: [] },
         promptTemplate: input.promptTemplate,
         metadata: {
@@ -836,6 +874,7 @@ export class RepoHelmService {
         capabilities: input.capabilities ?? existingAgent.capabilities,
         modelKitId: input.modelKitId ?? existingAgent.modelKitId,
         mode: input.mode ?? existingAgent.mode,
+        systemRole: input.systemRole !== undefined ? input.systemRole : existingAgent.systemRole,
         permissions: input.permissions ?? existingAgent.permissions,
         promptTemplate: input.promptTemplate ?? existingAgent.promptTemplate,
         metadata: {
@@ -915,11 +954,279 @@ export class RepoHelmService {
   }
 
   /**
+   * 直接调用系统 agent（不通过 Quest 编排器）。
+   * 系统 agent 在独立的 tool-calling loop 中运行，使用与其 systemRole 匹配的工具集。
+   */
+  async invokeSystemAgent(
+    agentId: string,
+    input: { task: string; context?: Record<string, unknown> }
+  ): Promise<{ content: string }> {
+    const agent = (await this.getState()).subAgents[agentId];
+    if (!agent) {
+      throw new Error(`System agent ${agentId} not found`);
+    }
+    if (agent.mode !== "system") {
+      throw new Error(`Agent ${agentId} is not a system agent (mode=${agent.mode})`);
+    }
+    const modelKit = await this.getModelKit(agent.modelKitId);
+    if (!modelKit) {
+      throw new Error(`ModelKit ${agent.modelKitId} not found for system agent ${agentId}`);
+    }
+    if (modelKit.type !== "byok") {
+      throw new Error(`System agent ${agentId} requires a BYOK ModelKit (got ${modelKit.type})`);
+    }
+
+    const systemPrompt = agent.promptTemplate ?? `You are ${agent.name}. ${agent.role}`;
+    const userContent = input.context
+      ? `${input.task}\n\nContext:\n${JSON.stringify(input.context, null, 2)}`
+      : input.task;
+
+    // Select tool specs and handlers based on systemRole
+    let toolSpecs = knowledgeToolSpecs;
+    let handler: { handle(name: string, args: Record<string, unknown>): Promise<string> };
+
+    if (agent.systemRole === "habits") {
+      toolSpecs = habitsToolSpecs;
+      handler = buildHabitsToolHandlers({ service: this });
+    } else if (agent.systemRole === "failure-experience") {
+      toolSpecs = failureToolSpecs;
+      handler = buildFailureToolHandlers({ service: this });
+    } else {
+      // default: knowledge
+      handler = buildKnowledgeToolHandlers({ service: this });
+    }
+
+    const MAX_ITERATIONS = 8;
+    const messages: LlmMessage[] = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent }
+    ];
+    let finalContent = "";
+
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const result = await callLlmWithModelKit({ modelKit, messages, tools: toolSpecs });
+      if (result.content) {
+        finalContent = result.content;
+      }
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        break;
+      }
+      messages.push({ role: "assistant", content: result.content ?? "", tool_calls: result.toolCalls });
+      for (const call of result.toolCalls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
+        const output = await handler.handle(call.function.name, args);
+        messages.push({ role: "tool", tool_call_id: call.id, content: output });
+      }
+    }
+
+    return { content: finalContent || "(system agent returned no content)" };
+  }
+
+  /**
    * 获取 ModelKit
    */
   async getModelKit(id: string): Promise<ModelKit | undefined> {
     const state = await this.getState();
     return state.engine.modelKits[id];
+  }
+
+  // ── 用户偏好管理 ──────────────────────────────────────────────
+
+  /**
+   * 记录或更新用户偏好。同 category+key 则更新（提高 confidence 和 occurrences）。
+   */
+  async recordPreference(
+    input: import("./types.js").CreateUserPreferenceInput
+  ): Promise<import("./types.js").UserPreference> {
+    return this.mutateState(async (state) => {
+      const timestamp = now();
+      // Key-based dedup: same category + key → update existing
+      const existing = Object.values(state.userPreferences).find(
+        (p) => p.category === input.category && p.key === input.key
+      );
+
+      if (existing) {
+        const updated: import("./types.js").UserPreference = {
+          ...existing,
+          value: input.value,
+          confidence: input.confidence ?? Math.min(existing.confidence + 0.1, 1.0),
+          source: input.source ?? existing.source,
+          occurrences: existing.occurrences + 1,
+          examples: input.example
+            ? [...existing.examples, input.example].slice(-5)
+            : existing.examples,
+          updatedAt: timestamp
+        };
+        const userPreferences = { ...state.userPreferences, [existing.id]: updated };
+        return { newState: { ...state, userPreferences }, result: updated };
+      }
+
+      const idValue = `pref_${nanoid(8)}`;
+      const pref: import("./types.js").UserPreference = {
+        id: idValue,
+        category: input.category,
+        key: input.key,
+        value: input.value,
+        confidence: input.confidence ?? (input.source === "explicit" || input.source === "correction" ? 0.8 : 0.5),
+        source: input.source ?? "observed",
+        occurrences: 1,
+        examples: input.example ? [input.example] : [],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      const userPreferences = { ...state.userPreferences, [idValue]: pref };
+      return { newState: { ...state, userPreferences }, result: pref };
+    });
+  }
+
+  /**
+   * 获取用户偏好列表，可按分类和最低置信度过滤。
+   */
+  async getUserPreferences(
+    categories?: import("./types.js").PreferenceCategory[],
+    minConfidence?: number
+  ): Promise<import("./types.js").UserPreference[]> {
+    const state = await this.getState();
+    let prefs = Object.values(state.userPreferences);
+    if (categories && categories.length > 0) {
+      prefs = prefs.filter((p) => categories.includes(p.category));
+    }
+    if (minConfidence !== undefined) {
+      prefs = prefs.filter((p) => p.confidence >= minConfidence);
+    }
+    return prefs.sort((a, b) => b.confidence - a.confidence);
+  }
+
+  /**
+   * 根据任务上下文生成用户偏好约束文本，供其他 agent 使用。
+   */
+  async suggestConventions(taskContext: string): Promise<string> {
+    const prefs = await this.getUserPreferences(undefined, 0.5);
+    if (prefs.length === 0) {
+      return "暂无已记录的用户偏好。";
+    }
+    const lines = prefs.map((p) =>
+      `- [${p.category}] ${p.key}: ${p.value} (置信度 ${(p.confidence * 100).toFixed(0)}%)`
+    );
+    return `## 用户偏好约束\n\n基于 ${prefs.length} 条已记录偏好，请在执行以下任务时参考：\n\n${lines.join("\n")}\n\n任务: ${taskContext}`;
+  }
+
+  /**
+   * 删除用户偏好。
+   */
+  async deletePreference(idValue: string): Promise<void> {
+    await this.mutateState(async (state) => {
+      const userPreferences = { ...state.userPreferences };
+      delete userPreferences[idValue];
+      return { newState: { ...state, userPreferences }, result: undefined };
+    });
+  }
+
+  // ── 失败模式管理 ──────────────────────────────────────────────
+
+  /**
+   * 记录新的失败模式。
+   */
+  async recordFailure(
+    input: import("./types.js").CreateFailurePatternInput
+  ): Promise<import("./types.js").FailurePattern> {
+    return this.mutateState(async (state) => {
+      const timestamp = now();
+      const idValue = `fail_${nanoid(8)}`;
+      const pattern: import("./types.js").FailurePattern = {
+        id: idValue,
+        category: input.category,
+        title: input.title,
+        description: input.description,
+        rootCause: input.rootCause,
+        context: input.context,
+        mitigation: input.mitigation,
+        signals: input.signals ?? [],
+        projectId: input.projectId,
+        questId: input.questId,
+        severity: input.severity ?? "medium",
+        resolved: false,
+        createdAt: timestamp
+      };
+      const failurePatterns = { ...state.failurePatterns, [idValue]: pattern };
+      return { newState: { ...state, failurePatterns }, result: pattern };
+    });
+  }
+
+  /**
+   * 搜索相似的失败模式。使用关键词 + 信号匹配（基础实现；后续可升级为向量搜索）。
+   */
+  async searchFailures(
+    query: string,
+    options?: { category?: string; projectId?: string }
+  ): Promise<import("./types.js").FailurePattern[]> {
+    const state = await this.getState();
+    const all = Object.values(state.failurePatterns);
+    const q = query.trim().toLowerCase();
+    const tokens = q ? q.split(/\s+/).filter((t) => t.length > 1) : [];
+
+    let results = tokens.length > 0
+      ? all.filter((f) => {
+          const hay = `${f.title} ${f.description} ${f.rootCause} ${f.context} ${f.signals.join(" ")}`.toLowerCase();
+          return tokens.some((t) => hay.includes(t));
+        })
+      : all;
+
+    if (options?.category) {
+      results = results.filter((f) => f.category === options.category);
+    }
+    if (options?.projectId) {
+      results = results.filter((f) => f.projectId === options.projectId);
+    }
+
+    // Sort unresolved first, then by severity, then recency
+    return results.sort((a, b) => {
+      if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
+      const sev = { high: 3, medium: 2, low: 1 };
+      const sa = sev[a.severity] ?? 0;
+      const sb = sev[b.severity] ?? 0;
+      if (sa !== sb) return sb - sa;
+      return b.createdAt.localeCompare(a.createdAt);
+    });
+  }
+
+  /**
+   * 检查任务风险：搜索与给定任务描述和项目相关的已知失败模式。
+   */
+  async checkRisk(
+    taskDescription: string,
+    projectIds: string[]
+  ): Promise<import("./types.js").FailurePattern[]> {
+    const all = await this.searchFailures(taskDescription);
+    // Filter to unresolved patterns relevant to these projects or global patterns
+    return all.filter((f) => !f.resolved && (!f.projectId || projectIds.includes(f.projectId)));
+  }
+
+  /**
+   * 更新失败模式（标记 resolved、修改 severity 或 mitigation）。
+   */
+  async updateFailure(
+    idValue: string,
+    input: { resolved?: boolean; severity?: string; mitigation?: string }
+  ): Promise<import("./types.js").FailurePattern> {
+    return this.mutateState(async (state) => {
+      const existing = state.failurePatterns[idValue];
+      if (!existing) throw new Error(`Failure pattern ${idValue} not found`);
+      const updated: import("./types.js").FailurePattern = {
+        ...existing,
+        severity: (input.severity as import("./types.js").FailurePattern["severity"]) ?? existing.severity,
+        mitigation: input.mitigation ?? existing.mitigation,
+        resolved: input.resolved ?? existing.resolved,
+        resolvedAt: input.resolved ? (existing.resolvedAt ?? now()) : existing.resolvedAt
+      };
+      const failurePatterns = { ...state.failurePatterns, [idValue]: updated };
+      return { newState: { ...state, failurePatterns }, result: updated };
+    });
   }
 
   /**
@@ -1266,6 +1573,10 @@ export class RepoHelmService {
       createdAt: timestamp,
       updatedAt: timestamp
     };
+    // 自动钩子：获取用户偏好和风险检查
+    const userPrefs = await this.getUserPreferences(undefined, 0.5).catch(() => []);
+    const riskPatterns = await this.checkRisk(input.requirement, affectedProjectIds).catch(() => []);
+
     const events = [
       this.event(questId, "quest.created", "Quest 已创建", "用户需求已进入 Quest 工作流。", "Lead Agent"),
       this.event(questId, "spec.generated", "轻量 Spec 已生成", "Spec Agent 根据需求生成了初版目标、范围和验收标准。", "Spec Agent"),
@@ -1277,6 +1588,24 @@ export class RepoHelmService {
             "知识库已引用",
             `Agent 读取了 ${relatedKnowledge.length} 条相关知识。`,
             "Knowledge Agent"
+          )
+        : undefined,
+      userPrefs.length > 0
+        ? this.event(
+            questId,
+            "preference.injected",
+            "用户偏好已注入",
+            `检测到 ${userPrefs.length} 条用户偏好，将作为约束指导 Agent 行为。`,
+            "用户习惯助手"
+          )
+        : undefined,
+      riskPatterns.length > 0
+        ? this.event(
+            questId,
+            "risk.warning",
+            "风险提示已生成",
+            `发现 ${riskPatterns.length} 条相关失败经验，已提示 Agent 注意规避。`,
+            "失败经验助手"
           )
         : undefined,
       capabilityRecommendations.length > 0
@@ -1500,6 +1829,28 @@ export class RepoHelmService {
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
       events: [...events, ...state.events]
     });
+
+    // Fire-and-forget: record plan rejection as failure pattern
+    const hookReason = reason;
+    const hookRequirement = quest.requirement;
+    Promise.resolve().then(async () => {
+      try {
+        await this.recordFailure({
+          category: "architecture",
+          title: "Plan rejected by user",
+          description: `User rejected the orchestration plan. Reason: ${hookReason || "unspecified"}`,
+          rootCause: "Generated plan did not meet user expectations",
+          context: `Quest: ${hookRequirement}`,
+          mitigation: "Review the rejection reason and adjust the planning strategy. Consider providing more detailed requirements.",
+          signals: ["plan rejected", "user rejection", "planning failure"],
+          questId,
+          severity: "medium"
+        }).catch(() => {/* best-effort */});
+      } catch {
+        // Best-effort
+      }
+    });
+
     return updatedQuest;
   }
 
@@ -1594,6 +1945,51 @@ export class RepoHelmService {
       quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
       events: [...events, ...state.events]
     });
+
+    // ── 自动钩子：成功时总结学习 / 失败时记录模式 ──
+    const hookQuestId = questId;
+    const hookProjectIds = quest.affectedProjectIds;
+    const hookRequirement = quest.requirement;
+
+    // Fire and forget — don't block the response
+    Promise.resolve().then(async () => {
+      try {
+        if (produced && hookProjectIds.length > 0) {
+          // Quest 成功：触发 KB agent 总结学习
+          const kbAgent = (await this.getState()).subAgents["kb-agent"];
+          if (kbAgent) {
+            await this.invokeSystemAgent("kb-agent", {
+              task: `Summarize the learnings from the completed Quest:\n\n**Requirement**: ${hookRequirement}\n\n**Result**: ${result.finalContent}\n\nUpdate relevant wiki pages for the affected projects.`,
+              context: { questId: hookQuestId, projectIds: hookProjectIds }
+            }).catch(() => {/* best-effort */});
+          }
+        }
+
+        if (hasFailures && hookProjectIds.length > 0) {
+          // Quest 有失败步骤：记录失败模式
+          const failAgent = (await this.getState()).subAgents["failure-experience-agent"];
+          if (failAgent) {
+            const failedSteps = result.delegations.filter((d) => !d.ok);
+            for (const step of failedSteps) {
+              await this.recordFailure({
+                category: "other",
+                title: `Quest step failed: ${step.agentName}`,
+                description: step.summary,
+                rootCause: "Agent execution failed during quest orchestration",
+                context: `Quest: ${hookRequirement}. Step delegated to ${step.agentName}.`,
+                mitigation: "Review the step requirements and retry with clearer instructions or a different agent.",
+                signals: [step.agentName, "quest failure", "delegation failed"],
+                questId: hookQuestId,
+                severity: "medium"
+              }).catch(() => {/* best-effort */});
+            }
+          }
+        }
+      } catch {
+        // Hooks are best-effort; never fail the parent operation
+      }
+    });
+
     return updatedQuest;
   }
 

@@ -405,10 +405,70 @@ export interface SubAgent {
   role: string; // 角色描述
   capabilities: string[]; // 能力列表
   modelKitId: string; // 绑定的 ModelKit ID(一对一绑定关系)
-  mode?: "entry" | "worker"; // 模式:入口 agent 或工作 agent（可选，仅作为提示）
+  mode?: "entry" | "worker" | "system"; // 模式:入口 agent、工作 agent 或系统 agent（可选，仅作为提示）
+  systemRole?: "knowledge" | "habits" | "failure-experience"; // 系统 agent 的专项角色（仅 mode="system" 时有效）
   permissions: SubAgentPermissions; // 权限配置
   promptTemplate?: string; // 提示词模板(可选)
   metadata: SubAgentMetadata; // 元数据信息
+}
+
+/**
+ * 用户偏好分类
+ */
+export type PreferenceCategory = "coding_style" | "naming" | "architecture" | "tooling" | "workflow" | "other";
+
+/**
+ * 偏好来源:explicit=用户明确声明,observed=系统观察,correction=用户纠正,inferred=推理
+ */
+export type PreferenceSource = "explicit" | "observed" | "correction" | "inferred";
+
+/**
+ * 用户偏好,记录用户的编码习惯、风格倾向和工作流偏好
+ */
+export interface UserPreference {
+  id: string;
+  category: PreferenceCategory;
+  key: string; // 偏好键,如 "use-single-quotes"、"test-framework"、"prefer-fp"
+  value: string; // 偏好值,如 "always"、"avoid"、"jest"
+  confidence: number; // 置信度 0.0-1.0
+  source: PreferenceSource;
+  occurrences: number; // 被确认的次数
+  examples: string[]; // 最多 5 个具体示例
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * 失败模式分类
+ */
+export type FailureCategory =
+  | "type_error"
+  | "test_failure"
+  | "build_error"
+  | "logic_bug"
+  | "architecture"
+  | "security"
+  | "performance"
+  | "other";
+
+/**
+ * 失败模式,记录 Quest 执行中的失败经验和缓解方案
+ */
+export interface FailurePattern {
+  id: string;
+  category: FailureCategory;
+  title: string; // 简短标签
+  description: string; // 发生了什么
+  rootCause: string; // 根因分析
+  context: string; // 当时在做什么
+  mitigation: string; // 下次如何避免
+  signals: string[]; // 匹配关键词,用于检测相似场景
+  projectId?: string;
+  questId?: string;
+  severity: "low" | "medium" | "high";
+  resolved: boolean;
+  createdAt: string;
+  resolvedAt?: string;
 }
 
 export interface EngineConfig {
@@ -444,6 +504,8 @@ export interface RepoHelmState {
   modelCache: Record<string, ModelCacheEntry>;
   subAgents: Record<string, SubAgent>; // SubAgent 集合,按 ID 索引
   entrySubAgentId?: string; // 入口 SubAgent 的 ID(可选)
+  userPreferences: Record<string, UserPreference>; // 用户偏好集合,按 ID 索引
+  failurePatterns: Record<string, FailurePattern>; // 失败模式集合,按 ID 索引
 }
 
 export interface ListProviderModelsInput {
@@ -541,7 +603,8 @@ export interface CreateSubAgentInput {
   role: string;
   capabilities?: string[];
   modelKitId: string;
-  mode?: "entry" | "worker";
+  mode?: "entry" | "worker" | "system";
+  systemRole?: "knowledge" | "habits" | "failure-experience";
   permissions?: SubAgentPermissions;
   promptTemplate?: string;
 }
@@ -554,7 +617,36 @@ export interface UpdateSubAgentInput {
   role?: string;
   capabilities?: string[];
   modelKitId?: string;
-  mode?: "entry" | "worker";
+  mode?: "entry" | "worker" | "system";
+  systemRole?: "knowledge" | "habits" | "failure-experience";
   permissions?: SubAgentPermissions;
   promptTemplate?: string;
+}
+
+/**
+ * 创建用户偏好的输入参数
+ */
+export interface CreateUserPreferenceInput {
+  category: PreferenceCategory;
+  key: string;
+  value: string;
+  confidence?: number;
+  source?: PreferenceSource;
+  example?: string;
+}
+
+/**
+ * 创建失败模式的输入参数
+ */
+export interface CreateFailurePatternInput {
+  category: FailureCategory;
+  title: string;
+  description: string;
+  rootCause: string;
+  context: string;
+  mitigation: string;
+  signals?: string[];
+  projectId?: string;
+  questId?: string;
+  severity?: "low" | "medium" | "high";
 }

@@ -23,7 +23,9 @@ const emptyState = (): RepoHelmState => ({
   engine: defaultEngineConfig(),
   modelCache: {},
   subAgents: {}, // SubAgent 集合,默认为空
-  entrySubAgentId: undefined // 入口 SubAgent ID,默认为未设置
+  entrySubAgentId: undefined, // 入口 SubAgent ID,默认为未设置
+  userPreferences: {}, // 用户偏好集合,默认为空
+  failurePatterns: {} // 失败模式集合,默认为空
 });
 
 export const defaultEngineConfig = () => ({
@@ -131,7 +133,13 @@ export class SqliteStateStore implements StateStore {
     const row = db.prepare("SELECT payload FROM state WHERE id = ?").get("current") as { payload?: string } | undefined;
     if (row?.payload) {
       const state = JSON.parse(row.payload) as RepoHelmState;
-      return { ...state, engine: migrateEngine(state.engine) };
+      return {
+        ...state,
+        engine: migrateEngine(state.engine),
+        subAgents: state.subAgents ?? {},
+        userPreferences: state.userPreferences ?? {},
+        failurePatterns: state.failurePatterns ?? {}
+      };
     }
 
     const legacyState = await new JsonStateStore(this.rootDir).read();

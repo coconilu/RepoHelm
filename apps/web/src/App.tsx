@@ -2506,7 +2506,7 @@ function AppSettingsDialog({
               </div>
 
               {modelKits.length === 0 ? (
-                <p className="muted">暂无 ModelKits。在“模型管理”标签页中测试通过后,可以保存为 ModelKit。</p>
+                <p className="muted">暂无 ModelKits。在"模型管理"标签页中测试通过后,可以保存为 ModelKit。</p>
               ) : (
                 <div className="modelkit-list">
                   {modelKits.map((kit) => (
@@ -2561,87 +2561,173 @@ function AppSettingsDialog({
               </div>
               <p className="muted">管理专门的智能体，每个 Agent 绑定一个 ModelKit 并配置特定权限。</p>
                         
-              {subAgents.length === 0 ? (
-                <p className="muted">暂无 Agent。点击“新建 Agent”创建第一个。</p>
-              ) : (
-                <div className="subagent-list">
-                  {subAgents.map((agent) => {
-                    const modelKit = modelKits.find((kit) => kit.id === agent.modelKitId);
-                    const isEntry = agent.id === entrySubAgentId;
-                    return (
-                      <article key={agent.id} className="subagent-card">
-                        <div className="subagent-header">
-                          <div className="subagent-title">
-                            <strong>{agent.name}</strong>
-                            {isEntry && (
-                              <span className="badge green" style={{ marginLeft: '8px' }}>
-                                入口 Agent
-                              </span>
-                            )}
-                            <span className={`badge ${agent.mode === 'entry' ? 'blue' : ''}`}>
-                              {agent.mode === 'entry' ? '入口' : '工作节点'}
-                            </span>
-                          </div>
-                          <div className="subagent-actions">
-                            {!isEntry && (
-                              <button
-                                className="ghost-action"
-                                onClick={() => setEntrySubAgentHandler(agent.id)}
-                                type="button"
-                              >
-                                设为入口
-                              </button>
-                            )}
-                            <button
-                              className="ghost-action"
-                              onClick={() => setEditingSubAgent(agent)}
-                              type="button"
-                            >
-                              编辑
-                            </button>
-                            <button
-                              className="danger-action"
-                              disabled={isEntry}
-                              onClick={() => deleteSubAgentHandler(agent.id)}
-                              type="button"
-                            >
-                              删除
-                            </button>
-                          </div>
+              {(() => {
+                const userAgents = subAgents.filter((a) => a.mode !== "system");
+                const systemAgents = subAgents.filter((a) => a.mode === "system");
+
+                return (
+                  <>
+                    {/* 用户 Agent 列表 */}
+                    {userAgents.length === 0 ? (
+                      <p className="muted">暂无 Agent。点击"新建 Agent"创建第一个。</p>
+                    ) : (
+                      <div className="subagent-list">
+                        {userAgents.map((agent) => {
+                          const modelKit = modelKits.find((kit) => kit.id === agent.modelKitId);
+                          const isEntry = agent.id === entrySubAgentId;
+                          return (
+                            <article key={agent.id} className="subagent-card">
+                              <div className="subagent-header">
+                                <div className="subagent-title">
+                                  <strong>{agent.name}</strong>
+                                  {isEntry && (
+                                    <span className="badge green" style={{ marginLeft: '8px' }}>
+                                      入口 Agent
+                                    </span>
+                                  )}
+                                  <span className={`badge ${agent.mode === 'entry' ? 'blue' : ''}`}>
+                                    {agent.mode === 'entry' ? '入口' : '工作节点'}
+                                  </span>
+                                </div>
+                                <div className="subagent-actions">
+                                  {!isEntry && (
+                                    <button
+                                      className="ghost-action"
+                                      onClick={() => setEntrySubAgentHandler(agent.id)}
+                                      type="button"
+                                    >
+                                      设为入口
+                                    </button>
+                                  )}
+                                  <button
+                                    className="ghost-action"
+                                    onClick={() => setEditingSubAgent(agent)}
+                                    type="button"
+                                  >
+                                    编辑
+                                  </button>
+                                  <button
+                                    className="danger-action"
+                                    disabled={isEntry}
+                                    onClick={() => deleteSubAgentHandler(agent.id)}
+                                    type="button"
+                                  >
+                                    删除
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="subagent-details">
+                                <p className="subagent-role">{agent.role}</p>
+                                {modelKit && (
+                                  <div className="subagent-modelkit">
+                                    <span>绑定 ModelKit:</span>
+                                    <code>{modelKit.name}</code>
+                                    <span className="modelkit-type">{modelKit.type === "cli" ? "CLI" : "BYOK"}</span>
+                                  </div>
+                                )}
+                                {agent.capabilities.length > 0 && (
+                                  <div className="subagent-capabilities">
+                                    <span>能力:</span>
+                                    {agent.capabilities.map((cap) => (
+                                      <em key={cap}>{cap}</em>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className="subagent-permissions">
+                                  <span>允许工具: {agent.permissions.allowedTools.length}</span>
+                                  {agent.permissions.deniedTools.length > 0 && (
+                                    <span>禁止工具: {agent.permissions.deniedTools.length}</span>
+                                  )}
+                                  {agent.permissions.maxSteps && (
+                                    <span>最大步数: {agent.permissions.maxSteps}</span>
+                                  )}
+                                </div>
+                                <span className="field-hint">创建于 {formatDate(agent.metadata.createdAt)}</span>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* 系统 Agent 列表 */}
+                    {systemAgents.length > 0 && (
+                      <>
+                        <div className="settings-section-heading" style={{ marginTop: '24px' }}>
+                          <h3>系统 Agent ({systemAgents.length})</h3>
+                          <span className="badge blue">内置</span>
                         </div>
-                        <div className="subagent-details">
-                          <p className="subagent-role">{agent.role}</p>
-                          {modelKit && (
-                            <div className="subagent-modelkit">
-                              <span>绑定 ModelKit:</span>
-                              <code>{modelKit.name}</code>
-                              <span className="modelkit-type">{modelKit.type === "cli" ? "CLI" : "BYOK"}</span>
-                            </div>
-                          )}
-                          {agent.capabilities.length > 0 && (
-                            <div className="subagent-capabilities">
-                              <span>能力:</span>
-                              {agent.capabilities.map((cap) => (
-                                <em key={cap}>{cap}</em>
-                              ))}
-                            </div>
-                          )}
-                          <div className="subagent-permissions">
-                            <span>允许工具: {agent.permissions.allowedTools.length}</span>
-                            {agent.permissions.deniedTools.length > 0 && (
-                              <span>禁止工具: {agent.permissions.deniedTools.length}</span>
-                            )}
-                            {agent.permissions.maxSteps && (
-                              <span>最大步数: {agent.permissions.maxSteps}</span>
-                            )}
-                          </div>
-                          <span className="field-hint">创建于 {formatDate(agent.metadata.createdAt)}</span>
+                        <p className="muted">系统自带智能体,分别负责知识库、用户习惯和失败经验管理。只读,不可删除。</p>
+                        <div className="subagent-list">
+                          {systemAgents.map((agent) => {
+                            const modelKit = modelKits.find((kit) => kit.id === agent.modelKitId);
+                            const roleLabel =
+                              agent.systemRole === "knowledge" ? "知识库" :
+                              agent.systemRole === "habits" ? "用户习惯" :
+                              agent.systemRole === "failure-experience" ? "失败经验" : "系统";
+                            return (
+                              <article key={agent.id} className="subagent-card system-agent-card">
+                                <div className="subagent-header">
+                                  <div className="subagent-title">
+                                    <strong>{agent.name}</strong>
+                                    <span className="badge green">{roleLabel}</span>
+                                    <span className="badge blue">系统</span>
+                                  </div>
+                                  <div className="subagent-actions">
+                                    <select
+                                      aria-label={`切换 ${agent.name} 的 ModelKit`}
+                                      value={agent.modelKitId}
+                                      onChange={(event) => {
+                                        const newKitId = event.target.value;
+                                        updateSubAgentHandler(agent.id, { modelKitId: newKitId });
+                                      }}
+                                      className="compact-select"
+                                    >
+                                      {modelKits.length === 0 && (
+                                        <option value={agent.modelKitId}>无可用 ModelKit</option>
+                                      )}
+                                      {modelKits.map((kit) => (
+                                        <option key={kit.id} value={kit.id}>
+                                          {kit.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                                <div className="subagent-details">
+                                  <p className="subagent-role">{agent.role}</p>
+                                  {modelKit && (
+                                    <div className="subagent-modelkit">
+                                      <span>绑定 ModelKit:</span>
+                                      <code>{modelKit.name}</code>
+                                      <span className="modelkit-type">{modelKit.type === "cli" ? "CLI" : "BYOK"}</span>
+                                    </div>
+                                  )}
+                                  {agent.capabilities.length > 0 && (
+                                    <div className="subagent-capabilities">
+                                      <span>能力:</span>
+                                      {agent.capabilities.map((cap) => (
+                                        <em key={cap}>{cap}</em>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <div className="subagent-permissions">
+                                    <span>允许工具: {agent.permissions.allowedTools.length}</span>
+                                    {agent.permissions.deniedTools.length > 0 && (
+                                      <span>禁止工具: {agent.permissions.deniedTools.length}</span>
+                                    )}
+                                  </div>
+                                  <span className="field-hint">使用 {agent.metadata.usageCount} 次</span>
+                                </div>
+                              </article>
+                            );
+                          })}
                         </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
             </section>
           ) : null}
         </div>
@@ -3193,7 +3279,7 @@ function SubAgentDialog({
     role: string;
     capabilities: string[];
     modelKitId: string;
-    mode?: "entry" | "worker";
+    mode?: "entry" | "worker" | "system";
     allowedTools: string[];
     deniedTools: string[];
     maxSteps?: number;

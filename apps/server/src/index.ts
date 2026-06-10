@@ -161,7 +161,8 @@ const createSubAgentSchema = z.object({
   role: z.string().min(1),
   capabilities: z.array(z.string()).optional(),
   modelKitId: z.string().min(1),
-  mode: z.enum(["entry", "worker"]).optional(),
+  mode: z.enum(["entry", "worker", "system"]).optional(),
+  systemRole: z.enum(["knowledge", "habits", "failure-experience"]).optional(),
   permissions: z.object({
     allowedTools: z.array(z.string()),
     deniedTools: z.array(z.string()),
@@ -175,7 +176,8 @@ const updateSubAgentSchema = z.object({
   role: z.string().min(1).optional(),
   capabilities: z.array(z.string()).optional(),
   modelKitId: z.string().min(1).optional(),
-  mode: z.enum(["entry", "worker"]).optional(),
+  mode: z.enum(["entry", "worker", "system"]).optional(),
+  systemRole: z.enum(["knowledge", "habits", "failure-experience"]).optional(),
   permissions: z.object({
     allowedTools: z.array(z.string()),
     deniedTools: z.array(z.string()),
@@ -632,6 +634,99 @@ app.post("/api/sub-agents/set-entry", async (context) => {
 app.get("/api/sub-agents/entry", async (context) => {
   const entrySubAgent = await service.getEntrySubAgent();
   return context.json(entrySubAgent ?? null);
+});
+
+// ── 系统 Agent 调用 ──────────────────────────────────────────
+const invokeSystemAgentSchema = z.object({
+  task: z.string().min(1),
+  context: z.record(z.string(), z.unknown()).optional()
+});
+
+app.post("/api/system-agents/:id/invoke", async (context) => {
+  const input = invokeSystemAgentSchema.parse(await context.req.json());
+  const result = await service.invokeSystemAgent(context.req.param("id"), input);
+  return context.json(result);
+});
+
+// ── 用户偏好 API ────────────────────────────────────────────
+
+const createPreferenceSchema = z.object({
+  category: z.enum(["coding_style", "naming", "architecture", "tooling", "workflow", "other"]),
+  key: z.string().min(1),
+  value: z.string().min(1),
+  confidence: z.number().min(0).max(1).optional(),
+  source: z.enum(["explicit", "observed", "correction", "inferred"]).optional(),
+  example: z.string().optional()
+});
+
+app.get("/api/preferences", async (context) => {
+  const prefs = await service.getUserPreferences();
+  return context.json(prefs);
+});
+
+app.post("/api/preferences", async (context) => {
+  const input = createPreferenceSchema.parse(await context.req.json());
+  const pref = await service.recordPreference(input);
+  return context.json(pref);
+});
+
+app.delete("/api/preferences/:id", async (context) => {
+  await service.deletePreference(context.req.param("id"));
+  return context.json({ ok: true });
+});
+
+// ── 失败模式 API ────────────────────────────────────────────
+
+const createFailureSchema = z.object({
+  category: z.enum(["type_error", "test_failure", "build_error", "logic_bug", "architecture", "security", "performance", "other"]),
+  title: z.string().min(1),
+  description: z.string().min(1),
+  rootCause: z.string().min(1),
+  context: z.string().min(1),
+  mitigation: z.string().min(1),
+  signals: z.array(z.string()).optional(),
+  projectId: z.string().optional(),
+  questId: z.string().optional(),
+  severity: z.enum(["low", "medium", "high"]).optional()
+});
+
+const searchFailuresSchema = z.object({
+  query: z.string().min(1),
+  category: z.string().optional(),
+  projectId: z.string().optional()
+});
+
+const updateFailureSchema = z.object({
+  resolved: z.boolean().optional(),
+  severity: z.enum(["low", "medium", "high"]).optional(),
+  mitigation: z.string().optional()
+});
+
+app.get("/api/failures", async (context) => {
+  // List all failure patterns (unfiltered)
+  const failures = await service.searchFailures("", {});
+  return context.json(failures);
+});
+
+app.post("/api/failures", async (context) => {
+  const input = createFailureSchema.parse(await context.req.json());
+  const pattern = await service.recordFailure(input);
+  return context.json(pattern);
+});
+
+app.post("/api/failures/search", async (context) => {
+  const input = searchFailuresSchema.parse(await context.req.json());
+  const failures = await service.searchFailures(input.query, {
+    category: input.category,
+    projectId: input.projectId
+  });
+  return context.json(failures);
+});
+
+app.patch("/api/failures/:id", async (context) => {
+  const input = updateFailureSchema.parse(await context.req.json());
+  const pattern = await service.updateFailure(context.req.param("id"), input);
+  return context.json(pattern);
 });
 
 app.onError((error, context) => {

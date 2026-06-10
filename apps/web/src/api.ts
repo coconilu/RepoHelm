@@ -342,6 +342,8 @@ export interface RepoHelmState {
   engine: EngineConfig;
   subAgents: Record<string, SubAgent>;
   entrySubAgentId?: string;
+  userPreferences: Record<string, UserPreference>;
+  failurePatterns: Record<string, FailurePattern>;
 }
 
 export interface TestModelInput {
@@ -394,7 +396,8 @@ export interface SubAgent {
   role: string;
   capabilities: string[];
   modelKitId: string;
-  mode?: "entry" | "worker";
+  mode?: "entry" | "worker" | "system";
+  systemRole?: "knowledge" | "habits" | "failure-experience";
   permissions: SubAgentPermissions;
   promptTemplate?: string;
   metadata: SubAgentMetadata;
@@ -406,7 +409,8 @@ export interface CreateSubAgentInput {
   role: string;
   capabilities?: string[];
   modelKitId: string;
-  mode?: "entry" | "worker";
+  mode?: "entry" | "worker" | "system";
+  systemRole?: "knowledge" | "habits" | "failure-experience";
   permissions?: SubAgentPermissions;
   promptTemplate?: string;
 }
@@ -416,9 +420,75 @@ export interface UpdateSubAgentInput {
   role?: string;
   capabilities?: string[];
   modelKitId?: string;
-  mode?: "entry" | "worker";
+  mode?: "entry" | "worker" | "system";
+  systemRole?: "knowledge" | "habits" | "failure-experience";
   permissions?: SubAgentPermissions;
   promptTemplate?: string;
+}
+
+export type PreferenceCategory = "coding_style" | "naming" | "architecture" | "tooling" | "workflow" | "other";
+export type PreferenceSource = "explicit" | "observed" | "correction" | "inferred";
+
+export interface UserPreference {
+  id: string;
+  category: PreferenceCategory;
+  key: string;
+  value: string;
+  confidence: number;
+  source: PreferenceSource;
+  occurrences: number;
+  examples: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateUserPreferenceInput {
+  category: PreferenceCategory;
+  key: string;
+  value: string;
+  confidence?: number;
+  source?: PreferenceSource;
+  example?: string;
+}
+
+export type FailureCategory =
+  | "type_error"
+  | "test_failure"
+  | "build_error"
+  | "logic_bug"
+  | "architecture"
+  | "security"
+  | "performance"
+  | "other";
+
+export interface FailurePattern {
+  id: string;
+  category: FailureCategory;
+  title: string;
+  description: string;
+  rootCause: string;
+  context: string;
+  mitigation: string;
+  signals: string[];
+  projectId?: string;
+  questId?: string;
+  severity: "low" | "medium" | "high";
+  resolved: boolean;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export interface CreateFailurePatternInput {
+  category: FailureCategory;
+  title: string;
+  description: string;
+  rootCause: string;
+  context: string;
+  mitigation: string;
+  signals?: string[];
+  projectId?: string;
+  questId?: string;
+  severity?: "low" | "medium" | "high";
 }
 
 export interface CreateModelKitInput {
@@ -664,5 +734,39 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ id })
     }),
-  getEntrySubAgent: () => request<SubAgent | undefined>("/api/sub-agents/entry")
+  getEntrySubAgent: () => request<SubAgent | undefined>("/api/sub-agents/entry"),
+  // 系统 Agent 调用
+  invokeSystemAgent: (agentId: string, input: { task: string; context?: Record<string, unknown> }) =>
+    request<{ content: string }>(`/api/system-agents/${agentId}/invoke`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  // 用户偏好 API
+  listPreferences: () => request<UserPreference[]>("/api/preferences"),
+  recordPreference: (input: CreateUserPreferenceInput) =>
+    request<UserPreference>("/api/preferences", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  deletePreference: (id: string) =>
+    request<{ ok: boolean }>(`/api/preferences/${id}`, {
+      method: "DELETE"
+    }),
+  // 失败模式 API
+  listFailures: () => request<FailurePattern[]>("/api/failures"),
+  recordFailure: (input: CreateFailurePatternInput) =>
+    request<FailurePattern>("/api/failures", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  searchFailures: (query: string, options?: { category?: string; projectId?: string }) =>
+    request<FailurePattern[]>("/api/failures/search", {
+      method: "POST",
+      body: JSON.stringify({ query, ...options })
+    }),
+  updateFailure: (id: string, input: { resolved?: boolean; severity?: string; mitigation?: string }) =>
+    request<FailurePattern>(`/api/failures/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    })
 };
