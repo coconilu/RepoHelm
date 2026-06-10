@@ -12,3 +12,4 @@ export * from "./vector.js";
 export * from "./wiki-store.js";
 export * from "./repo-wiki.js";
 export * from "./types.js";
+export * from "./expert/types.js";

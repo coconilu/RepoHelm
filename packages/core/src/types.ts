@@ -650,3 +650,24 @@ export interface CreateFailurePatternInput {
   questId?: string;
   severity?: "low" | "medium" | "high";
 }
+
+// Expert orchestration types
+export type {
+  ExpertSession,
+  ExpertSessionStatus,
+  ExpertTaskNode,
+  ExpertTask,
+  TaskNodeType,
+  TaskStatus,
+  AcceptanceTest,
+  AcceptanceTestStatus,
+  CodeResearchResult,
+  CodeResearchResultType,
+  AgentPrototype,
+  DynamicAgent,
+  AgentPoolEntry,
+  AgentPoolSnapshot,
+  TaskArtifact,
+  ExpertError,
+  ExpertErrorCode,
+} from "./expert/types.js";
