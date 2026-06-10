@@ -294,6 +294,18 @@ app.get("/api/workspaces/:id/knowledge", async (context) => {
   return context.json(knowledge);
 });
 
+const knowledgePageIdsSchema = z.object({ ids: z.array(z.string()) });
+
+app.post("/api/knowledge/pages", async (context) => {
+  const body = await context.req.json();
+  const parsed = knowledgePageIdsSchema.safeParse(body);
+  if (!parsed.success) {
+    return context.json({ error: "Invalid request" }, 400);
+  }
+  const pages = await service.getKnowledgePages(parsed.data.ids);
+  return context.json(pages);
+});
+
 const knowledgeErrorStatus = (error: unknown): 404 | 400 =>
   error instanceof Error && error.message === "Project not found" ? 404 : 400;
 
@@ -403,13 +415,13 @@ app.post("/api/pick-directory", async (context) => {
 app.get("/api/branches", async (context) => {
   const path = context.req.query("path");
   if (!path) {
-    return context.json({ branches: [], defaultBranch: "main" });
+    return context.json({ branches: [], defaultBranch: "main", currentBranch: "" });
   }
   try {
     const result = await service.listBranches(path);
     return context.json(result);
   } catch {
-    return context.json({ branches: [], defaultBranch: "main" });
+    return context.json({ branches: [], defaultBranch: "main", currentBranch: "" });
   }
 });
 

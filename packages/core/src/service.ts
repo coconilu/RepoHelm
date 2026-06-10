@@ -280,6 +280,18 @@ export class RepoHelmService {
     });
   }
 
+  /**
+   * Get knowledge pages by their IDs.
+   */
+  async getKnowledgePages(pageIds: string[]): Promise<RepoWikiPage[]> {
+    if (pageIds.length === 0) return [];
+    // Get all project IDs from the page IDs (format: wiki_<projectId>_<slug>)
+    const projectIds = new Set(pageIds.map((id) => id.split("_")[1]).filter(Boolean));
+    const pages = (await Promise.all([...projectIds].map((pid) => this.wikiStore.listPages(pid)))).flat();
+    const byId = new Map(pages.map((p) => [p.id, p]));
+    return pageIds.map((id) => byId.get(id)).filter((p): p is RepoWikiPage => !!p);
+  }
+
   private async patchProjectKnowledgeMeta(
     projectId: string,
     patch: Partial<ProjectKnowledgeMeta>
@@ -586,7 +598,7 @@ export class RepoHelmService {
     return nextState;
   }
 
-  async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string }> {
+  async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string; currentBranch: string }> {
     return this.gitWorktreeManager.listBranches(path);
   }
 
@@ -1158,6 +1170,7 @@ export class RepoHelmService {
   /**
    * Best-effort scope inference: if the requirement text names specific linked
    * projects, target only those; otherwise fall back to every project in the workspace.
+   * Uses both direct name matching and keyword-based fuzzy matching.
    */
   private inferAffectedProjectIds(
     state: RepoHelmState,
@@ -1165,12 +1178,50 @@ export class RepoHelmService {
     requirement: string
   ): string[] {
     const haystack = requirement.toLowerCase();
-    const matched = workspaceProjectIds.filter((projectId) => {
+
+    // Strategy 1: Direct name match (exact substring)
+    const directMatched = workspaceProjectIds.filter((projectId) => {
       const project = state.projects.find((item) => item.id === projectId);
       const name = project?.name?.trim().toLowerCase();
       return name ? haystack.includes(name) : false;
     });
-    return matched.length > 0 ? matched : workspaceProjectIds;
+
+    // Strategy 2: Keyword extraction + fuzzy match
+    const keywords = this.extractKeywords(requirement);
+    const fuzzyMatched = workspaceProjectIds.filter((projectId) => {
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) return false;
+
+      // Check project name
+      const name = project.name.toLowerCase();
+      if (keywords.some((kw) => name.includes(kw))) {
+        return true;
+      }
+
+      return false;
+    });
+
+    // Combine results (deduplicate)
+    const allMatched = [...new Set([...directMatched, ...fuzzyMatched])];
+    return allMatched.length > 0 ? allMatched : workspaceProjectIds;
+  }
+
+  /**
+   * Extract meaningful keywords from text for fuzzy matching.
+   * Filters out common stopwords and short tokens.
+   */
+  private extractKeywords(text: string): string[] {
+    const stopwords = new Set([
+      "的", "了", "在", "是", "我", "和", "就", "都", "而", "及",
+      "the", "a", "an", "is", "are", "was", "were", "be", "been",
+      "being", "have", "has", "had", "do", "does", "did", "will",
+      "would", "could", "should", "may", "might", "can", "shall"
+    ]);
+    return text
+      .toLowerCase()
+      .split(/[\s,.，。？?！!、；;：:]+/)
+      .filter((w) => w.length >= 2 && !stopwords.has(w))
+      .map((w) => w.toLowerCase());
   }
 
   async createQuest(input: CreateQuestInput): Promise<Quest> {
@@ -1190,6 +1241,7 @@ export class RepoHelmService {
       ? await this.searchProjectKnowledge(workspace.projectIds, input.requirement)
       : [];
     const relatedKnowledge = relatedPages.slice(0, 3);
+    const relatedKnowledgeIds = relatedKnowledge.map((page) => page.id);
     const spec = this.generateSpec(input.requirement, relatedKnowledge);
     const capabilityRecommendations = this.recommendCapabilities(state.capabilities, input.requirement, timestamp);
     const entrySubAgentId = input.entrySubAgentId ?? state.entrySubAgentId;
@@ -1203,6 +1255,7 @@ export class RepoHelmService {
       agentBackendId: input.agentBackendId ?? "mock",
       entrySubAgentId,
       affectedProjectIds,
+      relatedKnowledgeIds,
       worktrees: [],
       changedFiles: [],
       validationResults: [],

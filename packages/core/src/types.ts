@@ -84,6 +84,7 @@ export interface OrchestrationPlanStep {
   agentName: string;
   dependencies: string[];
   expectedOutput: string;
+  targetProjectId?: string;
 }
 
 export interface OrchestrationPlan {
@@ -207,6 +208,7 @@ export interface Quest {
   agentBackendId: AgentBackendId;
   entrySubAgentId?: string;
   affectedProjectIds: string[];
+  relatedKnowledgeIds?: string[];
   worktrees: WorktreeState[];
   changedFiles: ChangedFile[];
   validationResults: string[];

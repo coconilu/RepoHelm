@@ -200,6 +200,7 @@ export interface Quest {
   agentBackendId: AgentBackendId;
   entrySubAgentId?: string;
   affectedProjectIds: string[];
+  relatedKnowledgeIds?: string[];
   worktrees: WorktreeState[];
   changedFiles: Array<ChangedFile | string>;
   validationResults: string[];
@@ -495,6 +496,11 @@ export const api = {
     ),
   searchKnowledge: (workspaceId: string, query: string) =>
     request<KnowledgeItem[]>(`/api/workspaces/${workspaceId}/knowledge?q=${encodeURIComponent(query)}`),
+  getKnowledgePages: (ids: string[]) =>
+    request<RepoWikiPage[]>("/api/knowledge/pages", {
+      method: "POST",
+      body: JSON.stringify({ ids })
+    }),
   getProjectKnowledge: (projectId: string) =>
     request<ProjectKnowledgeView>(`/api/projects/${projectId}/knowledge`),
   syncProjectKnowledge: (projectId: string) =>
@@ -612,7 +618,7 @@ export const api = {
       method: "POST"
     }),
   listBranches: (path: string) =>
-    request<{ branches: string[]; defaultBranch: string }>(`/api/branches?path=${encodeURIComponent(path)}`),
+    request<{ branches: string[]; defaultBranch: string; currentBranch: string }>(`/api/branches?path=${encodeURIComponent(path)}`),
   checkProject: (projectId: string) =>
     request<Project>(`/api/projects/${projectId}/check`, {
       method: "POST"

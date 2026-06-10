@@ -8,7 +8,7 @@ import {
   type LlmToolCall,
   type LlmToolSpec
 } from "./llm.js";
-import { generateOrchestrationPlan } from "./planning.js";
+import { assessComplexity, generateOrchestrationPlan } from "./planning.js";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
 import {
   buildDelegateHandler,
@@ -74,6 +74,12 @@ export class SubAgentOrchestrator {
       throw new Error(`Quest ${questId} not found`);
     }
 
+    // Fast-path: simple quests get single-step plan without LLM call
+    const complexity = assessComplexity(quest);
+    if (complexity.isSimple) {
+      return this.createSimplePlan(quest, entryAgent);
+    }
+
     const entryBackend = await this.createBackendFromModelKit(
       await this.requireModelKit(entryAgent)
     );
@@ -85,6 +91,41 @@ export class SubAgentOrchestrator {
       agentPool,
       backend: entryBackend
     });
+  }
+
+  /**
+   * Create a simple single-step plan for straightforward quests.
+   */
+  private async createSimplePlan(quest: Quest, entryAgent: SubAgent): Promise<OrchestrationPlan> {
+    const agentPool = await this.listDelegatableAgents(entryAgent.id);
+
+    // Find best coding agent
+    const codingAgent =
+      agentPool.find((a) => a.capabilities?.includes("coding")) || agentPool[0];
+
+    if (!codingAgent) {
+      throw new Error("No suitable agent found for this quest");
+    }
+
+    const projectId = quest.affectedProjectIds[0]!;
+
+    return {
+      questId: quest.id,
+      summary: `Single-step implementation for ${quest.title}`,
+      steps: [
+        {
+          id: "step_1",
+          description: `${quest.requirement}\n\n操作项目: ${projectId}`,
+          agentId: codingAgent.id,
+          agentName: codingAgent.name,
+          dependencies: [],
+          expectedOutput: "Implementation code and artifacts",
+          targetProjectId: projectId
+        }
+      ],
+      notes: "Auto-generated simple plan for straightforward task",
+      generatedAt: new Date().toISOString()
+    };
   }
 
   async executeApprovedPlan(questId: string, plan: OrchestrationPlan): Promise<OrchestratorQuestResult> {
@@ -126,10 +167,21 @@ export class SubAgentOrchestrator {
           continue;
         }
 
+        // Get the target project and worktree for this step
+        const targetProjectId = step.targetProjectId || quest.affectedProjectIds[0];
+        const targetWorktree = quest.worktrees.find((w) => w.projectId === targetProjectId);
+
         const context: Record<string, unknown> = {
           stepId: step.id,
           questTitle: quest.title,
           questRequirement: quest.requirement,
+          targetProjectId,
+          targetWorktree: targetWorktree
+            ? {
+                path: targetWorktree.worktreePath,
+                branch: targetWorktree.branchName
+              }
+            : undefined,
           dependencies: step.dependencies.map((dep) => ({
             stepId: dep,
             result: stepResults.get(dep) || ""
@@ -140,7 +192,8 @@ export class SubAgentOrchestrator {
           task: step.description,
           context,
           quest,
-          stepId: step.id
+          stepId: step.id,
+          targetProjectId
         });
 
         const filesNote =
@@ -189,7 +242,13 @@ export class SubAgentOrchestrator {
 
   private async invokeWorkerAgent(
     worker: SubAgent,
-    input: { task: string; context: Record<string, unknown>; quest: Quest; stepId?: string }
+    input: {
+      task: string;
+      context: Record<string, unknown>;
+      quest: Quest;
+      stepId?: string;
+      targetProjectId?: string;
+    }
   ): Promise<{ content: string; error?: string; writtenFiles?: string[] }> {
     try {
       const modelKit = await this.requireModelKit(worker);
@@ -202,7 +261,12 @@ export class SubAgentOrchestrator {
         ? `${input.task}\n\nContext:\n${JSON.stringify(input.context, null, 2)}`
         : input.task;
 
-      const worktree = input.quest.worktrees.find((item) => item.status === "created" && item.worktreePath);
+      // Find the worktree for the target project, or fall back to the first created worktree
+      const worktree = input.targetProjectId
+        ? input.quest.worktrees.find(
+            (item) => item.projectId === input.targetProjectId && item.status === "created" && item.worktreePath
+          )
+        : input.quest.worktrees.find((item) => item.status === "created" && item.worktreePath);
 
       let content: string;
       const writtenFiles = new Set<string>();

@@ -76,7 +76,7 @@ export class GitWorktreeManager {
     }
   }
 
-  async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string }> {
+  async listBranches(path: string): Promise<{ branches: string[]; defaultBranch: string; currentBranch: string }> {
     const repoRoot = await this.getRepoRoot(path);
     const output = await this.git(repoRoot, ["branch", "--format=%(refname:short)"]);
     const branches = output
@@ -89,7 +89,7 @@ export class GitWorktreeManager {
       : branches.includes("master")
         ? "master"
         : currentBranch || branches[0] || "main";
-    return { branches, defaultBranch };
+    return { branches, defaultBranch, currentBranch };
   }
 
   async createWorktree(input: CreateWorktreeInput): Promise<CreateWorktreeResult> {

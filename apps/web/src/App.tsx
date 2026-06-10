@@ -47,6 +47,7 @@ import {
   ProviderId,
   Quest,
   RepoHelmState,
+  RepoWikiPage,
   SecurityPolicy,
   SubAgent,
   TestModelInput,
@@ -80,7 +81,7 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "security" | "product" | "files" | "diff" | "logs";
+type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff";
 type ResizeDivider = "sidebar" | "inspector";
 type SettingsTab = "repositories" | "models" | "modelkits" | "subagents";
 
@@ -577,7 +578,7 @@ export function App() {
       >
         <Sidebar
           knowledgeCount={state.projects.filter((p) => p.knowledge?.status === "ready" || p.knowledge?.status === "stale").length}
-          quests={quests}
+          quests={state.quests}
           draftWorkspaceId={draftWorkspaceId}
           selectedQuest={selectedQuest}
           selectedWorkspaceId={workspace.id}
@@ -660,15 +661,12 @@ export function App() {
               role="separator"
             />
             <Inspector
-              auditLog={state.auditLog}
               busy={busy}
               capabilities={state.capabilities}
               changedFiles={changedFiles}
               events={questEvents}
               projects={projects}
-              productReadiness={productReadiness}
               quest={selectedQuest}
-              securityPolicy={state.securityPolicy}
               selectedChangedFile={selectedChangedFile}
               tab={inspectorTab}
               onAcceptCapability={acceptCapability}
@@ -701,7 +699,8 @@ export function App() {
             setBusy(true);
             setError("");
             try {
-              await api.createProject(input);
+              const created = await api.createProject(input);
+              await api.checkProject(created.id).catch(() => undefined);
               await load();
             } catch (err) {
               setError(err instanceof Error ? err.message : String(err));
@@ -712,6 +711,9 @@ export function App() {
           onCheckProject={checkProject}
           onClose={() => setAppSettingsOpen(false)}
           onOpenProjectDirectory={openProjectDirectory}
+          onRefreshAll={async () => {
+            await load();
+          }}
           onRemoveProject={removeProject}
           onSetBusy={setBusy}
         />
@@ -1184,15 +1186,12 @@ function QuestStage({
 }
 
 function Inspector({
-  auditLog,
   busy,
   capabilities,
   changedFiles,
   events,
   projects,
-  productReadiness,
   quest,
-  securityPolicy,
   selectedChangedFile,
   tab,
   onAcceptCapability,
@@ -1202,15 +1201,12 @@ function Inspector({
   onRejectPlan,
   onTabChange
 }: {
-  auditLog: AuditLogEntry[];
   busy: boolean;
   capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
   events: AgentEvent[];
   projects: Project[];
-  productReadiness: ProductReadiness | null;
   quest?: Quest;
-  securityPolicy: SecurityPolicy;
   selectedChangedFile?: ChangedFile;
   tab: InspectorTab;
   onAcceptCapability: (capabilityId: string) => void;
@@ -1221,24 +1217,52 @@ function Inspector({
   onTabChange: (tab: InspectorTab) => void;
 }) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
-  const tabs: Array<{ id: InspectorTab; label: string }> = [
+
+  // Determine which tabs have content
+  const hasSpec = !!quest?.spec;
+  const hasPlan = !!quest?.planApproval;
+  const hasCapabilities = capabilities.length > 0;
+  const hasFiles = changedFiles.length > 0;
+  const hasDiff = !!selectedChangedFile;
+
+  // Build visible tabs list (dynamic display)
+  const allTabs: Array<{ id: InspectorTab; label: string }> = [
+    { id: "overview", label: "概要" },
     { id: "spec", label: "Spec" },
     { id: "plan", label: "Plan" },
-    { id: "overview", label: "概要" },
     { id: "capabilities", label: "能力" },
-    { id: "security", label: "安全" },
-    { id: "product", label: "产品" },
     { id: "files", label: "文件" },
-    { id: "diff", label: "Diff" },
-    { id: "logs", label: "日志" }
+    { id: "diff", label: "Diff" }
   ];
+
+  const visibleTabs = allTabs.filter((tabItem) => {
+    switch (tabItem.id) {
+      case "overview":
+        return true; // Always visible
+      case "spec":
+        return hasSpec;
+      case "plan":
+        return hasPlan;
+      case "capabilities":
+        return hasCapabilities;
+      case "files":
+        return hasFiles;
+      case "diff":
+        return hasDiff;
+      default:
+        return false;
+    }
+  });
+
+  // Auto-select first visible tab if current tab has no content
+  const effectiveTab = visibleTabs.some((t) => t.id === tab) ? tab : visibleTabs[0]?.id || "overview";
 
   return (
     <aside className="inspector">
       <div className="inspector-tabs">
-        {tabs.map((item) => (
+        {visibleTabs.map((item) => (
           <button
-            className={item.id === tab ? "active" : ""}
+            className={item.id === effectiveTab ? "active" : ""}
             key={item.id}
             onClick={() => onTabChange(item.id)}
             type="button"
@@ -1249,12 +1273,14 @@ function Inspector({
       </div>
 
       <div className="inspector-body">
-        {tab === "spec" ? <SpecPanel quest={quest} /> : null}
-        {tab === "plan" ? <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} /> : null}
-        {tab === "overview" ? (
+        {effectiveTab === "overview" ? (
           <OverviewPanel changedFiles={changedFiles} events={events} projects={projects} quest={quest} />
         ) : null}
-        {tab === "capabilities" ? (
+        {effectiveTab === "spec" && hasSpec ? <SpecPanel quest={quest} /> : null}
+        {effectiveTab === "plan" && hasPlan ? (
+          <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
+        ) : null}
+        {effectiveTab === "capabilities" && hasCapabilities ? (
           <CapabilitiesPanel
             capabilities={capabilities}
             quest={quest}
@@ -1262,13 +1288,12 @@ function Inspector({
             onDismissCapability={onDismissCapability}
           />
         ) : null}
-        {tab === "security" ? <SecurityPanel auditLog={auditLog} policy={securityPolicy} /> : null}
-        {tab === "product" ? <ProductPanel readiness={productReadiness} /> : null}
-        {tab === "files" ? (
+        {effectiveTab === "files" && hasFiles ? (
           <FilesPanel changedFiles={changedFiles} projectById={projectById} quest={quest} onFileSelect={onFileSelect} />
         ) : null}
-        {tab === "diff" ? <DiffPanel file={selectedChangedFile} projectById={projectById} quest={quest} /> : null}
-        {tab === "logs" ? <Timeline events={events} /> : null}
+        {effectiveTab === "diff" && hasDiff ? (
+          <DiffPanel file={selectedChangedFile} projectById={projectById} quest={quest} />
+        ) : null}
       </div>
     </aside>
   );
@@ -1416,8 +1441,55 @@ function OverviewPanel({
   projects: Project[];
   quest?: Quest;
 }) {
+  const [relatedKnowledge, setRelatedKnowledge] = useState<RepoWikiPage[]>([]);
+
+  // Fetch related knowledge pages
+  useEffect(() => {
+    if (quest?.relatedKnowledgeIds && quest.relatedKnowledgeIds.length > 0) {
+      api.getKnowledgePages(quest.relatedKnowledgeIds).then(setRelatedKnowledge).catch(() => setRelatedKnowledge([]));
+    } else {
+      setRelatedKnowledge([]);
+    }
+  }, [quest?.relatedKnowledgeIds]);
+
+  // Get affected projects
+  const affectedProjects = quest?.affectedProjectIds.map((pid) => ({
+    project: projects.find((p) => p.id === pid),
+    worktree: quest.worktrees.find((w) => w.projectId === pid)
+  })) ?? [];
+
   return (
     <div className="inspector-stack">
+      <InspectorSection title="受影响项目">
+        {affectedProjects.length === 0 ? (
+          <p className="muted">暂未关联项目。</p>
+        ) : (
+          affectedProjects.map(({ project, worktree }) => (
+            <div className="context-project" key={project?.id ?? "unknown"}>
+              <div className="worktree-title">
+                <strong>{project?.name ?? "Unknown"}</strong>
+                {worktree ? <em className="badge green">worktree 就绪</em> : <em className="badge">待创建</em>}
+              </div>
+              {worktree ? <code>{worktree.worktreePath}</code> : null}
+            </div>
+          ))
+        )}
+      </InspectorSection>
+      <InspectorSection title="关联知识">
+        {relatedKnowledge.length === 0 ? (
+          <p className="muted">暂无关联知识。</p>
+        ) : (
+          relatedKnowledge.map((page) => (
+            <div className="context-knowledge" key={page.id}>
+              <div className="worktree-title">
+                <strong>{page.title}</strong>
+                <em className="badge">{page.slug}</em>
+              </div>
+              <span className="muted">{page.body.slice(0, 150)}...</span>
+            </div>
+          ))
+        )}
+      </InspectorSection>
       <InspectorSection title="进展">
         {events.length === 0 ? <p className="muted">生成任务后会在此展示进展。</p> : null}
         {events.slice(0, 6).map((event) => (
@@ -1547,98 +1619,6 @@ function CapabilitiesPanel({
   );
 }
 
-function SecurityPanel({ auditLog, policy }: { auditLog: AuditLogEntry[]; policy: SecurityPolicy }) {
-  return (
-    <div className="inspector-stack">
-      <InspectorSection title="Permission Model">
-        <div className="security-policy-grid">
-          <div>
-            <span>Command approval</span>
-            <strong>{policy.commandApprovalMode}</strong>
-          </div>
-          <div>
-            <span>Secrets</span>
-            <strong>{policy.secretsPolicy}</strong>
-          </div>
-          <div>
-            <span>Sandbox runtime</span>
-            <strong>{policy.sandboxRuntime}</strong>
-          </div>
-        </div>
-        <SpecBlock title="命令 allowlist" items={policy.allowedCommands} />
-        <SpecBlock title="文件 scope" items={policy.fileScopes} />
-        <SpecBlock title="网络 scope" items={policy.networkScopes} />
-      </InspectorSection>
-      <InspectorSection title="Audit Log">
-        {auditLog.length === 0 ? <p className="muted">暂无审计日志。</p> : null}
-        {auditLog.slice(0, 12).map((entry) => (
-          <article className="audit-row" key={entry.id}>
-            <div className="worktree-title">
-              <strong>{entry.subject}</strong>
-              <em className={entry.decision === "denied" ? "badge red" : "badge green"}>{entry.decision}</em>
-            </div>
-            <span>{entry.type}</span>
-            <p>{entry.detail}</p>
-          </article>
-        ))}
-      </InspectorSection>
-    </div>
-  );
-}
-
-function ProductPanel({ readiness }: { readiness: ProductReadiness | null }) {
-  if (!readiness) {
-    return <p className="muted">正在加载产品状态。</p>;
-  }
-  return (
-    <div className="inspector-stack">
-      <InspectorSection title="完整产品形态">
-        <div className="product-status">
-          <strong>{readiness.version}</strong>
-          <span>{readiness.status}</span>
-        </div>
-        {readiness.milestones.map((item) => (
-          <ReadinessRow item={item} key={item.id} />
-        ))}
-      </InspectorSection>
-      <InspectorSection title="Workspace Templates">
-        {readiness.workspaceTemplates.map((item) => (
-          <ReadinessRow item={item} key={item.id} />
-        ))}
-      </InspectorSection>
-      <InspectorSection title="Dependency Map">
-        {readiness.dependencyMap.nodes.length === 0 ? <p className="muted">暂无项目节点。</p> : null}
-        {readiness.dependencyMap.nodes.map((node) => (
-          <div className="manifest-row" key={node.id}>
-            <strong>{node.label}</strong>
-            <span>{node.role}</span>
-            <em className="badge green">node</em>
-          </div>
-        ))}
-        {readiness.dependencyMap.edges.map((edge) => (
-          <code key={`${edge.from}-${edge.to}`}>{edge.label}</code>
-        ))}
-      </InspectorSection>
-      <InspectorSection title="Governance">
-        {readiness.governance.map((item) => (
-          <ReadinessRow item={item} key={item.id} />
-        ))}
-      </InspectorSection>
-    </div>
-  );
-}
-
-function ReadinessRow({ item }: { item: { label: string; status: string; detail: string } }) {
-  return (
-    <article className="readiness-row">
-      <div className="worktree-title">
-        <strong>{item.label}</strong>
-        <em className={item.status === "ready" ? "badge green" : "badge"}>{item.status}</em>
-      </div>
-      <p>{item.detail}</p>
-    </article>
-  );
-}
 
 /** A quest has executed once its plan was approved (or it reached a post-run status). */
 function questHasExecuted(quest?: Quest): boolean {
@@ -1810,6 +1790,7 @@ function AppSettingsDialog({
   onCheckProject,
   onClose,
   onOpenProjectDirectory,
+  onRefreshAll,
   onRemoveProject,
   onSetBusy
 }: {
@@ -1825,6 +1806,7 @@ function AppSettingsDialog({
   onCheckProject: (projectId: string) => Promise<void>;
   onClose: () => void;
   onOpenProjectDirectory: (projectId: string) => Promise<void>;
+  onRefreshAll: () => Promise<void>;
   onRemoveProject: (projectId: string) => Promise<void>;
   onSetBusy: (value: boolean) => void;
 }) {
@@ -1876,6 +1858,28 @@ function AppSettingsDialog({
   const [creatingSubAgent, setCreatingSubAgent] = useState(false);
   const [editingSubAgent, setEditingSubAgent] = useState<SubAgent | null>(null);
   const [subAgentError, setSubAgentError] = useState("");
+
+  const repoAutoCheckedRef = useRef(false);
+
+  useEffect(() => {
+    repoAutoCheckedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "repositories" || repoAutoCheckedRef.current || busy || projects.length === 0) return;
+    repoAutoCheckedRef.current = true;
+    (async () => {
+      onSetBusy(true);
+      try {
+        for (const project of projects) {
+          await api.checkProject(project.id).catch(() => undefined);
+        }
+        await onRefreshAll();
+      } finally {
+        onSetBusy(false);
+      }
+    })();
+  }, [tab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2210,7 +2214,7 @@ function AppSettingsDialog({
                 disabled={busy || !newProject.path.trim()}
                 type="submit"
               >
-                添加目录
+                添加仓库
               </button>
             </form>
             {projects.length === 0 ? <p className="muted">暂无仓库。</p> : null}
@@ -2984,13 +2988,13 @@ function ProjectFields({
   draft: ProjectDraft;
   onDraftChange: (draft: ProjectDraft) => void;
 }) {
-  const [branches, setBranches] = useState<string[]>([]);
+  const [currentBranch, setCurrentBranch] = useState<string>("");
   const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     const path = draft.path.trim();
     if (!path) {
-      setBranches([]);
+      setCurrentBranch("");
       return;
     }
     let cancelled = false;
@@ -2998,12 +3002,15 @@ function ProjectFields({
       .listBranches(path)
       .then((result) => {
         if (!cancelled) {
-          setBranches(result.branches);
+          setCurrentBranch(result.currentBranch);
+          if (result.currentBranch && result.currentBranch !== draft.defaultBranch) {
+            onDraftChange({ ...draft, defaultBranch: result.currentBranch });
+          }
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setBranches([]);
+          setCurrentBranch("");
         }
       });
     return () => {
@@ -3021,22 +3028,18 @@ function ProjectFields({
       const path = result.path;
       const branchInfo = await api
         .listBranches(path)
-        .catch(() => ({ branches: [] as string[], defaultBranch: "main" }));
-      setBranches(branchInfo.branches);
+        .catch(() => ({ branches: [] as string[], defaultBranch: "main", currentBranch: "" }));
+      setCurrentBranch(branchInfo.currentBranch);
       onDraftChange({
         ...draft,
         path,
         name: draft.name.trim() || basenameFromPath(path),
-        defaultBranch: branchInfo.defaultBranch || "main"
+        defaultBranch: branchInfo.currentBranch || branchInfo.defaultBranch || "main"
       });
     } finally {
       setPicking(false);
     }
   }
-
-  const branchOptions = Array.from(
-    new Set(["main", "master", draft.defaultBranch, ...branches].map((branch) => branch.trim()).filter(Boolean))
-  );
 
   return (
     <div className="project-fields">
@@ -3056,14 +3059,13 @@ function ProjectFields({
         </span>
       </label>
       <label className="full-field">
-        <span>默认分支</span>
-        <Select
-          ariaLabel="默认分支"
-          value={draft.defaultBranch}
-          onValueChange={(branch) => onDraftChange({ ...draft, defaultBranch: branch })}
-          options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
+        <span>当前分支</span>
+        <input
+          aria-label="当前分支"
+          value={currentBranch || "—"}
+          readOnly
         />
-        <span className="field-hint">默认分支会作为 worktree 和知识库的 base。</span>
+        <span className="field-hint">自动检测仓库当前分支，作为 worktree 和知识库的 base。</span>
       </label>
     </div>
   );
@@ -3078,29 +3080,6 @@ function InspectorSection({ children, title }: { children: React.ReactNode; titl
   );
 }
 
-function Timeline({ events }: { events: AgentEvent[] }) {
-  return (
-    <div className="timeline">
-      {events.length === 0 ? <p className="muted">暂无执行事件。</p> : null}
-      {events.map((event, index) => (
-        <motion.article
-          className="timeline-item"
-          key={event.id}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.28, delay: Math.min(index * 0.04, 0.32), ease: [0.22, 0.61, 0.36, 1] }}
-        >
-          <div className="timeline-dot" />
-          <div>
-            <strong>{event.title}</strong>
-            <span>{event.agent}</span>
-            <p>{event.detail}</p>
-          </div>
-        </motion.article>
-      ))}
-    </div>
-  );
-}
 
 function SpecBlock({ title, items, empty }: { title: string; items: string[]; empty?: string }) {
   return (

@@ -12,7 +12,24 @@
 - [apps/web/src/api.ts](file://apps/web/src/api.ts)
 - [packages/core/src/types.ts](file://packages/core/src/types.ts)
 - [package.json](file://package.json)
+- [apps/web/src/components/KnowledgeCenter.tsx](file://apps/web/src/components/KnowledgeCenter.tsx)
+- [apps/web/src/components/MarkdownView.tsx](file://apps/web/src/components/MarkdownView.tsx)
+- [apps/web/src/components/MermaidDiagram.tsx](file://apps/web/src/components/MermaidDiagram.tsx)
+- [apps/web/src/components/CommandPalette.tsx](file://apps/web/src/components/CommandPalette.tsx)
+- [apps/web/src/components/Select.tsx](file://apps/web/src/components/Select.tsx)
+- [apps/web/src/styles.css](file://apps/web/src/styles.css)
+- [apps/web/src/theme.css](file://apps/web/src/theme.css)
+- [docs/superpowers/specs/2026-06-09-knowledge-center-panel-design.md](file://docs/superpowers/specs/2026-06-09-knowledge-center-panel-design.md)
+- [docs/superpowers/plans/2026-06-09-knowledge-center-panel.md](file://docs/superpowers/plans/2026-06-09-knowledge-center-panel.md)
+- [e2e/knowledge-center.spec.ts](file://e2e/knowledge-center.spec.ts)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 新增知识中心UI增强部分，包括三栏视图架构和用户反馈机制
+- 更新Claude Code集成与知识中心的协同改进说明
+- 添加Markdown渲染和Mermaid图表集成的详细说明
+- 完善错误处理和用户反馈机制的文档
 
 ## 目录
 1. [简介](#简介)
@@ -20,16 +37,19 @@
 3. [核心组件](#核心组件)
 4. [架构概览](#架构概览)
 5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考虑](#性能考虑)
-8. [故障排除指南](#故障排除指南)
-9. [结论](#结论)
+6. [知识中心UI增强](#知识中心ui增强)
+7. [依赖关系分析](#依赖关系分析)
+8. [性能考虑](#性能考虑)
+9. [故障排除指南](#故障排除指南)
+10. [结论](#结论)
 
 ## 简介
 
 RepoHelm 是一个开源的 Quest 工作区原型，专门用于验证"虚拟工作区 + 多项目 Quest + 规范驱动 + worktree 隔离 + Agent 编排 + 知识库"的产品方向。该项目的核心目标是通过 Claude Code 等 AI 代理后端来实现智能代码生成和项目管理。
 
 Claude Code 集成是 RepoHelm 的重要组成部分，它允许用户通过 Anthropic 的 Claude Code CLI 来执行智能代码任务。该集成提供了完整的开发环境，包括代码生成、文件修改、项目管理和协作功能。
+
+**更新** 新增知识中心UI增强功能，提供更好的用户体验和更直观的知识管理界面。
 
 ## 项目结构
 
@@ -61,6 +81,13 @@ Web[apps/web]
 UI[React UI]
 Components[组件]
 API[API 客户端]
+KnowledgeCenter[知识中心]
+MarkdownRenderer[Markdown渲染器]
+MermaidCharts[Mermaid图表]
+CommandPalette[命令面板]
+SelectComponent[选择组件]
+Styles[样式系统]
+Theme[主题系统]
 end
 Root --> Core
 Root --> Server
@@ -75,6 +102,13 @@ Server --> Routes
 Web --> UI
 Web --> Components
 Web --> API
+Web --> KnowledgeCenter
+Web --> MarkdownRenderer
+Web --> MermaidCharts
+Web --> CommandPalette
+Web --> SelectComponent
+Web --> Styles
+Web --> Theme
 ```
 
 **图表来源**
@@ -101,6 +135,8 @@ ProviderRegistry 管理各种 AI 模型提供商，支持 OpenAI、Anthropic、G
 ### 编排器
 SubAgentOrchestrator 负责协调不同 Agent 的执行，确保任务按照正确的顺序和依赖关系执行。
 
+**更新** 新增知识中心组件，提供三栏全页视图和增强的用户交互体验。
+
 **章节来源**
 - [packages/core/src/agent.ts:395-411](file://packages/core/src/agent.ts#L395-L411)
 - [packages/core/src/cli.ts:124-220](file://packages/core/src/cli.ts#L124-L220)
@@ -115,6 +151,9 @@ graph TB
 subgraph "用户界面层"
 WebUI[Web UI]
 API[API 客户端]
+KnowledgeCenter[知识中心]
+CommandPalette[命令面板]
+SelectComponent[选择组件]
 end
 subgraph "应用服务层"
 Server[Server 应用]
@@ -126,11 +165,14 @@ AgentRegistry[Agent 后端注册表]
 CLIRegistry[CLI 注册表]
 ProviderRegistry[提供商注册表]
 StateStore[状态存储]
+KnowledgeStore[知识存储]
 end
 subgraph "外部集成层"
 ClaudeCLI[Claude Code CLI]
 ExternalCLI[其他 CLI 工具]
 AIProviders[AI 模型提供商]
+MarkdownRenderer[Markdown渲染器]
+MermaidCharts[Mermaid图表]
 end
 WebUI --> API
 API --> Server
@@ -142,6 +184,9 @@ AgentRegistry --> ProviderRegistry
 CLIRegistry --> ClaudeCLI
 ProviderRegistry --> AIProviders
 AgentRegistry --> ExternalCLI
+KnowledgeCenter --> MarkdownRenderer
+KnowledgeCenter --> MermaidCharts
+KnowledgeCenter --> KnowledgeStore
 ```
 
 **图表来源**
@@ -291,6 +336,143 @@ APIClient --> LocalCliInfo : "获取"
 - [apps/web/src/api.ts:14-14](file://apps/web/src/api.ts#L14-L14)
 - [apps/web/src/api.ts:449-653](file://apps/web/src/api.ts#L449-L653)
 
+## 知识中心UI增强
+
+**更新** 新增知识中心UI增强功能，提供更好的用户体验和更直观的知识管理界面。
+
+### 三栏全页视图架构
+
+知识中心采用三栏全页视图设计，完全替代原有的模态框：
+
+```mermaid
+graph TB
+subgraph "知识中心三栏布局"
+KnowledgeCenter[知识中心容器]
+Sidebar[左侧导航栏]
+KnowledgeNav[中间导航面板]
+KnowledgeContent[右侧内容面板]
+end
+subgraph "导航面板组件"
+RepoTree[仓库树形结构]
+MemoryList[记忆列表]
+SearchBox[搜索框]
+Tabs[标签切换]
+end
+subgraph "内容面板组件"
+WikiPageView[Wiki页面视图]
+MemoryItemView[记忆条目视图]
+MarkdownRenderer[Markdown渲染器]
+MermaidCharts[Mermaid图表]
+PreviewCodeToggle[预览/代码切换]
+RegenerateButton[重新生成按钮]
+end
+KnowledgeCenter --> Sidebar
+KnowledgeCenter --> KnowledgeNav
+KnowledgeCenter --> KnowledgeContent
+KnowledgeNav --> RepoTree
+KnowledgeNav --> MemoryList
+KnowledgeNav --> SearchBox
+KnowledgeNav --> Tabs
+KnowledgeContent --> WikiPageView
+KnowledgeContent --> MemoryItemView
+WikiPageView --> MarkdownRenderer
+WikiPageView --> MermaidCharts
+WikiPageView --> PreviewCodeToggle
+WikiPageView --> RegenerateButton
+```
+
+**图表来源**
+- [docs/superpowers/specs/2026-06-09-knowledge-center-panel-design.md:37-58](file://docs/superpowers/specs/2026-06-09-knowledge-center-panel-design.md#L37-L58)
+- [apps/web/src/components/KnowledgeCenter.tsx:184-426](file://apps/web/src/components/KnowledgeCenter.tsx#L184-L426)
+
+### Markdown渲染和Mermaid图表集成
+
+知识中心集成了强大的Markdown渲染和Mermaid图表生成功能：
+
+```mermaid
+sequenceDiagram
+participant User as 用户
+participant KnowledgeCenter as 知识中心
+participant MarkdownView as Markdown渲染器
+participant MermaidDiagram as Mermaid图表
+participant API as 知识库API
+User->>KnowledgeCenter : 选择仓库和页面
+KnowledgeCenter->>API : 获取项目知识视图
+API-->>KnowledgeCenter : 返回页面内容
+KnowledgeCenter->>MarkdownView : 渲染Markdown内容
+MarkdownView->>MarkdownView : 解析代码围栏
+MarkdownView->>MermaidDiagram : 识别Mermaid代码块
+MermaidDiagram->>MermaidDiagram : 初始化Mermaid引擎
+MermaidDiagram->>MermaidDiagram : 渲染SVG图表
+MermaidDiagram-->>MarkdownView : 返回SVG图表
+MarkdownView-->>KnowledgeCenter : 渲染完成
+KnowledgeCenter-->>User : 显示渲染内容
+```
+
+**图表来源**
+- [apps/web/src/components/MarkdownView.tsx:5-28](file://apps/web/src/components/MarkdownView.tsx#L5-L28)
+- [apps/web/src/components/MermaidDiagram.tsx:6-46](file://apps/web/src/components/MermaidDiagram.tsx#L6-L46)
+
+### 用户反馈和错误处理机制
+
+知识中心实现了完善的用户反馈和错误处理机制：
+
+```mermaid
+stateDiagram-v2
+[*] --> NormalState : 正常状态
+NormalState --> LoadingState : 加载中
+NormalState --> ErrorState : 发生错误
+NormalState --> SuccessState : 操作成功
+LoadingState --> NormalState : 加载完成
+LoadingState --> ErrorState : 加载失败
+ErrorState --> NormalState : 错误已解决
+SuccessState --> NormalState : 成功消息消失
+SuccessState --> ErrorState : 操作失败
+```
+
+**图表来源**
+- [apps/web/src/components/KnowledgeCenter.tsx:28-38](file://apps/web/src/components/KnowledgeCenter.tsx#L28-L38)
+- [apps/web/src/styles.css:3187-3217](file://apps/web/src/styles.css#L3187-L3217)
+
+### 命令面板集成
+
+知识中心与命令面板深度集成，提供快捷操作入口：
+
+```mermaid
+classDiagram
+class CommandPalette {
++open : boolean
++theme : "light"|"dark"
++workspaces : Workspace[]
++onClose() : void
++onNewRequest() : void
++onSelectWorkspace() : void
++onCreateWorkspace() : void
++onOpenSettings() : void
++onOpenKnowledge() : void
++onToggleTheme() : void
+}
+class KnowledgeCenter {
++projects : Project[]
++knowledge : KnowledgeItem[]
++theme : "light"|"dark"
++onClose() : void
+}
+CommandPalette --> KnowledgeCenter : "打开知识中心"
+```
+
+**图表来源**
+- [apps/web/src/components/CommandPalette.tsx:6-28](file://apps/web/src/components/CommandPalette.tsx#L6-L28)
+- [apps/web/src/components/KnowledgeCenter.tsx:40-61](file://apps/web/src/components/KnowledgeCenter.tsx#L40-L61)
+
+**章节来源**
+- [docs/superpowers/specs/2026-06-09-knowledge-center-panel-design.md:1-89](file://docs/superpowers/specs/2026-06-09-knowledge-center-panel-design.md#L1-L89)
+- [docs/superpowers/plans/2026-06-09-knowledge-center-panel.md:1-898](file://docs/superpowers/plans/2026-06-09-knowledge-center-panel.md#L1-L898)
+- [apps/web/src/components/KnowledgeCenter.tsx:1-428](file://apps/web/src/components/KnowledgeCenter.tsx#L1-L428)
+- [apps/web/src/components/MarkdownView.tsx:1-29](file://apps/web/src/components/MarkdownView.tsx#L1-L29)
+- [apps/web/src/components/MermaidDiagram.tsx:1-47](file://apps/web/src/components/MermaidDiagram.tsx#L1-L47)
+- [apps/web/src/components/CommandPalette.tsx:1-101](file://apps/web/src/components/CommandPalette.tsx#L1-L101)
+
 ## 依赖关系分析
 
 RepoHelm 的 Claude Code 集成涉及多个层次的依赖关系：
@@ -301,7 +483,10 @@ subgraph "运行时依赖"
 NodeJS[Node.js 运行时]
 ClaudeCLI[Claude Code CLI]
 Git[Git 版本控制]
-end
+React[React 19]
+Tailwind[Tailwind CSS]
+Mermaid[Mermaid图表]
+End
 subgraph "核心依赖"
 CorePackage[@repohelm/core]
 AgentBackend[Agent 后端]
@@ -312,12 +497,14 @@ subgraph "应用依赖"
 ServerApp[@repohelm/server]
 WebApp[@repohelm/web]
 Hono[Hono Web 框架]
-React[React 19]
+LucideIcons[Lucide图标]
+RadixUI[Radix UI组件]
 end
 subgraph "开发依赖"
 TypeScript[TypeScript]
 Vitest[Vitest]
 Playwright[Playwright]
+E2E[E2E测试]
 end
 NodeJS --> CorePackage
 ClaudeCLI --> AgentBackend
@@ -326,9 +513,14 @@ CorePackage --> ServerApp
 CorePackage --> WebApp
 Hono --> ServerApp
 React --> WebApp
+Tailwind --> WebApp
+Mermaid --> WebApp
+LucideIcons --> WebApp
+RadixUI --> WebApp
 TypeScript --> CorePackage
 Vitest --> CorePackage
 Playwright --> WebApp
+E2E --> WebApp
 ```
 
 **图表来源**
@@ -358,6 +550,19 @@ Playwright --> WebApp
 - 实现重试机制
 - 错误处理和降级策略
 
+**更新** 新增知识中心UI性能优化考虑：
+
+### 知识中心渲染优化
+- 使用 React.memo 和 useCallback 优化组件重渲染
+- 实现虚拟滚动处理大量项目和记忆条目
+- 懒加载机制减少初始渲染时间
+- 图片和图表的延迟加载策略
+
+### Markdown渲染性能
+- 代码围栏的按需渲染
+- Mermaid图表的防抖渲染
+- 长文档的分段渲染
+
 ## 故障排除指南
 
 ### 常见问题及解决方案
@@ -383,10 +588,38 @@ Playwright --> WebApp
 2. 验证 CORS 配置
 3. 确认防火墙设置
 
+**更新** 新增知识中心相关故障排除：
+
+#### 知识中心渲染问题
+**症状**: 知识中心页面空白或渲染错误
+**解决方案**:
+1. 检查网络连接和API响应
+2. 验证项目知识库数据完整性
+3. 查看浏览器控制台错误信息
+4. 确认Markdown渲染依赖正常加载
+
+#### Mermaid图表渲染失败
+**症状**: Mermaid图表显示错误或不显示
+**解决方案**:
+1. 检查Mermaid语法是否正确
+2. 验证图表代码格式
+3. 确认主题设置与应用主题一致
+4. 查看错误降级显示的原始代码
+
+#### 用户反馈机制问题
+**症状**: 消息提示不显示或显示异常
+**解决方案**:
+1. 检查CSS样式类是否正确应用
+2. 验证消息状态管理逻辑
+3. 确认定时器和清理机制正常工作
+4. 查看控制台是否有JavaScript错误
+
 **章节来源**
 - [packages/core/src/agent.ts:125-142](file://packages/core/src/agent.ts#L125-L142)
 - [packages/core/src/cli.ts:222-290](file://packages/core/src/cli.ts#L222-L290)
 - [apps/server/src/index.ts:46-53](file://apps/server/src/index.ts#L46-L53)
+- [apps/web/src/components/KnowledgeCenter.tsx:67-88](file://apps/web/src/components/KnowledgeCenter.tsx#L67-L88)
+- [apps/web/src/components/MermaidDiagram.tsx:26-31](file://apps/web/src/components/MermaidDiagram.tsx#L26-L31)
 
 ## 结论
 
@@ -397,12 +630,15 @@ RepoHelm 的 Claude Code 集成提供了一个完整的 AI 代理开发平台，
 - **可扩展性**: 支持多种 Agent 后端和 CLI 工具
 - **易用性**: 直观的 Web 界面和丰富的 API
 - **可靠性**: 完善的错误处理和监控机制
+- **用户体验**: 增强的知识中心UI和更好的交互体验
 
 ### 技术特色
 - **多后端支持**: Claude Code、Codex、OpenCode 等
 - **智能编排**: 自动化的任务调度和依赖管理
 - **状态持久化**: 完整的状态管理和恢复机制
 - **安全控制**: 细粒度的权限控制和审计日志
+- **现代化UI**: 三栏全页视图和响应式设计
+- **内容渲染**: Markdown + Mermaid图表的丰富内容展示
 
 ### 未来发展
 RepoHelm 的 Claude Code 集成仍在持续发展中，未来计划包括：
@@ -410,5 +646,6 @@ RepoHelm 的 Claude Code 集成仍在持续发展中，未来计划包括：
 - 增强的项目管理和协作功能
 - 更完善的监控和调试工具
 - 优化的性能和用户体验
+- 更丰富的知识管理和搜索功能
 
-通过这个集成指南，开发者可以快速理解和使用 RepoHelm 的 Claude Code 功能，构建高效的 AI 代理应用程序。
+通过这个集成指南，开发者可以快速理解和使用 RepoHelm 的 Claude Code 功能，构建高效的 AI 代理应用程序。新增的知识中心UI增强功能进一步提升了用户的操作体验，使得知识管理和项目协作更加直观和高效。

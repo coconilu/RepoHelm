@@ -6,7 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What RepoHelm is
 
-RepoHelm is an MVP prototype of an "Agentic Quest workspace": a virtual workspace can link multiple local repos, and a **Quest** turns one request into an auditable, isolated, verifiable, deliverable multi-project task (spec → plan → git worktree → agent execution → review → commit/PR handoff). Product direction and non-goals live in `docs/architecture.md` (Chinese). The UI and most docs are in Chinese; code identifiers are English.
+RepoHelm is an MVP prototype of an "Agentic Quest workspace": a virtual workspace can link multiple local repos, and a **Quest** turns one request into an auditable, isolated, verifiable, deliverable multi-project task (spec → plan → git worktree → agent execution → review → commit/PR handoff). The UI and most docs are in Chinese; code identifiers are English.
+
+## Key documentation
+
+- `docs/architecture.md` — product direction, boundaries, non-goals (Chinese).
+- `MILESTONES.md` — milestone tracking: what's Done / Partial / Planned / Later (Chinese).
+- `TODO.md` — open-source project health items: CI, contributing guide, issue templates (Chinese).
+- `MODEL_FETCHING.md` — design doc for live provider/model list fetching via BYOK REST + CLI mapping.
 
 ## Monorepo layout
 
@@ -47,21 +54,24 @@ It composes specialized collaborators, all in `packages/core/src`:
 - `orchestrator.ts` — `SubAgentOrchestrator`: runs an entry sub-agent in a tool-calling loop (`MAX_TOOL_LOOP_ITERATIONS`), delegating to other sub-agents via the `delegate` tool (`tools/delegate.ts`).
 - `planning.ts` — generates the orchestration plan that the user approves/rejects before a Quest runs.
 - `knowledge.ts` / `quest-workspace.ts` — per-quest workspace scaffolding + the per-repo Markdown writer (`writeWikiPage`).
-- `repo-wiki.ts` / `wiki-store.ts` / `vector.ts` — repo-bound knowledge base. Each Project owns 6 structured wiki pages (`overview/architecture/modules/key-flows/conventions/decisions`) under `.repohelm/knowledge/<projectId>/` (Markdown = source of truth) plus chunk embeddings. `RepoWikiManager` runs **bootstrap** (full index) / **incremental** (diff `lastIndexedSha..HEAD` on the tracked branch → LLM rewrites only affected pages, appends a `decisions` entry) / **search** (embed query → cosine top-k, keyword fallback when no embedding ModelKit). `WikiStore` persists pages + `float[]` vectors in separate `wiki_pages`/`wiki_embeddings` SQLite tables (same `state.sqlite`, WAL). The knowledge panel lazily detects new commits and offers an update; service methods `getProjectKnowledge`/`syncProjectKnowledge`/`setProjectKnowledgeBranch`/`searchProjectKnowledge`. Indexing needs a BYOK chat ModelKit; vector retrieval needs `engine.embeddingModelKitId`. `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns canned model output for tests/e2e.
+- `repo-wiki.ts` / `wiki-store.ts` / `vector.ts` — repo-bound knowledge base. Each Project owns 6 structured wiki pages (`overview/architecture/modules/key-flows/conventions/decisions`) under `.repohelm/knowledge/<projectId>/` (Markdown = source of truth) plus chunk embeddings. `RepoWikiManager` supports bootstrap (full index), incremental (diff `lastIndexedSha..HEAD` → LLM rewrites only affected pages), and search (embed query → cosine top-k, keyword fallback when no embedding ModelKit). `WikiStore` persists pages + `float[]` vectors in `wiki_pages`/`wiki_embeddings` SQLite tables (WAL). Indexing needs a BYOK chat ModelKit; vector retrieval needs `engine.embeddingModelKitId`. Service methods: `getProjectKnowledge`/`syncProjectKnowledge`/`setProjectKnowledgeBranch`/`searchProjectKnowledge`.
+- `tools/` — tool implementations consumed by the orchestrator's tool-calling loop. `delegate.ts` is the sub-agent delegation tool; `fs.ts` is the filesystem tool used by mock agents inside worktrees.
 - `types.ts` — single source of truth for all domain types; `index.ts` re-exports everything.
 
 ### Engine config: two execution modes
-`EngineConfig` (in state) selects how agents run: `mode: "cli"` (use a detected local CLI + its model) vs BYOK providers (`byokProviders`, an active one selected). **ModelKits** bundle provider/model/apiKey for LLM calls. Sub-agents reference ModelKits. This is the integration point for model access — see the `repohelm-engine-config` memory.
+`EngineConfig` (in state) selects how agents run: `mode: "cli"` (use a detected local CLI + its model) vs BYOK providers (`byokProviders`, an active one selected). **ModelKits** bundle provider/model/apiKey for LLM calls. Sub-agents reference ModelKits. This is the integration point for model access — see `MODEL_FETCHING.md` for the provider/model fetch design.
 
 ### Server is a thin Zod-validated REST layer
 `apps/server/src/index.ts` (~600 lines) defines ~50 `/api/*` routes, each validating input with Zod and delegating to the service. Root/state/worktree/knowledge dirs are resolved from `REPOHELM_ROOT` / `REPOHELM_STATE_ROOT` / `REPOHELM_WORKTREE_ROOT` / `REPOHELM_KNOWLEDGE_ROOT` (defaults under `.repohelm/`). CORS is locked to the Vite dev origin.
 
-### Web is one big component + a typed API client
-`apps/web/src/App.tsx` (~3400 lines) is the whole UI; `apps/web/src/api.ts` (~600 lines) is the typed fetch client. Vite proxies `/api` → `http://localhost:4300`. **UI styling is token-driven** (Tailwind v4 + CSS custom properties in `theme.css`/`styles.css`, Linear-inspired, dark by default) — change appearance via tokens, don't hardcode colors. See the `repohelm-ui-design-system` memory.
+### Web is a typed API client + component tree
+`apps/web/src/App.tsx` (~3400 lines) is the main UI shell; `apps/web/src/api.ts` (~600 lines) is the typed fetch client. Vite proxies `/api` → `http://localhost:4300`. Sub-components live in `apps/web/src/components/`: `CommandPalette.tsx`, `KnowledgeCenter.tsx`, `MarkdownView.tsx`, `MermaidDiagram.tsx`, `Select.tsx`. **UI styling is token-driven** (Tailwind v4 + CSS custom properties in `theme.css`/`styles.css`, Linear-inspired, dark by default) — change appearance via tokens, don't hardcode colors.
 
 ## Agent backend env vars
 Real backends are opt-in via env before starting the server:
 `REPOHELM_CODEX_COMMAND`, `REPOHELM_CLAUDE_COMMAND`, `REPOHELM_OPENCODE_COMMAND`, `REPOHELM_OPENAI_BASE_URL` / `_MODEL` / `_API_KEY`, `REPOHELM_ENABLE_GH_PR=1`. External CLIs execute **inside the Quest worktree** and read standardized input JSON from `REPOHELM_AGENT_INPUT`.
+
+For tests/e2e: `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns canned model output instead of hitting real LLM endpoints.
 
 ## Conventions
 - TypeScript: ES2022 target, ESNext modules, Bundler resolution, strict. ESM throughout — **import local modules with the `.js` extension** (`./service.js`), matching existing code.
