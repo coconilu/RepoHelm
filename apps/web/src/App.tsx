@@ -37,6 +37,11 @@ import {
   CreateModelKitInput,
   CreateSubAgentInput,
   EngineConfig,
+  ExpertSession,
+  ExpertTask,
+  AcceptanceTest,
+  CodeResearchResult,
+  TaskArtifact,
   KnowledgeItem,
   CliModelOption,
   LocalCliInfo,
@@ -59,6 +64,12 @@ import { motion } from "motion/react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Select } from "./components/Select";
 import { KnowledgeCenter } from "./components/KnowledgeCenter";
+import { OrchestrationPanel } from "./components/OrchestrationPanel";
+import { ProgressPanel } from "./components/ProgressPanel";
+import { AcceptancePanel } from "./components/AcceptancePanel";
+import { DeliverablesPanel } from "./components/DeliverablesPanel";
+import { ReferencesPanel } from "./components/ReferencesPanel";
+import { ResearchPanel } from "./components/ResearchPanel";
 
 const statusLabel: Record<string, string> = {
   draft: "草稿",
@@ -81,7 +92,7 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff";
+type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
 type ResizeDivider = "sidebar" | "inspector";
 type SettingsTab = "repositories" | "models" | "modelkits" | "subagents";
 
@@ -139,6 +150,7 @@ export function App() {
   const [pendingAction, setPendingAction] = useState<string>("");
   const [pendingRequirement, setPendingRequirement] = useState<string>("");
   const [error, setError] = useState("");
+  const [expertSession, setExpertSession] = useState<ExpertSession | null>(null);
   const resizeStartRef = useRef<{
     divider: ResizeDivider;
     pointerX: number;
@@ -665,6 +677,7 @@ export function App() {
               capabilities={state.capabilities}
               changedFiles={changedFiles}
               events={questEvents}
+              expertSession={expertSession}
               projects={projects}
               quest={selectedQuest}
               selectedChangedFile={selectedChangedFile}
@@ -1190,6 +1203,7 @@ function Inspector({
   capabilities,
   changedFiles,
   events,
+  expertSession,
   projects,
   quest,
   selectedChangedFile,
@@ -1205,6 +1219,7 @@ function Inspector({
   capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
   events: AgentEvent[];
+  expertSession: ExpertSession | null;
   projects: Project[];
   quest?: Quest;
   selectedChangedFile?: ChangedFile;
@@ -1232,7 +1247,13 @@ function Inspector({
     { id: "plan", label: "Plan" },
     { id: "capabilities", label: "能力" },
     { id: "files", label: "文件" },
-    { id: "diff", label: "Diff" }
+    { id: "diff", label: "Diff" },
+    { id: "orchestration", label: "编排" },
+    { id: "progress", label: "进展" },
+    { id: "acceptance", label: "验收" },
+    { id: "deliverables", label: "产物" },
+    { id: "references", label: "引用" },
+    { id: "research", label: "研究" }
   ];
 
   const visibleTabs = allTabs.filter((tabItem) => {
@@ -1249,6 +1270,13 @@ function Inspector({
         return hasFiles;
       case "diff":
         return hasDiff;
+      case "orchestration":
+      case "progress":
+      case "acceptance":
+      case "deliverables":
+      case "references":
+      case "research":
+        return !!expertSession; // Expert tabs only visible when expert session exists
       default:
         return false;
     }
@@ -1293,6 +1321,24 @@ function Inspector({
         ) : null}
         {effectiveTab === "diff" && hasDiff ? (
           <DiffPanel file={selectedChangedFile} projectById={projectById} quest={quest} />
+        ) : null}
+        {effectiveTab === "orchestration" && expertSession ? (
+          <OrchestrationPanel session={expertSession} />
+        ) : null}
+        {effectiveTab === "progress" && expertSession ? (
+          <ProgressPanel tasks={expertSession.flatTasks} />
+        ) : null}
+        {effectiveTab === "acceptance" && expertSession ? (
+          <AcceptancePanel tests={expertSession.acceptanceTests} />
+        ) : null}
+        {effectiveTab === "deliverables" && expertSession ? (
+          <DeliverablesPanel tasks={expertSession.flatTasks} />
+        ) : null}
+        {effectiveTab === "references" && expertSession ? (
+          <ReferencesPanel research={expertSession.research} />
+        ) : null}
+        {effectiveTab === "research" && expertSession ? (
+          <ResearchPanel research={expertSession.research} />
         ) : null}
       </div>
     </aside>
