@@ -77,3 +77,16 @@ For tests/e2e: `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns ca
 - TypeScript: ES2022 target, ESNext modules, Bundler resolution, strict. ESM throughout — **import local modules with the `.js` extension** (`./service.js`), matching existing code.
 - Commit style: imperative, concise, no scope prefix (`Add feature X`, `Fix bug Y`).
 - Tests are colocated (`*.test.ts`) and run with vitest (core/server) or Playwright (`e2e/`).
+
+### Sub-agent model selection
+When dispatching sub-agents (via `Agent` tool), choose model by task type:
+
+| Task type | Model | Examples |
+|-----------|-------|----------|
+| Read/search/collect info | `sonnet` | Explore agents, grep, file reading |
+| Mechanical implementation from a plan | `sonnet` | Write code/tests per spec, commit |
+| Write plans, decompose tasks, judge dependencies | `opus` | writing-plans skill output |
+| Architecture design, trade-off analysis | `opus` | Brainstorming design sections, approach comparison |
+| Code review, spec audit, consistency check | `opus` | Finding bugs, verifying type consistency across files |
+
+**Rule of thumb:** sonnet executes the plan; opus draws the plan and audits it. Never use sonnet for tasks that require broad codebase judgment or multi-file coordination decisions.
