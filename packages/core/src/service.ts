@@ -2647,4 +2647,26 @@ export class RepoHelmService {
       createdAt: now()
     };
   }
+
+  // === Expert Session CRUD ===
+
+  async createExpertSession(session: import("./expert/types.js").ExpertSession): Promise<void> {
+    await (this.store as any).writeExpertSession(session);
+  }
+
+  async getExpertSession(id: string): Promise<import("./expert/types.js").ExpertSession | undefined> {
+    return (await (this.store as any).readExpertSession(id)) ?? undefined;
+  }
+
+  async updateExpertSession(id: string, updates: Partial<import("./expert/types.js").ExpertSession>): Promise<import("./expert/types.js").ExpertSession> {
+    const session = await this.getExpertSession(id);
+    if (!session) throw new Error(`Session ${id} 不存在`);
+    Object.assign(session, updates);
+    await (this.store as any).writeExpertSession(session);
+    return session;
+  }
+
+  async listExpertSessions(questId?: string): Promise<import("./expert/types.js").ExpertSession[]> {
+    return (this.store as any).listExpertSessions(questId);
+  }
 }
