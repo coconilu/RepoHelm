@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hook": {
+          "type": "command",
+          "command": "bash .claude/hooks/typecheck-on-edit.sh",
+          "timeout": 90,
+          "statusMessage": "Running typecheck..."
+        }
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm --filter @repohelm/core build:*)",
+      "Bash(bash .claude/hooks/*)"
+    ]
+  }
+}

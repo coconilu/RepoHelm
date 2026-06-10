@@ -40,3 +40,14 @@ Playwright config clears all proxy env vars (`NO_PROXY`, `HTTP_PROXY`, etc.) to 
 ## Commit Style
 
 Imperative, concise, no scope prefix: `Add feature X`, `Fix bug Y`, `Update Z`.
+
+## Quality Gate: Dual-Agent Pipeline
+
+When finishing a non-trivial feature or fix (anything touching `service.ts`, `App.tsx`, orchestrator, store, or adding a new REST route), dispatch **both** of these subagents in parallel before claiming the work is done:
+
+1. **`repohelm-test-agent`** (TDD): writes failing tests first, then verifies they pass after implementation.
+2. **`code-reviewer`**: read-only review of the changed paths — correctness, type drift at REST boundary, state mutation safety, Tailwind v4 token usage.
+
+Run them in the same message so they execute concurrently. Synthesize both outputs before reporting back. If `code-reviewer` returns `VERDICT: BLOCK`, do not commit — address blockers first.
+
+For trivial changes (typo fixes, docs-only, single-line config tweaks), the dual pipeline is overkill — skip it.
