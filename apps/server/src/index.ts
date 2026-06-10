@@ -729,6 +729,106 @@ app.patch("/api/failures/:id", async (context) => {
   return context.json(pattern);
 });
 
+// === Expert Session Schemas ===
+
+const createExpertSessionSchema = z.object({
+  questId: z.string().min(1),
+  requirement: z.string().min(10),
+  workspaceId: z.string().optional(),
+  entryAgentId: z.string().optional(),
+  projectIds: z.array(z.string()).optional()
+});
+
+const updateTaskSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().optional(),
+  assignedAgentId: z.string().optional(),
+  dependencies: z.array(z.string()).optional(),
+  status: z.enum(["skipped"]).optional()
+});
+
+const confirmSessionSchema = z.object({
+  acceptanceTestIds: z.array(z.string()).optional(),
+  skipAcceptanceTests: z.boolean().optional()
+});
+
+// === Expert Session Routes ===
+
+app.post("/api/expert/session", async (c) => {
+  const input = createExpertSessionSchema.parse(await c.req.json());
+  const session = {
+    id: `expert_${input.questId}`,
+    questId: input.questId,
+    status: "analyzing" as const,
+    entryAgentId: input.entryAgentId || "supervisor",
+    taskTree: {
+      id: "root",
+      title: input.questId,
+      type: "root" as const,
+      status: "pending" as const,
+      children: [],
+      dependencies: [],
+      artifacts: [],
+      description: input.requirement,
+      expectedOutput: ""
+    },
+    flatTasks: [],
+    acceptanceTests: [],
+    research: [],
+    agentPool: { prototypes: [], dynamicAgents: [], activeAgents: [] },
+    createdAt: new Date().toISOString(),
+    errors: []
+  };
+  await service.createExpertSession(session);
+  return c.json({ session }, 201);
+});
+
+app.get("/api/expert/session/:id", async (c) => {
+  const session = await service.getExpertSession(c.req.param("id"));
+  if (!session) return c.json({ error: "Not found" }, 404);
+  return c.json({ session });
+});
+
+app.patch("/api/expert/session/:id", async (c) => {
+  const updates = await c.req.json();
+  const session = await service.updateExpertSession(c.req.param("id"), updates);
+  return c.json({ session });
+});
+
+app.post("/api/expert/session/:id/confirm", async (c) => {
+  const input = confirmSessionSchema.parse(await c.req.json());
+  const session = await service.updateExpertSession(c.req.param("id"), {
+    status: "confirmed",
+    confirmedAt: new Date().toISOString()
+  });
+  return c.json({ session });
+});
+
+app.get("/api/expert/session/:id/deliverables", async (c) => {
+  const session = await service.getExpertSession(c.req.param("id"));
+  if (!session) return c.json({ error: "Not found" }, 404);
+  const deliverables = session.flatTasks.flatMap((t) => t.artifacts);
+  return c.json({ deliverables });
+});
+
+app.get("/api/expert/session/:id/references", async (c) => {
+  const session = await service.getExpertSession(c.req.param("id"));
+  if (!session) return c.json({ error: "Not found" }, 404);
+  return c.json({ references: { knowledge: session.research, preferences: [], failurePatterns: [] } });
+});
+
+app.get("/api/expert/session/:id/research", async (c) => {
+  const session = await service.getExpertSession(c.req.param("id"));
+  if (!session) return c.json({ error: "Not found" }, 404);
+  return c.json({ research: session.research });
+});
+
+app.get("/api/expert/session/:id/acceptance-tests", async (c) => {
+  const session = await service.getExpertSession(c.req.param("id"));
+  if (!session) return c.json({ error: "Not found" }, 404);
+  return c.json({ tests: session.acceptanceTests });
+});
+
 app.onError((error, context) => {
   console.error(error);
   return context.json(

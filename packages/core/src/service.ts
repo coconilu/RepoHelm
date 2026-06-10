@@ -1230,6 +1230,23 @@ export class RepoHelmService {
   }
 
   /**
+   * 获取所有失败模式（按严重性和时间排序）。
+   */
+  async getFailurePatterns(): Promise<import("./types.js").FailurePattern[]> {
+    const state = await this.getState();
+    const all = Object.values(state.failurePatterns);
+    // Sort unresolved first, then by severity, then recency
+    return all.sort((a, b) => {
+      if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
+      const sev = { high: 3, medium: 2, low: 1 } as const;
+      const sa = sev[a.severity] ?? 0;
+      const sb = sev[b.severity] ?? 0;
+      if (sa !== sb) return sb - sa;
+      return b.createdAt.localeCompare(a.createdAt);
+    });
+  }
+
+  /**
    * Refine a freeform request into a clearer, more actionable requirement using the
    * entry agent's ModelKit (BYOK or CLI). Throws a descriptive error when no model is
    * configured so the UI can surface real feedback.
