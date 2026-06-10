@@ -511,6 +511,125 @@ export interface UpdateModelKitInput {
   performanceProfile?: "fast" | "balanced" | "accurate";
 }
 
+// Expert orchestration types
+export type ExpertSessionStatus = "analyzing" | "awaiting_confirmation" | "confirmed" | "executing" | "completed" | "failed";
+export type TaskNodeType = "root" | "analysis" | "research" | "implementation" | "test" | "review" | "delivery";
+export type TaskStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped";
+export type AcceptanceTestStatus = "draft" | "confirmed" | "generated" | "passing" | "failing";
+
+export interface ExpertSession {
+  id: string;
+  questId: string;
+  status: ExpertSessionStatus;
+  entryAgentId: string;
+  taskTree: ExpertTaskNode;
+  flatTasks: ExpertTask[];
+  acceptanceTests: AcceptanceTest[];
+  research: CodeResearchResult[];
+  agentPool: AgentPoolSnapshot;
+  createdAt: string;
+  confirmedAt?: string;
+  completedAt?: string;
+  errors: ExpertError[];
+}
+
+export interface ExpertTaskNode {
+  id: string;
+  title: string;
+  type: TaskNodeType;
+  status: TaskStatus;
+  assignedAgentId?: string;
+  assignedAgentName?: string;
+  children: ExpertTaskNode[];
+  dependencies: string[];
+  research?: CodeResearchResult;
+  artifacts: TaskArtifact[];
+  acceptanceTestIds?: string[];
+  description: string;
+  expectedOutput: string;
+  summary?: string;
+}
+
+export interface ExpertTask {
+  id: string;
+  nodeId: string;
+  title: string;
+  description: string;
+  type: TaskNodeType;
+  status: TaskStatus;
+  assignedAgentId?: string;
+  assignedAgentName?: string;
+  agentAvatar?: string;
+  progress?: number;
+  startedAt?: string;
+  completedAt?: string;
+  artifacts: TaskArtifact[];
+  failureReason?: string;
+}
+
+export interface AcceptanceTest {
+  id: string;
+  title: string;
+  description: string;
+  status: AcceptanceTestStatus;
+  testType: "unit" | "integration" | "e2e";
+  relatedTaskIds: string[];
+  userConfirmed: boolean;
+  userNotes?: string;
+  generatedTestPath?: string;
+  testOutput?: string;
+}
+
+export interface CodeResearchResult {
+  id: string;
+  taskId?: string;
+  type: "reusable_function" | "existing_logic" | "proposed_change" | "related_code";
+  title: string;
+  filePath?: string;
+  codeSnippet?: string;
+  lineRange?: { start: number; end: number };
+  summary: string;
+  proposedLogic?: string;
+  reasoning?: string;
+}
+
+export interface AgentPoolSnapshot {
+  prototypes: Array<{
+    id: string;
+    name: string;
+    role: string;
+    capabilities: string[];
+    isBuiltIn: boolean;
+  }>;
+  dynamicAgents: Array<{
+    id: string;
+    name: string;
+    createdBy: string;
+    taskId?: string;
+  }>;
+  activeAgents: string[];
+}
+
+export interface TaskArtifact {
+  id: string;
+  taskId: string;
+  type: "file_change" | "test_result" | "research_summary" | "review_comment";
+  filePath?: string;
+  projectId?: string;
+  summary: string;
+  diff?: string;
+  createdAt: string;
+}
+
+export interface ExpertError {
+  code: string;
+  message: string;
+  detail: string;
+  recoverable: boolean;
+  affectedTaskIds: string[];
+  createdAt: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -768,5 +887,22 @@ export const api = {
     request<FailurePattern>(`/api/failures/${id}`, {
       method: "PATCH",
       body: JSON.stringify(input)
-    })
+    }),
+  // Expert Session API
+  createExpertSession: (input: { questId: string; requirement: string; entryAgentId?: string; projectIds?: string[] }) =>
+    request<ExpertSession>("/api/expert/session", { method: "POST", body: JSON.stringify(input) }),
+  getExpertSession: (id: string) =>
+    request<{ session: ExpertSession }>(`/api/expert/session/${id}`),
+  updateExpertSession: (id: string, updates: Partial<ExpertSession>) =>
+    request<{ session: ExpertSession }>(`/api/expert/session/${id}`, { method: "PATCH", body: JSON.stringify(updates) }),
+  confirmExpertSession: (id: string, input?: { acceptanceTestIds?: string[]; skipAcceptanceTests?: boolean }) =>
+    request<{ session: ExpertSession }>(`/api/expert/session/${id}/confirm`, { method: "POST", body: JSON.stringify(input || {}) }),
+  getExpertDeliverables: (id: string) =>
+    request(`/api/expert/session/${id}/deliverables`),
+  getExpertReferences: (id: string) =>
+    request(`/api/expert/session/${id}/references`),
+  getExpertResearch: (id: string) =>
+    request(`/api/expert/session/${id}/research`),
+  getExpertAcceptanceTests: (id: string) =>
+    request(`/api/expert/session/${id}/acceptance-tests`)
 };
