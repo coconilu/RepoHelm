@@ -5,7 +5,7 @@ import { AgentBackendRegistry } from "./agent.js";
 import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
-import { embedWithModelKit, callLlmWithModelKit, type LlmMessage } from "./llm.js";
+import { embedWithModelKit, callLlmWithModelKit, streamLlmWithModelKit, type LlmMessage } from "./llm.js";
 import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
 import { buildKnowledgeToolHandlers, knowledgeToolSpecs } from "./tools/knowledge.js";
 import { buildHabitsToolHandlers, habitsToolSpecs } from "./tools/habits.js";
@@ -44,6 +44,7 @@ import type {
   ProviderModelsResult,
   Quest,
   QuestSpec,
+  QuestSpecStreamEvent,
   QuestStatus,
   RepoHelmState,
   RepoWikiPage,
@@ -1554,93 +1555,39 @@ export class RepoHelmService {
     if (!workspace) {
       throw new Error("Workspace not found");
     }
-
     const affectedProjectIds =
       input.affectedProjectIds && input.affectedProjectIds.length > 0
         ? input.affectedProjectIds
         : this.inferAffectedProjectIds(state, workspace.projectIds, input.requirement);
     const timestamp = now();
     const questId = id("quest");
-    const relatedPages = workspace
-      ? await this.searchProjectKnowledge(workspace.projectIds, input.requirement)
-      : [];
-    const relatedKnowledge = relatedPages.slice(0, 3);
-    const relatedKnowledgeIds = relatedKnowledge.map((page) => page.id);
-    const spec = this.generateSpec(input.requirement, relatedKnowledge);
-    const capabilityRecommendations = this.recommendCapabilities(state.capabilities, input.requirement, timestamp);
     const entrySubAgentId = input.entrySubAgentId ?? state.entrySubAgentId;
     const quest: Quest = {
       id: questId,
       workspaceId: input.workspaceId,
       title: input.title,
       requirement: input.requirement,
-      status: "planning",
-      spec,
+      status: "specifying",
+      spec: this.placeholderSpec(input.requirement),
       agentBackendId: input.agentBackendId ?? "mock",
       entrySubAgentId,
       affectedProjectIds,
-      relatedKnowledgeIds,
+      relatedKnowledgeIds: [],
       worktrees: [],
       changedFiles: [],
       validationResults: [],
       reviewNotes: [],
       deliveryResults: [],
-      capabilityRecommendations,
+      capabilityRecommendations: [],
       autoApprovePlan: input.autoApprovePlan ?? false,
       createdAt: timestamp,
       updatedAt: timestamp
     };
-    // 自动钩子：获取用户偏好和风险检查
-    const userPrefs = await this.getUserPreferences(undefined, 0.5).catch(() => []);
-    const riskPatterns = await this.checkRisk(input.requirement, affectedProjectIds).catch(() => []);
-
-    const events = [
-      this.event(questId, "quest.created", "Quest 已创建", "用户需求已进入 Quest 工作流。", "Lead Agent"),
-      this.event(questId, "spec.generated", "轻量 Spec 已生成", "Spec Agent 根据需求生成了初版目标、范围和验收标准。", "Spec Agent"),
-      this.event(questId, "plan.created", "实施计划已生成", "Lead Agent 已将 Quest 推进到规划阶段，等待准备 worktree。", "Lead Agent"),
-      relatedKnowledge.length > 0
-        ? this.event(
-            questId,
-            "knowledge.retrieved",
-            "知识库已引用",
-            `Agent 读取了 ${relatedKnowledge.length} 条相关知识。`,
-            "Knowledge Agent"
-          )
-        : undefined,
-      userPrefs.length > 0
-        ? this.event(
-            questId,
-            "preference.injected",
-            "用户偏好已注入",
-            `检测到 ${userPrefs.length} 条用户偏好，将作为约束指导 Agent 行为。`,
-            "用户习惯助手"
-          )
-        : undefined,
-      riskPatterns.length > 0
-        ? this.event(
-            questId,
-            "risk.warning",
-            "风险提示已生成",
-            `发现 ${riskPatterns.length} 条相关失败经验，已提示 Agent 注意规避。`,
-            "失败经验助手"
-          )
-        : undefined,
-      capabilityRecommendations.length > 0
-        ? this.event(
-            questId,
-            "capability.recommended",
-            "能力推荐已生成",
-            `Capability Agent 推荐了 ${capabilityRecommendations.length} 个可审计能力。`,
-            "Capability Agent"
-          )
-        : undefined
-    ].filter(Boolean) as AgentEvent[];
-
-    await this.store.write({
-      ...state,
-      quests: [quest, ...state.quests],
-      events: [...events, ...state.events]
-    });
+    const createdEvent = this.event(questId, "quest.created", "Quest 已创建", "用户需求已进入 Quest 工作流。", "Lead Agent");
+    await this.mutateState(async (s) => ({
+      newState: { ...s, quests: [quest, ...s.quests], events: [createdEvent, ...s.events] },
+      result: undefined
+    }));
     return quest;
   }
 
@@ -2363,6 +2310,141 @@ export class RepoHelmService {
 
   async dismissCapabilityRecommendation(questId: string, capabilityId: string): Promise<Quest> {
     return this.updateCapabilityRecommendation(questId, capabilityId, "dismissed");
+  }
+
+  private placeholderSpec(requirement: string): QuestSpec {
+    return {
+      background: "正在分析需求并生成 Spec…",
+      userGoal: requirement,
+      functionalRequirements: [],
+      nonFunctionalRequirements: [],
+      affectedSurfaces: [],
+      outOfScope: [],
+      acceptanceCriteria: [],
+      openQuestions: []
+    };
+  }
+
+  private buildSpecPrompt(requirement: string, knowledgeTitles: string[]): string {
+    const knowledgeLine =
+      knowledgeTitles.length > 0 ? `相关 workspace 知识：${knowledgeTitles.join("、")}。\n` : "";
+    return [
+      "你是 RepoHelm 的 Spec Agent。请先用 2-4 句简体中文口语化地分析用户这个研发需求（像在思考，不要分点）。",
+      "分析之后，另起一行输出一个 ```json 代码块，字段严格为：",
+      "background(string), userGoal(string), functionalRequirements(string[]), nonFunctionalRequirements(string[]), affectedSurfaces(string[]), outOfScope(string[]), acceptanceCriteria(string[]), openQuestions(string[])。",
+      "userGoal 用用户原始需求。只输出分析文字 + 一个 json 块，不要其它内容。",
+      "",
+      knowledgeLine + `用户需求：${requirement}`
+    ].join("\n");
+  }
+
+  async *streamQuestSpec(questId: string): AsyncGenerator<QuestSpecStreamEvent, void, unknown> {
+    const state = await this.getState();
+    const quest = state.quests.find((q) => q.id === questId);
+    if (!quest) {
+      yield { type: "error", message: "Quest not found" };
+      return;
+    }
+    const workspace = state.workspaces.find((w) => w.id === quest.workspaceId);
+    const relatedPages = workspace
+      ? await this.searchProjectKnowledge(workspace.projectIds, quest.requirement).catch(() => [])
+      : [];
+    const relatedKnowledge = relatedPages.slice(0, 3);
+
+    let raw = "";
+    let analysisEmitted = "";
+    try {
+      // In fake mode, streamLlmWithModelKit ignores the modelKit — pass a placeholder.
+      const kit = process.env.REPOHELM_FAKE_MODELS === "1"
+        ? ({ id: "fake", name: "fake", type: "byok", model: "fake", config: {}, metadata: { createdAt: now(), testedAt: now(), costTier: "free", performanceProfile: "fast" } } as ModelKit)
+        : await this.resolveChatModelKit();
+      const prompt = this.buildSpecPrompt(quest.requirement, relatedKnowledge.map((p) => p.title));
+      for await (const delta of streamLlmWithModelKit({
+        modelKit: kit,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3
+      })) {
+        raw += delta;
+        const fence = raw.indexOf("```");
+        const analysisSoFar = fence >= 0 ? raw.slice(0, fence) : raw;
+        const newPart = analysisSoFar.slice(analysisEmitted.length);
+        if (newPart) {
+          analysisEmitted = analysisSoFar;
+          yield { type: "analysis_delta", text: newPart };
+        }
+      }
+    } catch {
+      // model unavailable -> raw stays, fall through to fallback below
+    }
+
+    let spec: QuestSpec;
+    try {
+      const match = raw.match(/```json\s*([\s\S]*?)```/i) ?? raw.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error("no json");
+      const jsonText = (match[1] ?? match[0]).trim();
+      const parsed = JSON.parse(jsonText) as QuestSpec;
+      if (!parsed.userGoal) parsed.userGoal = quest.requirement;
+      spec = parsed;
+    } catch {
+      spec = this.generateSpec(quest.requirement, relatedKnowledge);
+    }
+
+    const relatedKnowledgeIds = relatedKnowledge.map((p) => p.id);
+    await this.mutateState(async (s) => {
+      const quests = s.quests.map((q) =>
+        q.id === questId ? { ...q, spec, relatedKnowledgeIds, updatedAt: now() } : q
+      );
+      return { newState: { ...s, quests }, result: undefined };
+    });
+    yield { type: "spec_ready", spec };
+
+    const emit = async (type: string, title: string, detail: string, agent: string) => {
+      const ev = this.event(questId, type, title, detail, agent);
+      await this.mutateState(async (s) => ({ newState: { ...s, events: [ev, ...s.events] }, result: undefined }));
+      return ev;
+    };
+    const pace = () => new Promise((r) => setTimeout(r, 350));
+
+    await pace();
+    yield { type: "event_added", event: await emit("spec.generated", "轻量 Spec 已生成", "Spec Agent 根据需求生成了初版目标、范围和验收标准。", "Spec Agent") };
+
+    if (relatedKnowledge.length > 0) {
+      await pace();
+      yield { type: "event_added", event: await emit("knowledge.retrieved", "知识库已引用", `Agent 读取了 ${relatedKnowledge.length} 条相关知识。`, "Knowledge Agent") };
+    }
+
+    const userPrefs = await this.getUserPreferences(undefined, 0.5).catch(() => []);
+    if (userPrefs.length > 0) {
+      await pace();
+      yield { type: "event_added", event: await emit("preference.injected", "用户偏好已注入", `检测到 ${userPrefs.length} 条用户偏好，将作为约束指导 Agent 行为。`, "用户习惯助手") };
+    }
+
+    const riskPatterns = await this.checkRisk(quest.requirement, quest.affectedProjectIds).catch(() => []);
+    if (riskPatterns.length > 0) {
+      await pace();
+      yield { type: "event_added", event: await emit("risk.warning", "风险提示已生成", `发现 ${riskPatterns.length} 条相关失败经验，已提示 Agent 注意规避。`, "失败经验助手") };
+    }
+
+    const caps = this.recommendCapabilities(state.capabilities, quest.requirement, now());
+    if (caps.length > 0) {
+      await this.mutateState(async (s) => {
+        const quests = s.quests.map((q) => (q.id === questId ? { ...q, capabilityRecommendations: caps } : q));
+        return { newState: { ...s, quests }, result: undefined };
+      });
+      await pace();
+      yield { type: "event_added", event: await emit("capability.recommended", "能力推荐已生成", `Capability Agent 推荐了 ${caps.length} 个可审计能力。`, "Capability Agent") };
+    }
+
+    await pace();
+    yield { type: "event_added", event: await emit("plan.created", "实施计划已生成", "Lead Agent 已将 Quest 推进到规划阶段，等待准备 worktree。", "Lead Agent") };
+
+    let finalQuest!: Quest;
+    await this.mutateState(async (s) => {
+      const quests = s.quests.map((q) => (q.id === questId ? { ...q, status: "planning" as QuestStatus, updatedAt: now() } : q));
+      finalQuest = quests.find((q) => q.id === questId)!;
+      return { newState: { ...s, quests }, result: undefined };
+    });
+    yield { type: "done", quest: finalQuest };
   }
 
   private generateSpec(requirement: string, relatedKnowledge: Array<{ title: string }> = []): QuestSpec {

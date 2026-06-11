@@ -694,3 +694,74 @@ describe("ModelKit Management", () => {
     });
   });
 });
+
+describe("createQuest + streamQuestSpec (streaming)", () => {
+  it("createQuest returns immediately in specifying status with only quest.created", async () => {
+    const { service } = await createGitRepoService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "stream test",
+      requirement: "做一个太阳系动画网页"
+    });
+    expect(quest.status).toBe("specifying");
+    const after = await service.getState();
+    const evts = after.events.filter((e) => e.questId === quest.id);
+    expect(evts.map((e) => e.type)).toEqual(["quest.created"]);
+  });
+
+  it("streamQuestSpec emits analysis -> spec_ready -> events -> done", async () => {
+    process.env.REPOHELM_FAKE_MODELS = "1";
+    process.env.REPOHELM_FAKE_STREAM_TEXT =
+      '需求分析：这是一个纯前端动画。\n```json\n{"background":"b","userGoal":"g","functionalRequirements":["f1"],"nonFunctionalRequirements":["n1"],"affectedSurfaces":["Quest"],"outOfScope":["x"],"acceptanceCriteria":["a1"],"openQuestions":["q1"]}\n```';
+    try {
+      const { service } = await createGitRepoService();
+      const state = await service.bootstrap();
+      const workspace = state.workspaces[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id, title: "s", requirement: "做一个太阳系动画网页"
+      });
+
+      const types: string[] = [];
+      let analysis = "";
+      let finalQuest: any = null;
+      for await (const ev of service.streamQuestSpec(quest.id)) {
+        types.push(ev.type);
+        if (ev.type === "analysis_delta") analysis += ev.text;
+        if (ev.type === "done") finalQuest = ev.quest;
+      }
+
+      expect(types.filter((t) => t === "analysis_delta").length).toBeGreaterThan(0);
+      expect(types).toContain("spec_ready");
+      expect(types[types.length - 1]).toBe("done");
+      expect(analysis).toContain("需求分析");
+      expect(finalQuest.status).toBe("planning");
+      expect(finalQuest.spec.userGoal).toBe("g");
+    } finally {
+      delete process.env.REPOHELM_FAKE_MODELS;
+      delete process.env.REPOHELM_FAKE_STREAM_TEXT;
+    }
+  });
+
+  it("streamQuestSpec falls back to template spec when model output is unparseable", async () => {
+    process.env.REPOHELM_FAKE_MODELS = "1";
+    process.env.REPOHELM_FAKE_STREAM_TEXT = "纯文本没有 json 块";
+    try {
+      const { service } = await createGitRepoService();
+      const state = await service.bootstrap();
+      const workspace = state.workspaces[0]!;
+      const quest = await service.createQuest({ workspaceId: workspace.id, title: "s", requirement: "abc" });
+      let finalQuest: any = null;
+      for await (const ev of service.streamQuestSpec(quest.id)) {
+        if (ev.type === "done") finalQuest = ev.quest;
+        expect(ev.type).not.toBe("error");
+      }
+      expect(finalQuest.status).toBe("planning");
+      expect(finalQuest.spec.userGoal).toBe("abc");
+    } finally {
+      delete process.env.REPOHELM_FAKE_MODELS;
+      delete process.env.REPOHELM_FAKE_STREAM_TEXT;
+    }
+  });
+});
