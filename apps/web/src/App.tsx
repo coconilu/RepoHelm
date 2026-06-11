@@ -307,12 +307,12 @@ export function App() {
       await api.runQuest(quest.id);
       // 同时创建专家团 session（fake mode 下自动生成任务树）
       try {
-        const session = await api.createExpertSession({
+        const result = await api.createExpertSession({
           questId: quest.id,
           requirement: trimmedRequirement,
           entryAgentId: selectedEntrySubAgentId || "supervisor",
         });
-        setExpertSession(session);
+        setExpertSession(result.session);
         setInspectorTab("orchestration");
       } catch { /* expert session creation is optional */ }
       await load();

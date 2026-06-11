@@ -890,7 +890,7 @@ export const api = {
     }),
   // Expert Session API
   createExpertSession: (input: { questId: string; requirement: string; entryAgentId?: string; projectIds?: string[] }) =>
-    request<ExpertSession>("/api/expert/session", { method: "POST", body: JSON.stringify(input) }),
+    request<{ session: ExpertSession }>("/api/expert/session", { method: "POST", body: JSON.stringify(input) }),
   getExpertSession: (id: string) =>
     request<{ session: ExpertSession }>(`/api/expert/session/${id}`),
   updateExpertSession: (id: string, updates: Partial<ExpertSession>) =>
