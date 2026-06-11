@@ -122,8 +122,14 @@ export async function callLlmWithModelKit(options: LlmCallOptions): Promise<LlmC
  * Streaming variant of callLlmWithModelKit. Async-generates assistant content
  * deltas (OpenAI-compatible `choices[0].delta.content`). Honors REPOHELM_FAKE_MODELS.
  */
+/**
+ * Streaming options: `modelKit` is optional because fake mode short-circuits
+ * before resolving it. Outside fake mode a modelKit is required.
+ */
+export type StreamLlmOptions = Omit<LlmCallOptions, "modelKit"> & { modelKit?: ModelKit };
+
 export async function* streamLlmWithModelKit(
-  options: LlmCallOptions
+  options: StreamLlmOptions
 ): AsyncGenerator<string, void, unknown> {
   if (process.env.REPOHELM_FAKE_MODELS === "1") {
     const text = process.env.REPOHELM_FAKE_STREAM_TEXT ?? "";
@@ -135,6 +141,9 @@ export async function* streamLlmWithModelKit(
   }
 
   const { modelKit, messages, tools, maxTokens, temperature, signal } = options;
+  if (!modelKit) {
+    throw new Error("streamLlmWithModelKit requires a modelKit outside fake mode.");
+  }
   const { apiKey, baseUrl, model } = resolveByok(modelKit);
   const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
   const body: Record<string, unknown> = {

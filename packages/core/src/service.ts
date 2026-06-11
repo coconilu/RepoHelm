@@ -65,6 +65,8 @@ import { defaultEngineConfig, type StateStore } from "./store.js";
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
 const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+// Delay between streamed quest-spec timeline events, for a "thinking" cadence in the UI.
+const SPEC_EVENT_PACE_MS = 350;
 const unknownHealth = (): ProjectHealth => ({
   status: "unknown",
   message: "尚未检查项目状态。"
@@ -2354,10 +2356,10 @@ export class RepoHelmService {
     let raw = "";
     let analysisEmitted = "";
     try {
-      // In fake mode, streamLlmWithModelKit ignores the modelKit — pass a placeholder.
-      const kit = process.env.REPOHELM_FAKE_MODELS === "1"
-        ? ({ id: "fake", name: "fake", type: "byok", model: "fake", config: {}, metadata: { createdAt: now(), testedAt: now(), costTier: "free", performanceProfile: "fast" } } as ModelKit)
-        : await this.resolveChatModelKit();
+      // Fake mode short-circuits inside streamLlmWithModelKit before the kit is used,
+      // so we skip resolution (which would throw when no BYOK kit is configured).
+      const kit =
+        process.env.REPOHELM_FAKE_MODELS === "1" ? undefined : await this.resolveChatModelKit();
       const prompt = this.buildSpecPrompt(quest.requirement, relatedKnowledge.map((p) => p.title));
       for await (const delta of streamLlmWithModelKit({
         modelKit: kit,
@@ -2403,7 +2405,7 @@ export class RepoHelmService {
       await this.mutateState(async (s) => ({ newState: { ...s, events: [ev, ...s.events] }, result: undefined }));
       return ev;
     };
-    const pace = () => new Promise((r) => setTimeout(r, 350));
+    const pace = () => new Promise((r) => setTimeout(r, SPEC_EVENT_PACE_MS));
 
     await pace();
     yield { type: "event_added", event: await emit("spec.generated", "轻量 Spec 已生成", "Spec Agent 根据需求生成了初版目标、范围和验收标准。", "Spec Agent") };
