@@ -151,6 +151,20 @@ export function App() {
   const [pendingRequirement, setPendingRequirement] = useState<string>("");
   const [error, setError] = useState("");
   const [expertSession, setExpertSession] = useState<ExpertSession | null>(null);
+
+  async function handleConfirmExpertSession() {
+    if (!expertSession) return;
+    setPendingAction("专家团正在执行...");
+    try {
+      const result = await api.confirmExpertSession(expertSession.id);
+      setExpertSession(result.session);
+      setInspectorTab("progress");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingAction("");
+    }
+  }
   const resizeStartRef = useRef<{
     divider: ResizeDivider;
     pointerX: number;
@@ -291,6 +305,16 @@ export function App() {
       setSelectedQuestId(quest.id);
       setPendingAction("Supervisor 正在生成编排计划...");
       await api.runQuest(quest.id);
+      // 同时创建专家团 session（fake mode 下自动生成任务树）
+      try {
+        const session = await api.createExpertSession({
+          questId: quest.id,
+          requirement: trimmedRequirement,
+          entryAgentId: selectedEntrySubAgentId || "supervisor",
+        });
+        setExpertSession(session);
+        setInspectorTab("orchestration");
+      } catch { /* expert session creation is optional */ }
       await load();
       setDraftWorkspaceId("");
       setInspectorTab("plan");
@@ -684,6 +708,7 @@ export function App() {
               tab={inspectorTab}
               onAcceptCapability={acceptCapability}
               onApprovePlan={approvePlan}
+              onConfirmExpertSession={handleConfirmExpertSession}
               onDismissCapability={dismissCapability}
               onRejectPlan={rejectPlan}
               onFileSelect={(file) => {
@@ -1210,6 +1235,7 @@ function Inspector({
   tab,
   onAcceptCapability,
   onApprovePlan,
+  onConfirmExpertSession,
   onDismissCapability,
   onFileSelect,
   onRejectPlan,
@@ -1226,6 +1252,7 @@ function Inspector({
   tab: InspectorTab;
   onAcceptCapability: (capabilityId: string) => void;
   onApprovePlan: () => void;
+  onConfirmExpertSession?: () => void;
   onDismissCapability: (capabilityId: string) => void;
   onFileSelect: (file: ChangedFile) => void;
   onRejectPlan: () => void;
@@ -1329,7 +1356,7 @@ function Inspector({
           <ProgressPanel tasks={expertSession.flatTasks} />
         ) : null}
         {effectiveTab === "acceptance" && expertSession ? (
-          <AcceptancePanel tests={expertSession.acceptanceTests} />
+          <AcceptancePanel tests={expertSession.acceptanceTests} onConfirmAll={onConfirmExpertSession} />
         ) : null}
         {effectiveTab === "deliverables" && expertSession ? (
           <DeliverablesPanel tasks={expertSession.flatTasks} />

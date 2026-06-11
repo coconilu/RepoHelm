@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { RepoHelmService, SqliteStateStore, SqliteWikiStore } from "@repohelm/core";
+import { RepoHelmService, SqliteStateStore, SqliteWikiStore, ExpertOrchestrator, ExpertSessionManager } from "@repohelm/core";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -755,33 +755,43 @@ const confirmSessionSchema = z.object({
 
 // === Expert Session Routes ===
 
+function markTreeCompleted(node: any): any {
+  return { ...node, status: "completed", children: node.children.map(markTreeCompleted) };
+}
+
 app.post("/api/expert/session", async (c) => {
   const input = createExpertSessionSchema.parse(await c.req.json());
-  const session = {
-    id: `expert_${input.questId}`,
+  const orchestrator = new ExpertOrchestrator(service, new ExpertSessionManager(service));
+  const result = await orchestrator.analyzeAndDecompose({
     questId: input.questId,
-    status: "analyzing" as const,
+    requirement: input.requirement,
     entryAgentId: input.entryAgentId || "supervisor",
-    taskTree: {
-      id: "root",
-      title: input.questId,
-      type: "root" as const,
-      status: "pending" as const,
-      children: [],
-      dependencies: [],
-      artifacts: [],
-      description: input.requirement,
-      expectedOutput: ""
-    },
-    flatTasks: [],
-    acceptanceTests: [],
-    research: [],
-    agentPool: { prototypes: [], dynamicAgents: [], activeAgents: [] },
-    createdAt: new Date().toISOString(),
-    errors: []
-  };
-  await service.createExpertSession(session);
-  return c.json({ session }, 201);
+    projectIds: input.projectIds,
+  });
+  // 持久化到 store
+  await service.createExpertSession(result.session);
+  return c.json({ session: result.session }, 201);
+});
+
+app.post("/api/expert/session/:id/decompose", async (c) => {
+  const sessionId = c.req.param("id");
+  const existing = await service.getExpertSession(sessionId);
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  const orchestrator = new ExpertOrchestrator(service, new ExpertSessionManager(service));
+  const result = await orchestrator.analyzeAndDecompose({
+    questId: existing.questId,
+    requirement: existing.taskTree.description,
+    entryAgentId: existing.entryAgentId,
+  });
+  await service.updateExpertSession(sessionId, {
+    taskTree: result.taskTree,
+    flatTasks: result.session.flatTasks,
+    acceptanceTests: result.acceptanceTests,
+    research: result.session.research,
+    agentPool: result.session.agentPool,
+    status: "awaiting_confirmation",
+  });
+  return c.json({ session: await service.getExpertSession(sessionId) });
 });
 
 app.get("/api/expert/session/:id", async (c) => {
@@ -797,12 +807,55 @@ app.patch("/api/expert/session/:id", async (c) => {
 });
 
 app.post("/api/expert/session/:id/confirm", async (c) => {
-  const input = confirmSessionSchema.parse(await c.req.json());
+  const _input = confirmSessionSchema.parse(await c.req.json());
   const session = await service.updateExpertSession(c.req.param("id"), {
     status: "confirmed",
-    confirmedAt: new Date().toISOString()
+    confirmedAt: new Date().toISOString(),
   });
+  // fake mode: 自动推进到 executing → completed，模拟任务执行
+  if (process.env.REPOHELM_FAKE_MODELS === "1") {
+    const updated = await service.updateExpertSession(c.req.param("id"), { status: "executing" });
+    // 模拟: 将任务标记为完成
+    const flatTasks = updated.flatTasks.map((t) => ({ ...t, status: "completed" as const, completedAt: new Date().toISOString() }));
+    const taskTree = markTreeCompleted(updated.taskTree);
+    const acceptanceTests = updated.acceptanceTests.map((t) => ({ ...t, status: "passing" as const, testOutput: "1 test passed" }));
+    // 添加产物
+    flatTasks.forEach((t) => {
+      if (t.type === "implementation") {
+        t.artifacts = [{ id: `art-${t.id}`, taskId: t.id, type: "file_change", filePath: `src/${t.id}.ts`, summary: `added: src/${t.id}.ts`, createdAt: new Date().toISOString() }];
+      }
+    });
+    const final = await service.updateExpertSession(c.req.param("id"), {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      flatTasks,
+      taskTree,
+      acceptanceTests,
+    });
+    return c.json({ session: final });
+  }
   return c.json({ session });
+});
+
+// Chat with entry agent (fake mode returns canned reply)
+app.post("/api/expert/session/:id/chat", async (c) => {
+  const body = await c.req.json();
+  const sessionId = c.req.param("id");
+  const session = await service.getExpertSession(sessionId);
+  if (!session) return c.json({ error: "Not found" }, 404);
+
+  let agentReply = "收到，我来调整任务安排。";
+  if (process.env.REPOHELM_FAKE_MODELS === "1") {
+    agentReply = `已理解你的需求："${body.message}"。任务树已更新。`;
+    // fake: 追加一个新任务
+    const newTask = { id: `task-${Date.now()}`, nodeId: `task-${Date.now()}`, title: body.message.slice(0, 30), description: body.message, type: "implementation" as const, status: "pending" as const, artifacts: [] };
+    const updated = await service.updateExpertSession(sessionId, {
+      flatTasks: [...session.flatTasks, newTask],
+    });
+    return c.json({ session: updated, agentReply });
+  }
+
+  return c.json({ session, agentReply });
 });
 
 app.get("/api/expert/session/:id/deliverables", async (c) => {
@@ -824,16 +877,22 @@ app.get("/api/expert/session/:id/stream", async (c) => {
   const session = await service.getExpertSession(sessionId);
   if (!session) return c.json({ error: "Not found" }, 404);
 
+  const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
-      // 发送初始连接确认
-      controller.enqueue(new TextEncoder().encode(formatSSE("connected", { sessionId })));
-      // 发送当前 session 状态
-      controller.enqueue(new TextEncoder().encode(formatSSE("session_update", { session })));
-      // TODO: 后续接入 ExpertOrchestrator 的事件订阅
-      // 当前先关闭连接
-      controller.close();
+      controller.enqueue(encoder.encode(formatSSE("connected", { sessionId })));
+      controller.enqueue(encoder.encode(formatSSE("session_update", { session })));
+      // 定时推送 session 更新（演示用，后续接入 ExpertOrchestrator 事件订阅）
+      const timer = setInterval(async () => {
+        try {
+          const s = await service.getExpertSession(sessionId);
+          if (s) controller.enqueue(encoder.encode(formatSSE("session_update", { session: s })));
+        } catch { /* ignore */ }
+      }, 2000);
+      // 30 秒后关闭
+      setTimeout(() => { clearInterval(timer); controller.close(); }, 30000);
     },
+    cancel() { /* client disconnected */ },
   });
 
   return setupSSE(c, stream);
