@@ -426,40 +426,6 @@ export function App() {
     }
   }
 
-  async function acceptCapability(capabilityId: string) {
-    if (!selectedQuest) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api.acceptCapability(selectedQuest.id, capabilityId);
-      await load();
-      setInspectorTab("capabilities");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function dismissCapability(capabilityId: string) {
-    if (!selectedQuest) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api.dismissCapability(selectedQuest.id, capabilityId);
-      await load();
-      setInspectorTab("capabilities");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function startColumnResize(divider: ResizeDivider, event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     resizeStartRef.current = {
@@ -751,10 +717,8 @@ export function App() {
               quest={selectedQuest}
               selectedChangedFile={selectedChangedFile}
               tab={inspectorTab}
-              onAcceptCapability={acceptCapability}
               onApprovePlan={approvePlan}
               onConfirmExpertSession={handleConfirmExpertSession}
-              onDismissCapability={dismissCapability}
               onRejectPlan={rejectPlan}
               onFileSelect={(file) => {
                 setSelectedChangedFileKey(changedFileKey(file));
@@ -1312,10 +1276,8 @@ function Inspector({
   quest,
   selectedChangedFile,
   tab,
-  onAcceptCapability,
   onApprovePlan,
   onConfirmExpertSession,
-  onDismissCapability,
   onFileSelect,
   onRejectPlan,
   onTabChange
@@ -1329,10 +1291,8 @@ function Inspector({
   quest?: Quest;
   selectedChangedFile?: ChangedFile;
   tab: InspectorTab;
-  onAcceptCapability: (capabilityId: string) => void;
   onApprovePlan: () => void;
   onConfirmExpertSession?: () => void;
-  onDismissCapability: (capabilityId: string) => void;
   onFileSelect: (file: ChangedFile) => void;
   onRejectPlan: () => void;
   onTabChange: (tab: InspectorTab) => void;
@@ -1415,12 +1375,7 @@ function Inspector({
           <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
         ) : null}
         {effectiveTab === "capabilities" && hasCapabilities ? (
-          <CapabilitiesPanel
-            capabilities={capabilities}
-            quest={quest}
-            onAcceptCapability={onAcceptCapability}
-            onDismissCapability={onDismissCapability}
-          />
+          <CapabilitiesPanel capabilities={capabilities} quest={quest} />
         ) : null}
         {effectiveTab === "files" && hasFiles ? (
           <FilesPanel changedFiles={changedFiles} projectById={projectById} quest={quest} onFileSelect={onFileSelect} />
@@ -1668,22 +1623,20 @@ function OverviewPanel({
 
 function CapabilitiesPanel({
   capabilities,
-  quest,
-  onAcceptCapability,
-  onDismissCapability
+  quest
 }: {
   capabilities: CapabilityDefinition[];
   quest?: Quest;
-  onAcceptCapability: (capabilityId: string) => void;
-  onDismissCapability: (capabilityId: string) => void;
 }) {
   const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
   const recommendations = quest?.capabilityRecommendations ?? [];
 
   return (
     <div className="inspector-stack">
-      <InspectorSection title="Capability Agent">
-        {recommendations.length === 0 ? <p className="muted">当前 Quest 暂无能力推荐。</p> : null}
+      <InspectorSection title="本 Quest 使用的能力">
+        {recommendations.length === 0 ? (
+          <p className="muted">本 Quest 暂未匹配到额外能力，将使用默认能力执行。</p>
+        ) : null}
         {recommendations.map((recommendation) => {
           const capability = capabilityById.get(recommendation.capabilityId);
           if (!capability) {
@@ -1693,28 +1646,15 @@ function CapabilitiesPanel({
             <article className="capability-row" key={recommendation.capabilityId}>
               <div className="worktree-title">
                 <strong>{capability.name}</strong>
-                <em className={recommendation.status === "pending" ? "badge blue" : "badge green"}>
-                  {recommendation.status}
-                </em>
               </div>
               <p>{capability.description}</p>
               <span>{recommendation.reason}</span>
-              <code>{capability.kind} · {capability.source} · confidence {Math.round(recommendation.confidence * 100)}%</code>
+              <code>{capability.kind} · {capability.source} · 匹配度 {Math.round(recommendation.confidence * 100)}%</code>
               <div className="capability-permissions">
                 {recommendation.requiredPermissions.map((permission) => (
                   <em key={permission}>{permission}</em>
                 ))}
               </div>
-              {recommendation.status === "pending" ? (
-                <div className="capability-actions">
-                  <button className="secondary-action" onClick={() => onAcceptCapability(capability.id)} type="button">
-                    确认启用
-                  </button>
-                  <button className="ghost-action" onClick={() => onDismissCapability(capability.id)} type="button">
-                    忽略
-                  </button>
-                </div>
-              ) : null}
             </article>
           );
         })}
