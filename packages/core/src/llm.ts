@@ -165,25 +165,42 @@ export async function* streamLlmWithModelKit(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const data = trimmed.slice(5).trim();
-      if (data === "[DONE]") return;
-      try {
-        const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
-        const delta = json.choices?.[0]?.delta?.content;
+  // Parse a single SSE line; returns the content delta to yield, or undefined.
+  // Throws the sentinel DONE to terminate the stream.
+  const DONE = Symbol("done");
+  const parseLine = (line: string): string | undefined => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return undefined;
+    const data = trimmed.slice(5).trim();
+    if (data === "[DONE]") throw DONE;
+    try {
+      const json = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> };
+      return json.choices?.[0]?.delta?.content ?? undefined;
+    } catch {
+      return undefined; // ignore keep-alive / partial lines
+    }
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const delta = parseLine(line);
         if (delta) yield delta;
-      } catch {
-        // ignore keep-alive / partial lines
       }
     }
+    // Flush any residual line not terminated by a trailing newline before EOF.
+    if (buffer.trim()) {
+      const delta = parseLine(buffer);
+      if (delta) yield delta;
+    }
+  } catch (err) {
+    if (err !== DONE) throw err;
+  } finally {
+    reader.releaseLock();
   }
 }
 
