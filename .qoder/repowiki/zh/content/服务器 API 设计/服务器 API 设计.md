@@ -4,10 +4,12 @@
 **本文引用的文件列表**
 - [apps/server/src/index.ts](file://apps/server/src/index.ts)
 - [apps/server/src/index.test.ts](file://apps/server/src/index.test.ts)
+- [apps/server/src/sse.ts](file://apps/server/src/sse.ts)
 - [apps/web/src/api.ts](file://apps/web/src/api.ts)
 - [packages/core/src/service.ts](file://packages/core/src/service.ts)
 - [packages/core/src/types.ts](file://packages/core/src/types.ts)
 - [packages/core/src/store.ts](file://packages/core/src/store.ts)
+- [packages/core/src/wiki-store.ts](file://packages/core/src/wiki-store.ts)
 - [packages/core/src/orchestrator.ts](file://packages/core/src/orchestrator.ts)
 - [packages/core/src/tools/habits.ts](file://packages/core/src/tools/habits.ts)
 - [packages/core/src/tools/failure.ts](file://packages/core/src/tools/failure.ts)
@@ -33,7 +35,7 @@
 ## 简介
 本文件为 RepoHelm 服务器 API 的全面设计文档，面向前端与集成开发者，系统性说明 RESTful API 的端点、请求/响应模式、数据验证（Zod）、路由与中间件、CORS 与安全策略、错误处理、版本与兼容性、客户端实现与性能优化、测试与调试方法，以及与核心服务的集成关系。RepoHelm 以 Hono 为基础构建 API，使用 Zod 对输入进行强类型校验，通过 @repohelm/core 提供业务逻辑与状态持久化。
 
-**更新** 本次更新新增了完整的专家编排API端点，包括 /api/expert/session、/api/expert/session/:id、/api/expert/session/:id/confirm、/api/expert/session/:id/deliverables、/api/expert/session/:id/references、/api/expert/session/:id/research、/api/expert/session/:id/acceptance-tests 等端点。这些新功能为复杂任务提供专家级编排能力，支持任务树管理、验收测试、研究资料收集和动态代理池管理。
+**更新** 本次更新新增了完整的专家编排API端点，包括 /api/expert/session、/api/expert/session/:id、/api/expert/session/:id/confirm、/api/expert/session/:id/deliverables、/api/expert/session/:id/references、/api/expert/session/:id/research、/api/expert/session/:id/acceptance-tests 等端点。这些新功能为复杂任务提供专家级编排能力，支持任务树管理、验收测试、研究资料收集和动态代理池管理。**新增** 服务器端增强：新增了优雅关闭处理程序，支持SIGINT和SIGTERM信号，改进了错误管理和数据库连接关闭机制。
 
 ## 项目结构
 - 应用层
@@ -76,7 +78,7 @@ C --> E
 - [packages/core/src/expert/types.ts:1-173](file://packages/core/src/expert/types.ts#L1-L173)
 
 **章节来源**
-- [apps/server/src/index.ts:1-904](file://apps/server/src/index.ts#L1-L904)
+- [apps/server/src/index.ts:1-943](file://apps/server/src/index.ts#L1-L943)
 - [apps/web/src/api.ts:1-909](file://apps/web/src/api.ts#L1-L909)
 - [packages/core/src/service.ts:1-2690](file://packages/core/src/service.ts#L1-L2690)
 - [README.md:1-100](file://README.md#L1-L100)
@@ -98,10 +100,15 @@ C --> E
   - **新增** 编排器：基于入口代理生成执行计划，按依赖顺序委派给工作代理执行。
 - 状态存储（StateStore）
   - 支持 JSON 与 SQLite 两种实现，含迁移逻辑与默认配置，新增专家会话表、用户偏好和失败模式集合。
+- **新增** 优雅关闭处理程序
+  - 支持 SIGINT 和 SIGTERM 信号，提供平滑的服务终止。
+  - 自动关闭 HTTP 服务器和数据库连接，确保资源正确释放。
+  - 包含错误处理机制，防止关闭过程中的异常导致进程崩溃。
 
 **章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
 - [apps/server/src/index.ts:51-184](file://apps/server/src/index.ts#L51-L184)
+- [apps/server/src/index.ts:888-922](file://apps/server/src/index.ts#L888-L922)
 - [packages/core/src/service.ts:959-1028](file://packages/core/src/service.ts#L959-L1028)
 - [packages/core/src/service.ts:1042-1128](file://packages/core/src/service.ts#L1042-L1128)
 - [packages/core/src/service.ts:1135-1230](file://packages/core/src/service.ts#L1135-L1230)
@@ -125,6 +132,7 @@ participant SystemAgent as "系统代理"
 participant HabitsTools as "用户偏好工具"
 participant FailureTools as "失败模式工具"
 participant Store as "StateStore(SQLite/JSON)"
+participant WikiStore as "WikiStore(SQLite)"
 participant Git as "GitWorktreeManager"
 participant Provider as "ProviderRegistry"
 Client->>Router : 发起 HTTP 请求
@@ -136,6 +144,7 @@ Service->>SystemAgent : 直接调用系统代理
 SystemAgent->>HabitsTools : 处理用户偏好
 SystemAgent->>FailureTools : 处理失败模式
 Service->>Store : 读取/写入状态
+Service->>WikiStore : 知识库检索与持久化
 Service->>Git : 创建/清理 worktree
 Service->>Provider : 列表/探测模型
 Service-->>Router : 返回业务结果
@@ -143,7 +152,7 @@ Router-->>Client : JSON 响应
 ```
 
 **图表来源**
-- [apps/server/src/index.ts:114-904](file://apps/server/src/index.ts#L114-L904)
+- [apps/server/src/index.ts:114-943](file://apps/server/src/index.ts#L114-L943)
 - [packages/core/src/service.ts:959-1028](file://packages/core/src/service.ts#L959-L1028)
 - [packages/core/src/tools/habits.ts:109-184](file://packages/core/src/tools/habits.ts#L109-L184)
 - [packages/core/src/tools/failure.ts:128-263](file://packages/core/src/tools/failure.ts#L128-L263)
@@ -705,6 +714,28 @@ Router-->>Client : JSON 响应
 - [apps/server/src/index.ts:114-123](file://apps/server/src/index.ts#L114-L123)
 - [packages/core/src/expert/persistence.test.ts:1-54](file://packages/core/src/expert/persistence.test.ts#L1-L54)
 
+### 优雅关闭处理程序
+
+**更新** 新增了完整的优雅关闭处理程序，提供平滑的服务终止能力
+
+- 信号支持
+  - SIGINT：Ctrl+C 中断信号，用于开发环境的优雅停止
+  - SIGTERM：标准终止信号，用于生产环境的优雅停止
+- 关闭流程
+  - HTTP 服务器关闭：等待现有连接完成处理，然后关闭监听端口
+  - 数据库连接关闭：依次关闭 StateStore 和 WikiStore 的 SQLite 连接
+  - 错误处理：捕获关闭过程中的异常，防止进程崩溃
+  - 进程退出：确保进程以 0 状态码正常退出
+- 资源管理
+  - 确保 SQLite 数据库文件的完整性
+  - 防止数据库连接泄漏
+  - 保证知识库和状态数据的正确持久化
+
+**章节来源**
+- [apps/server/src/index.ts:888-922](file://apps/server/src/index.ts#L888-L922)
+- [packages/core/src/store.ts:219-224](file://packages/core/src/store.ts#L219-L224)
+- [packages/core/src/wiki-store.ts:130-135](file://packages/core/src/wiki-store.ts#L130-L135)
+
 ## 依赖分析
 
 ```mermaid
@@ -716,12 +747,13 @@ E["apps/web/src/api.ts"] --> A
 B --> F["packages/core/src/service.ts"]
 F --> G["packages/core/src/types.ts"]
 F --> H["packages/core/src/store.ts"]
-I["packages/core/src/orchestrator.ts"] --> F
-J["packages/core/src/tools/habits.ts"] --> F
-K["packages/core/src/tools/failure.ts"] --> F
-L["packages/core/src/expert/types.ts"] --> F
-M["apps/server/src/index.test.ts"] --> A
-N["packages/core/src/expert/persistence.test.ts"] --> F
+F --> I["packages/core/src/wiki-store.ts"]
+J["packages/core/src/orchestrator.ts"] --> F
+K["packages/core/src/tools/habits.ts"] --> F
+L["packages/core/src/tools/failure.ts"] --> F
+M["packages/core/src/expert/types.ts"] --> F
+N["apps/server/src/index.test.ts"] --> A
+O["packages/core/src/expert/persistence.test.ts"] --> F
 ```
 
 **图表来源**
@@ -729,7 +761,8 @@ N["packages/core/src/expert/persistence.test.ts"] --> F
 - [apps/web/src/api.ts:276-422](file://apps/web/src/api.ts#L276-L422)
 - [packages/core/src/service.ts:1-39](file://packages/core/src/service.ts#L1-L39)
 - [packages/core/src/types.ts:1-619](file://packages/core/src/types.ts#L1-L619)
-- [packages/core/src/store.ts:1-178](file://packages/core/src/store.ts#L1-L178)
+- [packages/core/src/store.ts:1-226](file://packages/core/src/store.ts#L1-L226)
+- [packages/core/src/wiki-store.ts:1-137](file://packages/core/src/wiki-store.ts#L1-L137)
 - [packages/core/src/orchestrator.ts:1-200](file://packages/core/src/orchestrator.ts#L1-L200)
 - [packages/core/src/tools/habits.ts:1-185](file://packages/core/src/tools/habits.ts#L1-L185)
 - [packages/core/src/tools/failure.ts:1-264](file://packages/core/src/tools/failure.ts#L1-L264)
@@ -751,6 +784,7 @@ N["packages/core/src/expert/persistence.test.ts"] --> F
 - **新增** 系统代理性能：系统代理调用支持工具调用循环，最大迭代次数限制为8次，避免无限循环。
 - **新增** 用户偏好性能：用户偏好查询支持按分类和最低置信度过滤，提高查询效率。
 - **新增** 失败模式性能：失败模式搜索使用关键词匹配，支持按类别和项目ID过滤，排序规则优化查询结果。
+- **新增** 数据库连接管理：优雅关闭处理程序确保数据库连接正确释放，避免连接泄漏。
 
 **章节来源**
 - [packages/core/src/service.ts:422-455](file://packages/core/src/service.ts#L422-L455)
@@ -805,7 +839,7 @@ N["packages/core/src/expert/persistence.test.ts"] --> F
 - [packages/core/src/service.ts:2670-2684](file://packages/core/src/service.ts#L2670-L2684)
 
 ## 结论
-RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的专家编排API**进一步增强了系统的智能化水平，提供专家级任务管理、动态代理池、研究资料收集和验收测试能力。**新增的系统代理API、用户偏好管理API、失败模式管理API**进一步增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
+RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的专家编排API**进一步增强了系统的智能化水平，提供专家级任务管理、动态代理池、研究资料收集和验收测试能力。**新增的系统代理API、用户偏好管理API、失败模式管理API**进一步增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。**新增的优雅关闭处理程序**确保了服务的稳定性和可靠性，支持 SIGINT 和 SIGTERM 信号，提供平滑的服务终止和资源清理机制。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
 
 ## 附录
 
@@ -885,5 +919,11 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 设置入口子代理：POST /api/sub-agents/set-entry（请求体：id）
 - 获取入口子代理：GET /api/sub-agents/entry
 
+**新增** 优雅关闭处理程序
+- SIGINT 处理：Ctrl+C 中断信号处理
+- SIGTERM 处理：标准终止信号处理
+- 数据库连接关闭：StateStore 和 WikiStore 的 SQLite 连接清理
+- 错误处理：关闭过程中的异常捕获与日志记录
+
 **章节来源**
-- [apps/server/src/index.ts:114-904](file://apps/server/src/index.ts#L114-L904)
+- [apps/server/src/index.ts:114-943](file://apps/server/src/index.ts#L114-L943)
