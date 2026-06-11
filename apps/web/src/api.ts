@@ -645,6 +645,51 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type QuestSpecStreamEvent =
+  | { type: "analysis_delta"; text: string }
+  | { type: "spec_ready"; spec: QuestSpec }
+  | { type: "event_added"; event: AgentEvent }
+  | { type: "done"; quest: Quest }
+  | { type: "error"; message: string };
+
+/**
+ * Subscribe to the quest spec generation stream. Returns a function that closes
+ * the EventSource. Handlers are invoked as SSE frames arrive.
+ */
+export function streamQuestSpec(
+  questId: string,
+  handlers: {
+    onAnalysis?: (text: string) => void;
+    onSpecReady?: (spec: QuestSpec) => void;
+    onEvent?: (event: AgentEvent) => void;
+    onDone?: (quest: Quest) => void;
+    onError?: (message: string) => void;
+  }
+): () => void {
+  const es = new EventSource(`/api/quests/${questId}/spec-stream`);
+  const parse = <T,>(e: MessageEvent): T => JSON.parse(e.data) as T;
+  es.addEventListener("analysis_delta", (e) =>
+    handlers.onAnalysis?.(parse<{ text: string }>(e as MessageEvent).text)
+  );
+  es.addEventListener("spec_ready", (e) =>
+    handlers.onSpecReady?.(parse<{ spec: QuestSpec }>(e as MessageEvent).spec)
+  );
+  es.addEventListener("event_added", (e) =>
+    handlers.onEvent?.(parse<{ event: AgentEvent }>(e as MessageEvent).event)
+  );
+  es.addEventListener("done", (e) => {
+    handlers.onDone?.(parse<{ quest: Quest }>(e as MessageEvent).quest);
+    es.close();
+  });
+  es.addEventListener("error", (e) => {
+    // A typed error frame carries data; a transport error (e.g. stream closed) does not.
+    const data = (e as MessageEvent).data;
+    handlers.onError?.(data ? (JSON.parse(data).message ?? "stream error") : "stream closed");
+    es.close();
+  });
+  return () => es.close();
+}
+
 export const api = {
   state: () => request<RepoHelmState>("/api/state"),
   agentBackends: () => request<AgentBackendInfo[]>("/api/agent-backends"),

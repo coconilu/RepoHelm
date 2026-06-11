@@ -529,6 +529,25 @@ app.get("/api/quests/:id/plan", async (context) => {
   return context.json(plan);
 });
 
+app.get("/api/quests/:id/spec-stream", async (c) => {
+  const questId = c.req.param("id");
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const ev of service.streamQuestSpec(questId)) {
+          controller.enqueue(encoder.encode(formatSSE(ev.type, ev)));
+        }
+      } catch (err) {
+        controller.enqueue(encoder.encode(formatSSE("error", { message: String((err as Error)?.message ?? err) })));
+      } finally {
+        controller.close();
+      }
+    }
+  });
+  return setupSSE(c, stream);
+});
+
 // POST /api/model-kits - 创建 ModelKit
 app.post("/api/model-kits", async (context) => {
   const input = createModelKitSchema.parse(await context.req.json());

@@ -223,6 +223,13 @@ export interface Quest {
   updatedAt: string;
 }
 
+export type QuestSpecStreamEvent =
+  | { type: "analysis_delta"; text: string }
+  | { type: "spec_ready"; spec: QuestSpec }
+  | { type: "event_added"; event: AgentEvent }
+  | { type: "done"; quest: Quest }
+  | { type: "error"; message: string };
+
 export interface KnowledgeItem {
   id: string;
   workspaceId: string;

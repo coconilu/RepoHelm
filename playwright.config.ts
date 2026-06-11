@@ -24,6 +24,8 @@ export default defineConfig({
     timeout: 120_000,
     env: {
       REPOHELM_FAKE_MODELS: "1",
+      REPOHELM_FAKE_STREAM_TEXT:
+        '需求分析：这是一个测试用的需求。\n```json\n{"background":"测试背景","userGoal":"测试目标","functionalRequirements":["功能一"],"nonFunctionalRequirements":["非功能一"],"affectedSurfaces":["Quest"],"outOfScope":["范围外"],"acceptanceCriteria":["验收一","验收二","验收三"],"openQuestions":["待定问题"]}\n```',
       REPOHELM_FAKE_CHAT_JSON: JSON.stringify({
         pages: {
           overview: "Demo overview.",

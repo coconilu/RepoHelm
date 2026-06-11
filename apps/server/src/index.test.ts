@@ -5,6 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { setupSSE, formatSSE } from "./sse.js";
 
 // 导入 schema 定义(从 index.ts 复制)
 const testModelSchema = z.object({
@@ -400,5 +401,51 @@ describe("Server API - ModelKit Endpoints", () => {
 
       expect(res.status).toBe(400);
     });
+  });
+});
+
+describe("Server API - Quest spec stream", () => {
+  it("GET /api/quests/:id/spec-stream streams spec events", async () => {
+    process.env.REPOHELM_FAKE_MODELS = "1";
+    process.env.REPOHELM_FAKE_STREAM_TEXT =
+      '分析。\n```json\n{"userGoal":"g","background":"b","functionalRequirements":[],"nonFunctionalRequirements":[],"affectedSurfaces":[],"outOfScope":[],"acceptanceCriteria":[],"openQuestions":[]}\n```';
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-server-sse-"));
+    try {
+      const service = new RepoHelmService(new SqliteStateStore(rootDir), rootDir);
+      const state = await service.bootstrap();
+      const ws = state.workspaces[0]!;
+      const quest = await service.createQuest({ workspaceId: ws.id, title: "t", requirement: "做个动画" });
+
+      const app = new Hono();
+      app.get("/api/quests/:id/spec-stream", async (c) => {
+        const questId = c.req.param("id");
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          async start(controller) {
+            try {
+              for await (const ev of service.streamQuestSpec(questId)) {
+                controller.enqueue(encoder.encode(formatSSE(ev.type, ev)));
+              }
+            } catch (err) {
+              controller.enqueue(encoder.encode(formatSSE("error", { message: String((err as Error)?.message ?? err) })));
+            } finally {
+              controller.close();
+            }
+          }
+        });
+        return setupSSE(c, stream);
+      });
+
+      const res = await app.request(`/api/quests/${quest.id}/spec-stream`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+      const body = await res.text();
+      expect(body).toContain("event: analysis_delta");
+      expect(body).toContain("event: spec_ready");
+      expect(body).toContain("event: done");
+    } finally {
+      delete process.env.REPOHELM_FAKE_MODELS;
+      delete process.env.REPOHELM_FAKE_STREAM_TEXT;
+    }
   });
 });
