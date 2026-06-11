@@ -151,6 +151,9 @@ export function App() {
   const [pendingAction, setPendingAction] = useState<string>("");
   const [pendingRequirement, setPendingRequirement] = useState<string>("");
   const [streamingAnalysis, setStreamingAnalysis] = useState<string>("");
+  // Tracks the quest whose spec stream is currently active, so createQuest's own
+  // stream and the resume-on-select effect never double-subscribe the same quest.
+  const streamingQuestIdRef = useRef<string | null>(null);
   const [error, setError] = useState("");
   const [expertSession, setExpertSession] = useState<ExpertSession | null>(null);
 
@@ -234,6 +237,30 @@ export function App() {
   );
   const selectedQuest = draftWorkspaceId === workspace?.id ? undefined : quests.find((quest) => quest.id === selectedQuestId) ?? quests[0];
   const questEvents = state?.events.filter((event) => event.questId === selectedQuest?.id) ?? [];
+
+  // Resume spec streaming for a quest left in "specifying" (e.g. the page was refreshed
+  // or navigated away mid-stream), so it never gets stuck on the placeholder spec.
+  useEffect(() => {
+    if (busy) return; // createQuest is driving its own stream; don't race on the quests[0] fallback
+    if (!selectedQuest || selectedQuest.status !== "specifying") return;
+    if (streamingQuestIdRef.current === selectedQuest.id) return; // createQuest or a prior resume owns it
+    const questId = selectedQuest.id;
+    streamingQuestIdRef.current = questId;
+    setStreamingAnalysis("");
+    const close = streamQuestSpec(questId, {
+      onAnalysis: (text) => setStreamingAnalysis((prev) => prev + text),
+      onSpecReady: () => { void load(); },
+      onEvent: () => { void load(); },
+      onDone: () => { streamingQuestIdRef.current = null; setStreamingAnalysis(""); void load(); },
+      onError: () => { streamingQuestIdRef.current = null; setStreamingAnalysis(""); }
+    });
+    return () => {
+      close();
+      if (streamingQuestIdRef.current === questId) streamingQuestIdRef.current = null;
+    };
+    // load is intentionally excluded: it is re-created each render and would thrash the effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedQuest?.id, selectedQuest?.status, busy]);
   const knowledge = state?.knowledge.filter((item) => item.workspaceId === workspace?.id) ?? [];
   const changedFiles = selectedQuest?.changedFiles.map((file) => normalizeChangedFile(file)) ?? [];
   const selectedChangedFile =
@@ -306,6 +333,8 @@ export function App() {
       });
       setSelectedQuestId(quest.id);
       // Stream the spec generation: analysis text流式呈现，事件逐条落库刷新。
+      // Claim ownership so the resume-on-select effect skips this quest.
+      streamingQuestIdRef.current = quest.id;
       setPendingAction("正在分析需求并生成 Spec...");
       setStreamingAnalysis("");
       await new Promise<void>((resolve) => {
@@ -313,8 +342,8 @@ export function App() {
           onAnalysis: (text) => setStreamingAnalysis((prev) => prev + text),
           onSpecReady: () => { void load(); },
           onEvent: () => { void load(); },
-          onDone: () => { setStreamingAnalysis(""); resolve(); },
-          onError: () => { setStreamingAnalysis(""); resolve(); }
+          onDone: () => { streamingQuestIdRef.current = null; setStreamingAnalysis(""); resolve(); },
+          onError: () => { streamingQuestIdRef.current = null; setStreamingAnalysis(""); resolve(); }
         });
       });
       setPendingAction("Supervisor 正在生成编排计划...");
