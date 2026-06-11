@@ -33,6 +33,8 @@ test.afterAll(async () => {
 });
 
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
+  // Heavy end-to-end flow: settings + real git worktree checkout + streamed spec + delivery.
+  test.setTimeout(120_000);
   await page.goto("/");
 
   await expect(page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" })).toBeVisible();
@@ -43,17 +45,17 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   const settingsDialog = page.getByRole("dialog", { name: "设置" });
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.getByRole("tab", { name: "仓库管理" })).toBeVisible();
-  await expect(settingsDialog.getByRole("tab", { name: "执行模式" })).toBeVisible();
+  await expect(settingsDialog.getByRole("tab", { name: "模型管理" })).toBeVisible();
   await expect(settingsDialog.getByRole("heading", { name: "仓库管理" })).toBeVisible();
   await expect(settingsDialog.getByText("RepoHelm").first()).toBeVisible();
   // Repos are global now: register the docs directory once, then link it from the workspace below.
   await settingsDialog.getByRole("textbox", { name: "项目路径" }).fill(docsPath);
-  await settingsDialog.getByRole("button", { name: "添加目录" }).click();
+  await settingsDialog.getByRole("button", { name: "添加仓库" }).click();
   const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: docsPath });
   await expect(settingsProjectRow).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "打开目录" })).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "检查状态" })).toBeVisible();
-  await settingsDialog.getByRole("tab", { name: "执行模式" }).click();
+  await settingsDialog.getByRole("tab", { name: "模型管理" }).click();
   await expect(settingsDialog.getByRole("tab", { name: "本机 CLI" })).toBeVisible();
   await expect(settingsDialog.getByRole("heading", { name: /你的 CLI/ })).toBeVisible();
   await expect(settingsDialog.getByRole("button", { name: "重新扫描" })).toBeVisible();
@@ -85,16 +87,19 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.getByRole("button", { name: "配置 RepoHelm Demo Workspace" }).click();
   const configDialog = page.getByRole("dialog", { name: "RepoHelm Demo Workspace" });
   await expect(configDialog).toBeVisible();
-  await expect(configDialog.getByRole("heading", { name: "关联仓库" })).toBeVisible();
+  // The workspace config dialog is now split into 基本信息 / 关联仓库 tabs; basic fields live on the default tab.
+  await expect(configDialog.getByRole("tab", { name: "关联仓库" })).toBeVisible();
   await configDialog.getByRole("textbox", { name: "Workspace 描述" }).fill("E2E configured workspace");
   await configDialog.getByRole("textbox", { name: "Worktree Root" }).fill(e2eWorktreeRoot);
   await configDialog.getByRole("button", { name: "保存 Workspace" }).click();
   await expect(configDialog.getByRole("textbox", { name: "Worktree Root" })).toHaveValue(e2eWorktreeRoot);
 
   // Link the global docs repo into the workspace; this checks out a real worktree.
+  await configDialog.getByRole("tab", { name: "关联仓库" }).click();
+  await expect(configDialog.getByRole("heading", { name: "关联仓库" })).toBeVisible();
   await expect(configDialog.getByRole("combobox", { name: "选择要关联的仓库" })).toBeEnabled();
   await configDialog.getByRole("button", { name: "关联并 checkout worktree" }).click();
-  const linkedRepoRow = configDialog.locator(".settings-project-row").filter({ hasText: boundRepoName });
+  const linkedRepoRow = configDialog.locator(".worktree-row").filter({ hasText: boundRepoName });
   await expect(linkedRepoRow).toBeVisible();
   await expect(linkedRepoRow.locator(".health-pill.ok")).toBeVisible();
   await linkedRepoRow.getByRole("button", { name: "删除" }).click();
@@ -106,8 +111,6 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
     .fill(`${questTitle}\n从浏览器创建 Quest，生成 Spec，推荐 security skill 审查 MCP manifest，运行 mock agent，并展示 worktree、review 和 knowledge。`);
   const expandedComposerHeight = (await page.getByRole("textbox", { name: "需求" }).boundingBox())?.height ?? 0;
   expect(expandedComposerHeight).toBeGreaterThan(defaultComposerHeight);
-  await expect(page.getByRole("combobox", { name: "Agent Backend" })).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "执行模式" })).toBeVisible();
   await page.getByRole("button", { name: "发送给 Agent" }).click();
 
   await expect(page.getByRole("button", { name: new RegExp(questTitle) }).first()).toBeVisible();

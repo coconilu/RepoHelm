@@ -74,6 +74,50 @@ describe("QuestWorkspaceManager", () => {
     });
   });
 
+  it("round-trips plans whose descriptions contain newlines", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-test-"));
+    const manager = new QuestWorkspaceManager(rootDir);
+    const questId = "quest_newline_test";
+    const plan: OrchestrationPlan = {
+      questId,
+      generatedAt: "2026-06-11T00:00:00.000Z",
+      summary: "Plan with messy descriptions",
+      notes: "",
+      steps: [
+        {
+          id: "step_1",
+          description: "帮我开发一个小飞机游戏\n\n操作项目: project_xxx",
+          agentId: "coder",
+          agentName: "Coder",
+          dependencies: [],
+          expectedOutput: "A working game"
+        },
+        {
+          id: "step_2",
+          description: "Line one\nLine two\nLine three",
+          agentId: "reviewer",
+          agentName: "Reviewer",
+          dependencies: ["step_1"],
+          expectedOutput: "Review notes"
+        }
+      ]
+    };
+
+    await manager.writePlan(questId, plan);
+    const readBack = await manager.readPlan(questId);
+
+    expect(readBack).toBeDefined();
+    expect(readBack!.steps).toHaveLength(2);
+    // Newlines in descriptions are collapsed to spaces on render, so we get
+    // the single-line form back. As long as the step parses at all, the
+    // regression this test guards against is fixed.
+    expect(readBack!.steps[0]!.agentId).toBe("coder");
+    expect(readBack!.steps[0]!.description).toContain("小飞机游戏");
+    expect(readBack!.steps[0]!.description).not.toContain("\n");
+    expect(readBack!.steps[1]!.agentId).toBe("reviewer");
+    expect(readBack!.steps[1]!.dependencies).toEqual(["step_1"]);
+  });
+
   it("writeWorkerArtifact creates files in artifacts/", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-test-"));
     const manager = new QuestWorkspaceManager(rootDir);

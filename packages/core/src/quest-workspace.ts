@@ -74,7 +74,10 @@ function renderPlanMarkdown(plan: OrchestrationPlan): string {
     ``
   ];
   for (const step of plan.steps) {
-    lines.push(`### ${step.id}: ${step.description}`);
+    // Collapse any newlines in description so the ### heading stays on one
+    // line — otherwise parsePlanMarkdown's regex will fail to match the step.
+    const safeDescription = step.description.replace(/\s*\n\s*/g, " ").trim();
+    lines.push(`### ${step.id}: ${safeDescription}`);
     lines.push(``);
     lines.push(`- **Agent**: ${step.agentName} (\`${step.agentId}\`)`);
     lines.push(`- **Dependencies**: ${step.dependencies.length > 0 ? step.dependencies.join(", ") : "none"}`);
@@ -95,18 +98,35 @@ function parsePlanMarkdown(content: string): OrchestrationPlan {
   const summaryMatch = content.match(/## Summary\n\n([\s\S]*?)(?=\n## )/);
   const notesMatch = content.match(/## Notes\n\n([\s\S]*?)$/);
 
+  // Parse steps by scanning for ### headings and collecting metadata lines.
+  // This is more robust than a single regex because descriptions may contain
+  // newlines or stray lines (e.g. legacy "操作项目: xxx" lines).
   const steps: OrchestrationPlan["steps"] = [];
-  const stepRegex = /### (\S+): (.+)\n\n- \*\*Agent\*\*: (.+?) \(`([^)]+)`\)\n- \*\*Dependencies\*\*: (.+)\n- \*\*Expected Output\*\*: (.+)/g;
-  let match;
-  while ((match = stepRegex.exec(content)) !== null) {
-    const depsRaw = match[5]!.trim();
+  const headingRegex = /^### (\S+): (.+)$/gm;
+  let headingMatch;
+  while ((headingMatch = headingRegex.exec(content)) !== null) {
+    const stepId = headingMatch[1]!;
+    const description = headingMatch[2]!.trim();
+    // Find the metadata block that follows this heading (up to the next ### or ##).
+    const blockStart = headingMatch.index + headingMatch[0].length;
+    const nextHeadingMatch = content.slice(blockStart).match(/\n###? /);
+    const blockEnd = nextHeadingMatch ? blockStart + nextHeadingMatch.index! : content.length;
+    const block = content.slice(blockStart, blockEnd);
+
+    const agentMatch = block.match(/- \*\*Agent\*\*: (.+?) \(`([^)]+)`\)/);
+    const depsMatch = block.match(/- \*\*Dependencies\*\*: (.+)/);
+    const outputMatch = block.match(/- \*\*Expected Output\*\*: (.+)/);
+    if (!agentMatch || !depsMatch || !outputMatch) {
+      continue;
+    }
+    const depsRaw = depsMatch[1]!.trim();
     steps.push({
-      id: match[1]!,
-      description: match[2]!,
-      agentName: match[3]!,
-      agentId: match[4]!,
+      id: stepId,
+      description,
+      agentName: agentMatch[1]!.trim(),
+      agentId: agentMatch[2]!.trim(),
       dependencies: depsRaw === "none" ? [] : depsRaw.split(",").map((d) => d.trim()),
-      expectedOutput: match[6]!
+      expectedOutput: outputMatch[1]!.trim()
     });
   }
 

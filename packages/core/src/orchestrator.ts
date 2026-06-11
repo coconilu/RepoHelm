@@ -108,6 +108,10 @@ export class SubAgentOrchestrator {
     }
 
     const projectId = quest.affectedProjectIds[0]!;
+    // Keep description single-line: targetProjectId already carries the project
+    // context separately. Embedding newlines here would corrupt the plan.md
+    // structure (### heading) and break parsePlanMarkdown's regex.
+    const description = quest.requirement.replace(/\s*\n\s*/g, " ").trim();
 
     return {
       questId: quest.id,
@@ -115,7 +119,7 @@ export class SubAgentOrchestrator {
       steps: [
         {
           id: "step_1",
-          description: `${quest.requirement}\n\n操作项目: ${projectId}`,
+          description,
           agentId: codingAgent.id,
           agentName: codingAgent.name,
           dependencies: [],
