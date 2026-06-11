@@ -29,6 +29,7 @@ import {
   AgentBackendInfo,
   AgentEvent,
   api,
+  streamQuestSpec,
   AuditLogEntry,
   ByokConfig,
   ChangedFile,
@@ -149,6 +150,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [pendingAction, setPendingAction] = useState<string>("");
   const [pendingRequirement, setPendingRequirement] = useState<string>("");
+  const [streamingAnalysis, setStreamingAnalysis] = useState<string>("");
   const [error, setError] = useState("");
   const [expertSession, setExpertSession] = useState<ExpertSession | null>(null);
 
@@ -303,6 +305,18 @@ export function App() {
         entrySubAgentId: selectedEntrySubAgentId || undefined
       });
       setSelectedQuestId(quest.id);
+      // Stream the spec generation: analysis text流式呈现，事件逐条落库刷新。
+      setPendingAction("正在分析需求并生成 Spec...");
+      setStreamingAnalysis("");
+      await new Promise<void>((resolve) => {
+        streamQuestSpec(quest.id, {
+          onAnalysis: (text) => setStreamingAnalysis((prev) => prev + text),
+          onSpecReady: () => { void load(); },
+          onEvent: () => { void load(); },
+          onDone: () => { setStreamingAnalysis(""); resolve(); },
+          onError: () => { setStreamingAnalysis(""); resolve(); }
+        });
+      });
       setPendingAction("Supervisor 正在生成编排计划...");
       await api.runQuest(quest.id);
       // 同时创建专家团 session（fake mode 下自动生成任务树）
@@ -326,6 +340,7 @@ export function App() {
       setBusy(false);
       setPendingAction("");
       setPendingRequirement("");
+      setStreamingAnalysis("");
     }
   }
 
@@ -678,6 +693,7 @@ export function App() {
               events={questEvents}
               pendingAction={pendingAction}
               pendingRequirement={pendingRequirement}
+              streamingAnalysis={streamingAnalysis}
               projects={projects}
               quest={selectedQuest}
               questRequirement={questRequirement}
@@ -937,6 +953,21 @@ function Sidebar({
   );
 }
 
+// Event types that are internal/backend plumbing — useful for debugging
+// but not meaningful to end users. Filtered out of the chat thread.
+const INTERNAL_EVENT_TYPES = new Set([
+  "agent.backend.started",
+  "agent.backend.completed",
+  "agent.backend.failed",
+  "agent.backend.blocked",
+  "agent.byok.call",
+  "agent.cli.call",
+  "agent.provider.completed",
+  "agent.provider.failed",
+  "agent.artifacts.standardized",
+  "implementation.changed_files"
+]);
+
 function QuestStage({
   agentBackendId,
   agentBackends,
@@ -945,6 +976,7 @@ function QuestStage({
   events,
   pendingAction,
   pendingRequirement,
+  streamingAnalysis,
   projects,
   quest,
   questRequirement,
@@ -964,6 +996,7 @@ function QuestStage({
   events: AgentEvent[];
   pendingAction: string;
   pendingRequirement: string;
+  streamingAnalysis: string;
   projects: Project[];
   quest?: Quest;
   questRequirement: string;
@@ -985,6 +1018,20 @@ function QuestStage({
   const [enhancing, setEnhancing] = useState(false);
   const chatThreadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Streaming "thinking" bubble shown while Spec Agent analyzes the requirement.
+  const analysisBubble = streamingAnalysis ? (
+    <article className="chat-message assistant compact">
+      <div className="chat-avatar">
+        <RefreshCw size={15} className="spin" />
+      </div>
+      <div className="chat-bubble">
+        <strong>Spec Agent 正在分析…</strong>
+        <span>Spec Agent</span>
+        <p style={{ whiteSpace: "pre-wrap" }}>{streamingAnalysis}</p>
+      </div>
+    </article>
+  ) : null;
 
   async function enhanceRequirement() {
     const text = questRequirement.trim();
@@ -1085,6 +1132,7 @@ function QuestStage({
                     <p>{pendingAction}</p>
                   </div>
                 </article>
+                {analysisBubble}
               </>
             ) : null}
           </>
@@ -1107,7 +1155,9 @@ function QuestStage({
                 </p>
               </div>
             </article>
+            {analysisBubble}
             {[...events]
+              .filter((event) => !INTERNAL_EVENT_TYPES.has(event.type))
               .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
               .map((event) => (
                 <article className="chat-message assistant compact" key={event.id}>
@@ -1329,7 +1379,7 @@ function Inspector({
 
       <div className="inspector-body">
         {effectiveTab === "overview" ? (
-          <OverviewPanel changedFiles={changedFiles} events={events} projects={projects} quest={quest} />
+          <OverviewPanel projects={projects} quest={quest} />
         ) : null}
         {effectiveTab === "spec" && hasSpec ? <SpecPanel quest={quest} /> : null}
         {effectiveTab === "plan" && hasPlan ? (
@@ -1504,13 +1554,9 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
 }
 
 function OverviewPanel({
-  changedFiles,
-  events,
   projects,
   quest
 }: {
-  changedFiles: ChangedFile[];
-  events: AgentEvent[];
   projects: Project[];
   quest?: Quest;
 }) {
@@ -1543,7 +1589,6 @@ function OverviewPanel({
                 <strong>{project?.name ?? "Unknown"}</strong>
                 {worktree ? <em className="badge green">worktree 就绪</em> : <em className="badge">待创建</em>}
               </div>
-              {worktree ? <code>{worktree.worktreePath}</code> : null}
             </div>
           ))
         )}
@@ -1552,76 +1597,42 @@ function OverviewPanel({
         {relatedKnowledge.length === 0 ? (
           <p className="muted">暂无关联知识。</p>
         ) : (
-          relatedKnowledge.map((page) => (
-            <div className="context-knowledge" key={page.id}>
-              <div className="worktree-title">
-                <strong>{page.title}</strong>
-                <em className="badge">{page.slug}</em>
+          relatedKnowledge.map((page) => {
+            // Strip HTML tags and truncate for a clean one-line description.
+            const plainText = page.body.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+            const summary = plainText.length > 80 ? `${plainText.slice(0, 80)}…` : plainText;
+            return (
+              <div className="context-knowledge" key={page.id}>
+                <div className="worktree-title">
+                  <strong>{page.title}</strong>
+                </div>
+                <span className="muted">{summary || "(无摘要)"}</span>
               </div>
-              <span className="muted">{page.body.slice(0, 150)}...</span>
-            </div>
-          ))
+            );
+          })
         )}
       </InspectorSection>
-      <InspectorSection title="进展">
-        {events.length === 0 ? <p className="muted">生成任务后会在此展示进展。</p> : null}
-        {events.slice(0, 6).map((event) => (
-          <div className="progress-row" key={event.id}>
-            <CheckCircle2 size={14} />
-            <span>{event.title}</span>
-          </div>
-        ))}
-      </InspectorSection>
-      <InspectorSection title="Worktrees">
-        {quest?.worktrees.length ? (
-          quest.worktrees.map((worktree, index) => (
-            <motion.div
-              className="worktree-row"
-              key={`${worktree.projectId}-${worktree.worktreePath}`}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.28, delay: Math.min(index * 0.05, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
-            >
-              <div className="worktree-title">
-                <strong>{projects.find((project) => project.id === worktree.projectId)?.name ?? worktree.projectId}</strong>
-                <em className={worktree.status === "created" ? "badge green" : "badge"}>{worktree.status}</em>
-              </div>
-              <code>{worktree.branchName}</code>
-              <span>{worktree.worktreePath}</span>
-            </motion.div>
-          ))
-        ) : (
-          <p className="muted">暂无 worktree。</p>
-        )}
-      </InspectorSection>
-      <InspectorSection title="产物">
-        {changedFiles.length === 0 ? <p className="muted">暂无产物。</p> : null}
-        {changedFiles.map((file) => (
-          <code key={changedFileKey(file)}>{file.path}</code>
-        ))}
-      </InspectorSection>
-      <InspectorSection title="Review">
-        <SpecBlock title="验证" items={quest?.validationResults ?? []} empty="暂无验证结果。" />
-        <SpecBlock title="风险" items={quest?.reviewNotes ?? []} empty="暂无 Review 记录。" />
-      </InspectorSection>
-      <InspectorSection title="Delivery">
-        {quest?.deliveryResults?.length ? (
-          quest.deliveryResults.map((delivery) => (
+      {(quest?.validationResults?.length || quest?.reviewNotes?.length) ? (
+        <InspectorSection title="审查">
+          <SpecBlock title="验证" items={quest?.validationResults ?? []} empty="暂无验证结果。" />
+          <SpecBlock title="风险" items={quest?.reviewNotes ?? []} empty="暂无审查记录。" />
+        </InspectorSection>
+      ) : null}
+      {quest?.deliveryResults?.length ? (
+        <InspectorSection title="交付">
+          {quest.deliveryResults.map((delivery) => (
             <div className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
               <div className="worktree-title">
                 <strong>{projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId}</strong>
                 <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
               </div>
-              <code>{delivery.commitMessage}</code>
-              {delivery.commitSha ? <span>commit {delivery.commitSha.slice(0, 12)}</span> : null}
+              {delivery.commitMessage ? <p>{delivery.commitMessage}</p> : null}
               {delivery.prUrl ? <span>{delivery.prUrl}</span> : null}
-              <p>{delivery.note}</p>
+              {delivery.note ? <p>{delivery.note}</p> : null}
             </div>
-          ))
-        ) : (
-          <p className="muted">暂无交付记录。</p>
-        )}
-      </InspectorSection>
+          ))}
+        </InspectorSection>
+      ) : null}
     </div>
   );
 }
