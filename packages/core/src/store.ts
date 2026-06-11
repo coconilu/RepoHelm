@@ -215,4 +215,11 @@ export class SqliteStateStore implements StateStore {
     `);
     return this.db;
   }
+
+  close(): void {
+    if (this.db) {
+      this.db.close();
+      this.db = undefined;
+    }
+  }
 }

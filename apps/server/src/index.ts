@@ -873,15 +873,54 @@ const SERVE_RETRY_DELAY_MS = 500;
 
 async function startServer() {
   let lastError;
+  let httpServer: ReturnType<typeof serve> | undefined;
+
   for (let attempt = 1; attempt <= SERVE_RETRIES; attempt++) {
     try {
       await new Promise<void>((resolve, reject) => {
-        const server = serve({ fetch: app.fetch, port }, (info) => {
+        httpServer = serve({ fetch: app.fetch, port }, (info) => {
           console.log(`RepoHelm API listening on http://localhost:${info.port}`);
           resolve();
         });
-        server.once("error", reject);
+        httpServer.once("error", reject);
       });
+
+      // 注册优雅关闭处理器
+      const shutdown = async (signal: string) => {
+        console.log(`\n[${signal}] Shutting down gracefully...`);
+
+        // 关闭 HTTP 服务器
+        if (httpServer) {
+          await new Promise<void>((resolve) => {
+            httpServer!.close(() => resolve());
+          });
+        }
+
+        // 关闭 SQLite 数据库连接
+        try {
+          const stateStore = (service as any).store as { close?: () => void };
+          if (stateStore?.close) {
+            stateStore.close();
+          }
+        } catch (error) {
+          console.error("[shutdown] Error closing state store:", error);
+        }
+
+        try {
+          const wikiStore = (service as any).wikiStore as { close?: () => void };
+          if (wikiStore?.close) {
+            wikiStore.close();
+          }
+        } catch (error) {
+          console.error("[shutdown] Error closing wiki store:", error);
+        }
+
+        process.exit(0);
+      };
+
+      process.on("SIGINT", () => shutdown("SIGINT"));
+      process.on("SIGTERM", () => shutdown("SIGTERM"));
+
       return;
     } catch (error) {
       lastError = error;

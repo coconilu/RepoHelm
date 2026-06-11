@@ -126,4 +126,11 @@ export class SqliteWikiStore implements WikiStore {
     db.prepare("DELETE FROM wiki_pages WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM wiki_embeddings WHERE project_id = ?").run(projectId);
   }
+
+  close(): void {
+    if (this.db) {
+      this.db.close();
+      this.db = undefined;
+    }
+  }
 }

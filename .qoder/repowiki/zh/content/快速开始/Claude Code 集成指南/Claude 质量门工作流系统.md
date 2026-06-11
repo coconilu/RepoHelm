@@ -5,6 +5,9 @@
 - [README.md](file://README.md)
 - [CLAUDE.md](file://CLAUDE.md)
 - [AGENTS.md](file://AGENTS.md)
+- [opencode-subagent-research.md](file://opencode-subagent-research.md)
+- [MODEL_FETCHING.md](file://MODEL_FETCHING.md)
+- [docs/model-config-plan.md](file://docs/model-config-plan.md)
 - [packages/core/src/index.ts](file://packages/core/src/index.ts)
 - [packages/core/src/orchestrator.ts](file://packages/core/src/orchestrator.ts)
 - [packages/core/src/agent.ts](file://packages/core/src/agent.ts)
@@ -16,9 +19,17 @@
 - [packages/core/src/planning.ts](file://packages/core/src/planning.ts)
 - [packages/core/src/tools/delegate.ts](file://packages/core/src/tools/delegate.ts)
 - [packages/core/src/tools/fs.ts](file://packages/core/src/tools/fs.ts)
+- [packages/core/src/cli.ts](file://packages/core/src/cli.ts)
+- [packages/core/src/providers.ts](file://packages/core/src/providers.ts)
 - [apps/server/src/index.ts](file://apps/server/src/index.ts)
 - [apps/web/src/App.tsx](file://apps/web/src/App.tsx)
 </cite>
+
+## 更新摘要
+**变更内容**
+- 新增子代理模型选择指南章节，包含 Claude Sonnet 和 Opus 模型使用策略表格
+- 更新模型配置架构说明，反映最新的模型选择机制
+- 增强子代理编排器的模型绑定能力描述
 
 ## 目录
 1. [简介](#简介)
@@ -26,10 +37,11 @@
 3. [核心组件](#核心组件)
 4. [架构总览](#架构总览)
 5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考虑](#性能考虑)
-8. [故障排除指南](#故障排除指南)
-9. [结论](#结论)
+6. [子代理模型选择指南](#子代理模型选择指南)
+7. [依赖关系分析](#依赖关系分析)
+8. [性能考虑](#性能考虑)
+9. [故障排除指南](#故障排除指南)
+10. [结论](#结论)
 
 ## 简介
 
@@ -42,6 +54,7 @@ RepoHelm 是一个开源的 Quest 工作区原型，专注于验证"虚拟 works
 - 多种 Agent 后端支持（Mock、Codex、Claude、OpenCode、OpenAI兼容）
 - 知识库管理和向量化检索
 - 完整的交付流水线（验证→提交→PR）
+- **新增**：智能子代理模型选择机制，支持 Claude Sonnet 和 Opus 模型的精细化任务分配
 
 ## 项目结构
 
@@ -62,6 +75,8 @@ CoreTypes[types.ts 类型定义]
 CoreService[service.ts 核心服务]
 CoreOrchestrator[orchestrator.ts 编排器]
 CoreAgent[agent.ts 代理后端]
+CoreProviders[providers.ts 模型提供商]
+CoreCli[Cli 模型选择]
 end
 subgraph "服务器 (@repohelm/server)"
 ServerSrc[apps/server/src/]
@@ -82,6 +97,8 @@ CoreSrc --> CoreTypes
 CoreSrc --> CoreService
 CoreSrc --> CoreOrchestrator
 CoreSrc --> CoreAgent
+CoreSrc --> CoreProviders
+CoreSrc --> CoreCli
 ServerSrc --> ServerApi
 ServerSrc --> ServerHono
 WebSrc --> WebApp
@@ -153,9 +170,26 @@ class KnowledgeFileStore {
 +writeWikiPage(page) string
 +writeKnowledgeItem(item) string
 }
+class ProviderRegistry {
++list() ProviderDef[]
++get(id) ProviderDef
++resolve(id, baseUrl) ProviderDef
++envKey(def) string
++probe(def, options) Promise
++fetchModels(def, options) Promise
+}
+class LocalCliRegistry {
++list() CliDefinition[]
++get(id) CliDefinition
++detect(def, options) Promise
++detectAll(options) Promise
++test(def, options) Promise
+}
 RepoHelmService --> GitWorktreeManager : "管理"
 RepoHelmService --> AgentBackendRegistry : "注册"
 RepoHelmService --> KnowledgeFileStore : "知识库"
+RepoHelmService --> ProviderRegistry : "模型提供商"
+RepoHelmService --> LocalCliRegistry : "CLI 模型"
 ```
 
 **图表来源**
@@ -163,6 +197,8 @@ RepoHelmService --> KnowledgeFileStore : "知识库"
 - [packages/core/src/git.ts:49-136](file://packages/core/src/git.ts#L49-L136)
 - [packages/core/src/agent.ts:395-411](file://packages/core/src/agent.ts#L395-L411)
 - [packages/core/src/knowledge.ts:12-81](file://packages/core/src/knowledge.ts#L12-L81)
+- [packages/core/src/providers.ts:163-303](file://packages/core/src/providers.ts#L163-303)
+- [packages/core/src/cli.ts:124-385](file://packages/core/src/cli.ts#L124-385)
 
 ### SubAgentOrchestrator - 子代理编排器
 
@@ -230,6 +266,8 @@ StateStore[状态存储]
 GitManager[Git 管理器]
 AgentBackends[代理后端]
 KnowledgeStore[知识库]
+ProviderRegistry[模型提供商]
+LocalCliRegistry[CLI 模型注册表]
 end
 subgraph "外部系统"
 CLIBackends[CLI 后端]
@@ -249,6 +287,8 @@ CoreService --> KnowledgeStore
 AgentBackends --> CLIBackends
 AgentBackends --> Providers
 KnowledgeStore --> GitHub
+ProviderRegistry --> Providers
+LocalCliRegistry --> ProviderRegistry
 ```
 
 **图表来源**
@@ -434,6 +474,141 @@ GitMgr->>Repo : 删除分支
 **章节来源**
 - [packages/core/src/git.ts:49-402](file://packages/core/src/git.ts#L49-L402)
 
+## 子代理模型选择指南
+
+RepoHelm 实现了智能化的子代理模型选择机制，基于任务类型和复杂度自动分配最适合的 Claude 模型。该机制确保每个子代理都能获得最佳的性能和准确性平衡。
+
+### 模型选择策略
+
+系统采用基于任务类型的精细模型分配策略，主要分为两大类模型：
+
+#### Claude Sonnet 模型
+适用于需要快速执行和精确实现的任务，具有以下特征：
+- **执行效率高**：适合机械性的代码实现和文件操作
+- **准确性强**：在代码编写和文件读取方面表现优异
+- **成本效益**：相比 Opus 更经济实惠
+
+#### Claude Opus 模型  
+适用于需要深度思考和综合分析的任务，具有以下特征：
+- **思维深度**：适合复杂的规划和架构设计
+- **分析能力**：在代码审查和一致性检查方面表现卓越
+- **创意能力**：擅长架构设计和权衡分析
+
+### 详细使用策略表格
+
+| 任务类型 | 模型选择 | 典型示例 | 选择理由 |
+|---------|---------|---------|---------|
+| 信息收集/搜索/资料搜集 | `sonnet` | 探索代理、文件读取、代码搜索 | 快速准确的信息提取和文件操作 |
+| 机械实现（按计划执行） | `sonnet` | 按规格编写代码/测试、文件修改 | 精确的代码实现和文件操作 |
+| 计划撰写/任务分解/依赖判断 | `opus` | 规划生成、任务分解、依赖分析 | 深度思考和综合分析能力 |
+| 架构设计/权衡分析 | `opus` | 架构设计、方案比较、技术选型 | 创造性思维和系统性分析 |
+| 代码审查/规范审核/一致性检查 | `opus` | Bug 发现、类型一致性验证、规范检查 | 深度分析和细节把控能力 |
+| 复杂问题解决/多步骤推理 | `opus` | 多文件协调、复杂逻辑实现、系统集成 | 综合分析和复杂问题处理 |
+
+### 模型选择决策流程
+
+```mermaid
+flowchart TD
+TaskType{任务类型识别} --> CheckComplexity{"复杂度评估"}
+CheckComplexity --> SimpleTasks["简单任务"]
+CheckComplexity --> ComplexTasks["复杂任务"]
+SimpleTasks --> SonnetChoice["选择 Sonnet"]
+ComplexTasks --> OpusChoice["选择 Opus"]
+SonnetChoice --> InfoCollection["信息收集/文件读取"]
+SonnetChoice --> Implementation["代码实现/文件修改"]
+OpusChoice --> Planning["规划制定/任务分解"]
+OpusChoice --> Architecture["架构设计/权衡分析"]
+OpusChoice --> Review["代码审查/一致性检查"]
+InfoCollection --> ExecuteSonnet["执行 Sonnet 任务"]
+Implementation --> ExecuteSonnet
+Planning --> ExecuteOpus["执行 Opus 任务"]
+Architecture --> ExecuteOpus
+Review --> ExecuteOpus
+```
+
+### 模型绑定机制
+
+RepoHelm 支持每子代理级别的模型绑定，实现精细化的资源分配：
+
+```mermaid
+classDiagram
+class SubAgent {
++id : string
++name : string
++role : string
++capabilities : string[]
++modelKitId : string
++mode : "entry" | "worker" | "system"
++systemRole : "knowledge" | "habits" | "failure-experience"
++permissions : SubAgentPermissions
++promptTemplate : string
++metadata : SubAgentMetadata
+}
+class ModelKit {
++id : string
++providerId : string
++modelId : string
++baseUrl : string
++apiKey : string
++createdAt : string
++updatedAt : string
+}
+class ProviderRegistry {
++list() : ProviderDef[]
++get(id) : ProviderDef
++resolve(id, baseUrl) : ProviderDef
++envKey(def) : string
++fetchModels(def, options) : Promise
+}
+SubAgent --> ModelKit : "绑定"
+ModelKit --> ProviderRegistry : "使用"
+```
+
+**图表来源**
+- [packages/core/src/types.ts:399-413](file://packages/core/src/types.ts#L399-L413)
+- [packages/core/src/providers.ts:163-303](file://packages/core/src/providers.ts#L163-303)
+
+### 实际应用场景
+
+#### 质量门工作流中的模型选择
+在质量门流程中，系统会根据任务的性质自动选择最合适的模型：
+
+```mermaid
+sequenceDiagram
+participant QualityGate as 质量门
+participant TaskAnalyzer as 任务分析器
+participant ModelSelector as 模型选择器
+participant SonnetAgent as Sonnet 代理
+participant OpusAgent as Opus 代理
+QualityGate->>TaskAnalyzer : 分析任务类型
+TaskAnalyzer->>ModelSelector : 评估复杂度
+ModelSelector->>SonnetAgent : 信息收集/实现任务
+ModelSelector->>OpusAgent : 规划/审查任务
+SonnetAgent-->>QualityGate : 执行结果
+OpusAgent-->>QualityGate : 审查结果
+QualityGate->>QualityGate : 综合评估
+```
+
+#### 动态模型切换
+系统支持在运行时根据任务需求动态切换模型：
+
+```mermaid
+flowchart LR
+DynamicSelection["动态模型选择"] --> TaskAnalysis["任务分析"]
+TaskAnalysis --> ModelEvaluation["模型评估"]
+ModelEvaluation --> CostAnalysis["成本分析"]
+ModelEvaluation --> PerformanceAnalysis["性能分析"]
+CostAnalysis --> ModelSelection["模型选择"]
+PerformanceAnalysis --> ModelSelection
+ModelSelection --> Execution["执行任务"]
+Execution --> Result["返回结果"]
+```
+
+**章节来源**
+- [CLAUDE.md:81-93](file://CLAUDE.md#L81-L93)
+- [MODEL_FETCHING.md:42-49](file://MODEL_FETCHING.md#L42-L49)
+- [packages/core/src/providers.ts:79-161](file://packages/core/src/providers.ts#L79-L161)
+
 ## 依赖关系分析
 
 系统采用模块化设计，各组件间依赖关系清晰：
@@ -446,24 +621,28 @@ Store[store.ts 状态存储]
 Service[service.ts 核心服务]
 Orchestrator[orchestrator.ts 编排器]
 Planning[planning.ts 规划器]
-end
+Providers[providers.ts 模型提供商]
+Cli[Cli 模型选择]
+End
 subgraph "工具集"
 Delegate[tools/delegate.ts 委派工具]
 FileSystem[tools/fs.ts 文件系统工具]
-end
+End
 subgraph "基础设施"
 Git[git.ts Git 管理]
 Knowledge[knowledge.ts 知识库]
 Agent[agent.ts 代理后端]
-end
+End
 subgraph "应用层"
 Server[apps/server/src/index.ts API 服务]
 Web[apps/web/src/App.tsx Web 应用]
-end
+End
 Types --> Service
 Store --> Service
 Service --> Orchestrator
 Service --> Planning
+Service --> Providers
+Service --> Cli
 Service --> Git
 Service --> Knowledge
 Service --> Agent
@@ -500,6 +679,11 @@ RepoHelm 在设计时充分考虑了性能优化：
 - 增量索引更新，避免全量重建
 - 嵌入向量缓存，提升查询速度
 
+### 模型选择性能
+- **智能缓存机制**：模型配置和选择策略的缓存，减少重复计算
+- **动态资源分配**：根据任务类型和复杂度动态调整模型资源
+- **成本优化**：通过合理的模型选择策略降低推理成本
+
 ## 故障排除指南
 
 ### 常见问题诊断
@@ -519,6 +703,11 @@ RepoHelm 在设计时充分考虑了性能优化：
 - 验证网络连接
 - 清理缓存后重试
 
+**模型选择异常**
+- 检查模型提供商配置
+- 验证 API 密钥有效性
+- 确认模型列表获取正常
+
 **章节来源**
 - [packages/core/src/agent.ts:125-182](file://packages/core/src/agent.ts#L125-L182)
 - [packages/core/src/git.ts:95-136](file://packages/core/src/git.ts#L95-L136)
@@ -533,5 +722,8 @@ RepoHelm 通过 Claude 质量门工作流系统，为多项目 Quest 开发提�
 3. **灵活扩展**：多后端支持，适应不同开发需求
 4. **知识管理**：完整的知识库系统，支持智能检索
 5. **可观测性**：全面的事件记录和审计日志
+6. **智能模型选择**：基于任务类型的精细化模型分配机制，优化性能和成本
+
+**新增的子代理模型选择指南**为开发者提供了明确的决策依据，通过 Claude Sonnet 和 Opus 模型的差异化使用策略，确保每个子代理都能在最适合的模型上执行，从而提升整体系统的效率和质量。
 
 该系统为构建高质量的 AI 辅助开发工作流奠定了坚实基础，通过持续迭代和社区贡献，有望成为下一代软件开发平台的重要组成部分。

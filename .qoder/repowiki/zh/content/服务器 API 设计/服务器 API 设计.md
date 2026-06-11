@@ -11,6 +11,8 @@
 - [packages/core/src/orchestrator.ts](file://packages/core/src/orchestrator.ts)
 - [packages/core/src/tools/habits.ts](file://packages/core/src/tools/habits.ts)
 - [packages/core/src/tools/failure.ts](file://packages/core/src/tools/failure.ts)
+- [packages/core/src/expert/types.ts](file://packages/core/src/expert/types.ts)
+- [packages/core/src/expert/persistence.test.ts](file://packages/core/src/expert/persistence.test.ts)
 - [apps/server/package.json](file://apps/server/package.json)
 - [packages/core/package.json](file://packages/core/package.json)
 - [README.md](file://README.md)
@@ -31,7 +33,7 @@
 ## 简介
 本文件为 RepoHelm 服务器 API 的全面设计文档，面向前端与集成开发者，系统性说明 RESTful API 的端点、请求/响应模式、数据验证（Zod）、路由与中间件、CORS 与安全策略、错误处理、版本与兼容性、客户端实现与性能优化、测试与调试方法，以及与核心服务的集成关系。RepoHelm 以 Hono 为基础构建 API，使用 Zod 对输入进行强类型校验，通过 @repohelm/core 提供业务逻辑与状态持久化。
 
-**更新** 本次更新新增了系统代理API端点、用户偏好管理API、失败模式管理API，以及扩展的Agent后端管理端点。这些新功能增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。
+**更新** 本次更新新增了完整的专家编排API端点，包括 /api/expert/session、/api/expert/session/:id、/api/expert/session/:id/confirm、/api/expert/session/:id/deliverables、/api/expert/session/:id/references、/api/expert/session/:id/research、/api/expert/session/:id/acceptance-tests 等端点。这些新功能为复杂任务提供专家级编排能力，支持任务树管理、验收测试、研究资料收集和动态代理池管理。
 
 ## 项目结构
 - 应用层
@@ -52,6 +54,7 @@ subgraph "核心库"
 C["@repohelm/core<br/>RepoHelmService/Types/Store/Orchestrator"]
 T1["Habits Tools<br/>用户偏好管理"]
 T2["Failure Tools<br/>失败模式管理"]
+E["Expert Session<br/>专家编排系统"]
 end
 subgraph "外部"
 F["浏览器/客户端"]
@@ -61,6 +64,7 @@ W --> S
 S --> C
 C --> T1
 C --> T2
+C --> E
 ```
 
 **图表来源**
@@ -69,11 +73,12 @@ C --> T2
 - [packages/core/src/service.ts:56-71](file://packages/core/src/service.ts#L56-L71)
 - [packages/core/src/tools/habits.ts:1-185](file://packages/core/src/tools/habits.ts#L1-L185)
 - [packages/core/src/tools/failure.ts:1-264](file://packages/core/src/tools/failure.ts#L1-L264)
+- [packages/core/src/expert/types.ts:1-173](file://packages/core/src/expert/types.ts#L1-L173)
 
 **章节来源**
-- [apps/server/src/index.ts:1-782](file://apps/server/src/index.ts#L1-L782)
-- [apps/web/src/api.ts:1-423](file://apps/web/src/api.ts#L1-L423)
-- [packages/core/src/service.ts:1-2651](file://packages/core/src/service.ts#L1-L2651)
+- [apps/server/src/index.ts:1-904](file://apps/server/src/index.ts#L1-L904)
+- [apps/web/src/api.ts:1-909](file://apps/web/src/api.ts#L1-L909)
+- [packages/core/src/service.ts:1-2690](file://packages/core/src/service.ts#L1-L2690)
 - [README.md:1-100](file://README.md#L1-L100)
 
 ## 核心组件
@@ -81,9 +86,10 @@ C --> T2
   - 日志中间件：全局日志记录。
   - CORS 中间件：允许来自 http://localhost:5173 与 http://127.0.0.1:5173 的跨域请求，支持 GET/POST/PATCH/DELETE/OPTIONS，允许 Content-Type 头。
 - 数据验证（Zod）
-  - 为工作区、项目、引擎、提供商模型查询、安全策略、Quest、ModelKit、**子代理**、**计划管理**、**系统代理调用**、**用户偏好管理**、**失败模式管理**等输入建立严格 Schema，统一在路由层解析与校验。
+  - 为工作区、项目、引擎、提供商模型查询、安全策略、Quest、ModelKit、**子代理**、**计划管理**、**系统代理**、**用户偏好管理**、**失败模式管理**、**专家会话**等输入建立严格 Schema，统一在路由层解析与校验。
 - 核心服务（RepoHelmService）
   - 提供工作区管理、项目管理、引擎配置、提供商模型查询、安全策略、Quest 生命周期、Git worktree 管理、知识库检索与持久化、审计日志等能力。
+  - **新增** 专家会话管理：支持创建、查询、更新专家编排会话，管理任务树、验收测试、研究资料和代理池。
   - **新增** 系统代理调用：支持直接调用系统代理（知识库、用户习惯、失败经验），无需通过 Quest 编排器。
   - **新增** 用户偏好管理：记录和管理用户的编码习惯、风格偏好和工作流偏好，支持置信度评估和示例记录。
   - **新增** 失败模式管理：记录和管理 Quest 执行中的失败经验，支持风险检查和缓解方案。
@@ -91,7 +97,7 @@ C --> T2
   - **新增** 子代理管理：创建、更新、删除、查询子代理，支持入口代理设置和权限配置。
   - **新增** 编排器：基于入口代理生成执行计划，按依赖顺序委派给工作代理执行。
 - 状态存储（StateStore）
-  - 支持 JSON 与 SQLite 两种实现，含迁移逻辑与默认配置，新增用户偏好和失败模式集合。
+  - 支持 JSON 与 SQLite 两种实现，含迁移逻辑与默认配置，新增专家会话表、用户偏好和失败模式集合。
 
 **章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
@@ -100,11 +106,12 @@ C --> T2
 - [packages/core/src/service.ts:1042-1128](file://packages/core/src/service.ts#L1042-L1128)
 - [packages/core/src/service.ts:1135-1230](file://packages/core/src/service.ts#L1135-L1230)
 - [packages/core/src/store.ts:86-165](file://packages/core/src/store.ts#L86-L165)
+- [packages/core/src/expert/types.ts:1-173](file://packages/core/src/expert/types.ts#L1-L173)
 
 ## 架构总览
 服务器 API 采用"路由层 + 服务层 + 存储层"的分层设计：
 - 路由层：Hono 路由注册与中间件装配，Zod 输入校验，统一错误处理。
-- 服务层：RepoHelmService 组织业务流程，协调 Git、Provider、Knowledge、Audit、**ModelKit**、**SubAgent**、**Orchestrator**、**Habits Tools**、**Failure Tools** 等子系统。
+- 服务层：RepoHelmService 组织业务流程，协调 Git、Provider、Knowledge、Audit、**ModelKit**、**SubAgent**、**Orchestrator**、**Habits Tools**、**Failure Tools**、**Expert Session** 等子系统。
 - 存储层：SqliteStateStore/JsonStateStore 提供状态持久化与迁移。
 
 ```mermaid
@@ -113,6 +120,7 @@ participant Client as "客户端"
 participant Router as "Hono 路由"
 participant Validator as "Zod 校验"
 participant Service as "RepoHelmService"
+participant ExpertSession as "专家会话"
 participant SystemAgent as "系统代理"
 participant HabitsTools as "用户偏好工具"
 participant FailureTools as "失败模式工具"
@@ -123,6 +131,7 @@ Client->>Router : 发起 HTTP 请求
 Router->>Validator : 解析并校验请求体/参数
 Validator-->>Router : 校验通过/抛出错误
 Router->>Service : 调用业务方法
+Service->>ExpertSession : 管理专家会话
 Service->>SystemAgent : 直接调用系统代理
 SystemAgent->>HabitsTools : 处理用户偏好
 SystemAgent->>FailureTools : 处理失败模式
@@ -134,7 +143,7 @@ Router-->>Client : JSON 响应
 ```
 
 **图表来源**
-- [apps/server/src/index.ts:114-782](file://apps/server/src/index.ts#L114-L782)
+- [apps/server/src/index.ts:114-904](file://apps/server/src/index.ts#L114-L904)
 - [packages/core/src/service.ts:959-1028](file://packages/core/src/service.ts#L959-L1028)
 - [packages/core/src/tools/habits.ts:109-184](file://packages/core/src/tools/habits.ts#L109-L184)
 - [packages/core/src/tools/failure.ts:128-263](file://packages/core/src/tools/failure.ts#L128-L263)
@@ -151,7 +160,7 @@ Router-->>Client : JSON 响应
 
 **章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
-- [apps/server/src/index.ts:732-740](file://apps/server/src/index.ts#L732-L740)
+- [apps/server/src/index.ts:854-862](file://apps/server/src/index.ts#L854-L862)
 
 ### 数据验证（Zod）与类型系统
 - 输入校验 Schema
@@ -163,6 +172,8 @@ Router-->>Client : JSON 响应
   - 提供商模型查询：baseUrl/apiKey/refresh 可选。
   - 安全策略：命令审批模式、允许命令、文件作用域、网络作用域、密钥策略、沙箱运行时可选。
   - Quest：workspaceId/title/requirement 必填，agentBackendId 可选，affectedProjectIds 可选，**entrySubAgentId 可选，autoApprovePlan 可选**。
+  - **新增** 专家会话创建：questId/requirement/workspaceId/entryAgentId/projectIds 必填。
+  - **新增** 专家会话确认：acceptanceTestIds/skipAcceptanceTests 可选。
   - **新增** 系统代理调用：task 必填，context 可选。
   - **新增** 用户偏好创建：category/key/value 必填，confidence/source/example 可选。
   - **新增** 失败模式创建：category/title/description/rootCause/context/mitigation 必填，signals/projectId/questId/severity 可选。
@@ -180,11 +191,12 @@ Router-->>Client : JSON 响应
 
 **章节来源**
 - [apps/server/src/index.ts:51-184](file://apps/server/src/index.ts#L51-L184)
+- [apps/server/src/index.ts:733-755](file://apps/server/src/index.ts#L733-L755)
 - [packages/core/src/types.ts:70-619](file://packages/core/src/types.ts#L70-L619)
 
 ### API 端点清单与规范
 
-**更新** 新增系统代理API端点、用户偏好管理API、失败模式管理API，以及扩展的Agent后端管理端点
+**更新** 新增完整的专家编排API端点，包括会话管理、任务树操作、验收测试、研究资料和流式传输
 
 说明
 - 所有端点均返回 JSON。
@@ -192,6 +204,64 @@ Router-->>Client : JSON 响应
 - 查询参数通过 URL 查询字符串传递；路径参数通过 URL 路径占位符传递。
 - 请求体为 JSON；Content-Type: application/json。
 - 身份验证：本项目未实现鉴权中间件，API 未包含鉴权头或令牌。
+
+#### 专家会话管理端点
+- 创建专家会话
+  - 方法：POST
+  - 路径：/api/expert/session
+  - 请求体：questId/requirement/workspaceId/entryAgentId/projectIds（部分可选）
+  - 功能：创建专家编排会话，初始化任务树和代理池
+  - 响应：{ session: ExpertSession }（201）
+  - 说明：自动生成 expert_ 前缀的会话ID，状态初始为 analyzing
+- 获取专家会话
+  - 方法：GET
+  - 路径：/api/expert/session/:id
+  - 参数：路径参数 id
+  - 功能：获取指定专家会话的完整信息
+  - 响应：{ session: ExpertSession }
+- 更新专家会话
+  - 方法：PATCH
+  - 路径：/api/expert/session/:id
+  - 参数：路径参数 id；请求体：任意 ExpertSession 字段
+  - 功能：更新专家会话状态和内容
+  - 响应：{ session: ExpertSession }
+- 确认专家会话
+  - 方法：POST
+  - 路径：/api/expert/session/:id/confirm
+  - 参数：路径参数 id；请求体：acceptanceTestIds/skipAcceptanceTests（可选）
+  - 功能：将会话状态设为 confirmed，记录确认时间
+  - 响应：{ session: ExpertSession }
+- 获取交付成果
+  - 方法：GET
+  - 路径：/api/expert/session/:id/deliverables
+  - 参数：路径参数 id
+  - 功能：获取会话中所有任务的产物列表
+  - 响应：{ deliverables: TaskArtifact[] }
+- 获取参考资料
+  - 方法：GET
+  - 路径：/api/expert/session/:id/references
+  - 参数：路径参数 id
+  - 功能：获取会话的研究资料和参考信息
+  - 响应：{ references: { knowledge: CodeResearchResult[], preferences: [], failurePatterns: [] } }
+- 流式传输状态
+  - 方法：GET
+  - 路径：/api/expert/session/:id/stream
+  - 参数：路径参数 id
+  - 功能：建立 Server-Sent Events 连接，实时推送会话状态更新
+  - 响应：SSE 流（connected/session_update）
+  - 说明：当前实现为占位符，实际事件订阅待实现
+- 获取研究资料
+  - 方法：GET
+  - 路径：/api/expert/session/:id/research
+  - 参数：路径参数 id
+  - 功能：获取会话的研究结果列表
+  - 响应：{ research: CodeResearchResult[] }
+- 获取验收测试
+  - 方法：GET
+  - 路径：/api/expert/session/:id/acceptance-tests
+  - 参数：路径参数 id
+  - 功能：获取会话的验收测试列表
+  - 响应：{ tests: AcceptanceTest[] }
 
 #### 系统代理调用端点
 - 系统代理调用
@@ -211,7 +281,7 @@ Router-->>Client : JSON 响应
 - 记录用户偏好
   - 方法：POST
   - 路径：/api/preferences
-  - 请求体：category/key/value（必填），confidence/source/example（可选）
+  - 请求体：category/key/value（必填），confidence/source/example（可选)
   - 功能：记录或更新用户偏好，同 category+key 则更新（提高 confidence 和 occurrences）
   - 响应：UserPreference（201）
 - 删除用户偏好
@@ -236,7 +306,7 @@ Router-->>Client : JSON 响应
 - 搜索失败模式
   - 方法：POST
   - 路径：/api/failures/search
-  - 请求体：query（必填），category/projectId（可选）
+  - 请求体：query（必填），category/projectId（可选)
   - 功能：搜索相似的失败模式，使用关键词匹配
   - 响应：FailurePattern[]
 - 更新失败模式
@@ -252,19 +322,19 @@ Router-->>Client : JSON 响应
   - 路径：/api/quests/:id/plan
   - 参数：路径参数 id
   - 功能：获取 Quest 的编排计划（如果存在）
-  - 响应：OrchestrationPlan 或 { error: "No plan found" }（404）
+  - 响应：OrchestrationPlan 或 { error: "No plan found" }（404)
 - 批准计划
   - 方法：POST
   - 路径：/api/quests/:id/approve-plan
   - 参数：路径参数 id
   - 功能：批准 Quest 计划并开始执行
-  - 响应：Quest（200）
+  - 响应：Quest（200)
 - 拒绝计划
   - 方法：POST
   - 路径：/api/quests/:id/reject-plan
   - 参数：路径参数 id；请求体：reason（可选）
   - 功能：拒绝 Quest 计划
-  - 响应：Quest（200）
+  - 响应：Quest（200)
 
 #### 子代理管理端点
 - 创建子代理
@@ -272,7 +342,7 @@ Router-->>Client : JSON 响应
   - 路径：/api/sub-agents
   - 请求体：name/role/capabilities/modelKitId/mode/permissions/promptTemplate（部分可选）
   - 功能：创建新的子代理实例
-  - 响应：SubAgent（201）
+  - 响应：SubAgent（201)
 - 更新子代理
   - 方法：PATCH
   - 路径：/api/sub-agents/:id
@@ -387,7 +457,7 @@ Router-->>Client : JSON 响应
 - 产品就绪度
   - 方法：GET
   - 路径：/api/product-readiness
-  - 参数：查询参数 workspaceId（可选）
+  - 参数：查询参数 workspaceId（可选)
   - 功能：获取产品就绪度指标
   - 响应：ProductReadiness
 - 知识库检索
@@ -399,7 +469,7 @@ Router-->>Client : JSON 响应
 - 工作树列表
   - 方法：GET
   - 路径：/api/worktrees
-  - 参数：查询参数 workspaceId（可选）
+  - 参数：查询参数 workspaceId（可选)
   - 功能：列出 Quest 关联的工作树
   - 响应：WorktreeState[]
 - 创建工作区
@@ -407,11 +477,11 @@ Router-->>Client : JSON 响应
   - 路径：/api/workspaces
   - 请求体：name/description/worktreeRoot
   - 功能：创建新工作区
-  - 响应：Workspace（201）
+  - 响应：Workspace（201)
 - 更新工作区
   - 方法：PATCH
   - 路径：/api/workspaces/:id
-  - 参数：路径参数 id；请求体：name/description/worktreeRoot（可选）
+  - 参数：路径参数 id；请求体：name/description/worktreeRoot（可选)
   - 功能：更新工作区
   - 响应：Workspace
 - 创建项目
@@ -419,13 +489,13 @@ Router-->>Client : JSON 响应
   - 路径：/api/projects
   - 请求体：name/path/role/defaultBranch/validationCommand
   - 功能：创建项目并写入知识库摘要
-  - 响应：Project（201）
+  - 响应：Project（201)
 - 关联项目到工作区
   - 方法：POST
   - 路径：/api/workspaces/:id/links
   - 参数：路径参数 id；请求体：projectId
   - 功能：将项目链接到工作区，并创建 Git worktree
-  - 响应：Workspace（201）
+  - 响应：Workspace（201)
 - 从工作区取消关联项目
   - 方法：DELETE
   - 路径：/api/workspaces/:id/links/:projectId
@@ -435,7 +505,7 @@ Router-->>Client : JSON 响应
 - 更新项目
   - 方法：PATCH
   - 路径：/api/projects/:id
-  - 参数：路径参数 id；请求体：name/path/role/defaultBranch/validationCommand（可选）
+  - 参数：路径参数 id；请求体：name/path/role/defaultBranch/validationCommand（可选)
   - 功能：更新项目
   - 响应：Project
 - 删除项目
@@ -464,7 +534,7 @@ Router-->>Client : JSON 响应
 - 列举分支
   - 方法：GET
   - 路径：/api/branches
-  - 参数：查询参数 path（必填）
+  - 参数：查询参数 path（必填)
   - 功能：列举仓库分支与默认分支
   - 响应：{ branches: string[], defaultBranch: string }
 - 创建 Quest
@@ -472,7 +542,7 @@ Router-->>Client : JSON 响应
   - 路径：/api/quests
   - 请求体：workspaceId/title/requirement/agentBackendId/affectedProjectIds/entrySubAgentId/autoApprovePlan
   - 功能：创建 Quest 并生成轻量 Spec 与能力推荐
-  - 响应：Quest（201）
+  - 响应：Quest（201)
 - 运行 Quest
   - 方法：POST
   - 路径：/api/quests/:id/run
@@ -511,30 +581,39 @@ Router-->>Client : JSON 响应
   - 响应：Quest
 
 **章节来源**
-- [apps/server/src/index.ts:639-740](file://apps/server/src/index.ts#L639-L740)
+- [apps/server/src/index.ts:756-852](file://apps/server/src/index.ts#L756-L852)
 
 ### 请求/响应示例与错误处理
 - 示例
   - 获取状态：GET /api/state → 返回 RepoHelmState
   - 创建工作区：POST /api/workspaces → 请求体包含 name/description/worktreeRoot；响应 201 与 Workspace
   - 运行 Quest：POST /api/quests/:id/run → 返回 Quest
+  - **新增** 创建专家会话：POST /api/expert/session → 请求体包含 questId/requirement；响应 201 与 ExpertSession
+  - **新增** 获取专家会话：GET /api/expert/session/:id → 返回 { session: ExpertSession }
+  - **新增** 确认专家会话：POST /api/expert/session/:id/confirm → 返回 { session: ExpertSession }
+  - **新增** 获取交付成果：GET /api/expert/session/:id/deliverables → 返回 { deliverables: TaskArtifact[] }
+  - **新增** 获取参考资料：GET /api/expert/session/:id/references → 返回 { references: {...} }
+  - **新增** 流式传输：GET /api/expert/session/:id/stream → 返回 SSE 流
+  - **新增** 获取研究资料：GET /api/expert/session/:id/research → 返回 { research: CodeResearchResult[] }
+  - **新增** 获取验收测试：GET /api/expert/session/:id/acceptance-tests → 返回 { tests: AcceptanceTest[] }
   - **新增** 系统代理调用：POST /api/system-agents/:id/invoke → 请求体包含 task/context；响应 { content: string }
   - **新增** 记录用户偏好：POST /api/preferences → 请求体包含 category/key/value；响应 UserPreference
   - **新增** 记录失败模式：POST /api/failures → 请求体包含 category/title/description/rootCause/context/mitigation；响应 FailurePattern
   - **新增** 创建子代理：POST /api/sub-agents → 请求体包含 name/role/modelKitId；响应 201 与 SubAgent
-  - **新增** 获取计划：GET /api/quests/:id/plan → 返回 OrchestrationPlan 或 { error: "No plan found" }（404）
+  - **新增** 获取计划：GET /api/quests/:id/plan → 返回 OrchestrationPlan 或 { error: "No plan found" }（404)
   - **新增** 批准计划：POST /api/quests/:id/approve-plan → 返回 Quest
   - **新增** 拒绝计划：POST /api/quests/:id/reject-plan → 返回 Quest
 - 错误处理
   - 全局 onError：捕获异常并返回 500 与错误消息。
   - 路由层 Zod 校验失败：将触发 400（由 Hono 默认行为处理，具体取决于框架行为）。
-  - 业务异常：如"Workspace not found"、"Project not found"、"ModelKit not found"、"SubAgent not found"、"Quest not found"、"System agent not found"、"User preference not found"、"Failure pattern not found"，服务层抛出错误，最终由全局 onError 捕获并返回 500。
+  - 业务异常：如"Workspace not found"、"Project not found"、"ModelKit not found"、"SubAgent not found"、"Quest not found"、"System agent not found"、"User preference not found"、"Failure pattern not found"、"Session not found"，服务层抛出错误，最终由全局 onError 捕获并返回 500。
 
 **章节来源**
-- [apps/server/src/index.ts:732-740](file://apps/server/src/index.ts#L732-L740)
+- [apps/server/src/index.ts:854-862](file://apps/server/src/index.ts#L854-L862)
 - [packages/core/src/service.ts:960-977](file://packages/core/src/service.ts#L960-L977)
 - [packages/core/src/service.ts:1042-1084](file://packages/core/src/service.ts#L1042-L1084)
 - [packages/core/src/service.ts:1135-1158](file://packages/core/src/service.ts#L1135-L1158)
+- [packages/core/src/service.ts:2670-2684](file://packages/core/src/service.ts#L2670-L2684)
 
 ### CORS 配置与安全考虑
 - CORS
@@ -545,6 +624,7 @@ Router-->>Client : JSON 响应
   - 本地安全策略：命令审批模式（allowlist/manual）、允许命令列表、文件作用域、网络作用域、密钥策略（redact-env/deny）、沙箱运行时（local/external）。
   - 审计日志：记录命令、文件、网络、密钥、能力、沙箱等类型的决策与详情。
   - 身份验证：未实现鉴权中间件，不包含 Authorization 头或令牌。
+  - **新增** 专家会话安全：专家会话状态变更需要明确的确认流程，防止意外状态转换。
   - **新增** 系统代理安全：系统代理调用需要 BYOK ModelKit，且系统代理必须为 system 模式。
 
 **章节来源**
@@ -559,14 +639,16 @@ Router-->>Client : JSON 响应
 - 兼容性
   - 状态存储支持从旧 JSON 迁移到 SQLite，并对引擎配置进行兼容迁移（byok -> byokProviders）。
   - 类型定义与 API 行为保持一致，前端通过统一类型定义对接。
-  - **新增** 系统代理API、用户偏好管理API、失败模式管理API作为扩展特性，不影响现有 API 兼容性。
+  - **新增** 专家会话API作为扩展特性，不影响现有 API 兼容性。
   - **新增** 用户偏好和失败模式集合在状态存储中得到支持，提供向后兼容的数据迁移。
+  - **新增** 专家会话表结构在 SQLite 存储中得到支持，提供向后兼容的数据迁移。
 
 **章节来源**
 - [apps/server/package.json:1-22](file://apps/server/package.json#L1-L22)
 - [packages/core/package.json:1-21](file://packages/core/package.json#L1-L21)
 - [packages/core/src/store.ts:36-84](file://packages/core/src/store.ts#L36-L84)
 - [packages/core/src/store.ts:131-142](file://packages/core/src/store.ts#L131-L142)
+- [packages/core/src/store.ts:201-217](file://packages/core/src/store.ts#L201-L217)
 
 ### 客户端实现指南与性能优化
 - 客户端实现
@@ -574,8 +656,9 @@ Router-->>Client : JSON 响应
   - 建议：使用 fetch 包装统一处理 4xx/5xx，提取错误消息，避免重复代码。
 - 性能优化
   - 提供商模型缓存：ProviderModelsResult 支持缓存（TTL），减少频繁请求。
-  - 分页与过滤：对大列表（如知识库、审计日志、ModelKit 列表、子代理列表、用户偏好列表、失败模式列表）建议在前端分页或增加筛选参数。
+  - 分页与过滤：对大列表（如知识库、审计日志、ModelKit 列表、子代理列表、用户偏好列表、失败模式列表、专家会话列表）建议在前端分页或增加筛选参数。
   - 并发控制：批量操作（如多个 Quest 并行运行）需注意资源限制与并发队列。
+  - **新增** 专家会话缓存：专家会话状态变更后进行缓存，避免重复查询。
   - **新增** 计划缓存：Quest 计划生成后可缓存，避免重复计算。
   - **新增** 子代理池：编排器维护子代理池，提高执行效率。
   - **新增** 系统代理缓存：系统代理调用结果可缓存，减少重复计算。
@@ -589,11 +672,14 @@ Router-->>Client : JSON 响应
 ### API 测试与调试
 - 单元测试
   - @repohelm/core 提供 vitest 测试，覆盖工作区引导、SQLite 迁移、知识文件写入、Quest 创建、能力推荐、安全策略、真实 worktree、mock/CLI Agent、diff 读取、清理、重试、交付、产品就绪度等。
+  - **新增** 专家会话测试：覆盖专家会话创建、查询、更新、列表等功能。
+  - **新增** 专家会话持久化测试：验证专家会话数据的序列化和反序列化。
   - **新增** 系统代理测试：覆盖系统代理调用、用户偏好管理、失败模式管理等完整流程。
   - **新增** 用户偏好测试：覆盖偏好记录、更新、查询、删除等功能。
   - **新增** 失败模式测试：覆盖失败模式记录、搜索、风险检查、更新等功能。
 - 端到端测试
   - e2e 使用 Playwright，覆盖从 UI 创建 Quest、生成 Spec、确认能力推荐、运行 Quest、搜索知识库、展示 worktree/review/diff、交付、清理、安全审计、产品就绪度与 CLI backend 的主流程。
+  - **新增** 专家会话测试：验证专家会话创建、状态变更、流式传输等功能。
   - **新增** 系统代理测试：验证系统代理调用功能。
   - **新增** 用户偏好测试：验证用户偏好记录和查询功能。
   - **新增** 失败模式测试：验证失败模式记录和风险检查功能。
@@ -601,6 +687,12 @@ Router-->>Client : JSON 响应
   - 启用日志中间件，观察请求与响应。
   - 使用 /api/health 检查服务状态与根目录配置。
   - 通过 /api/audit-log 查看审计记录。
+  - **新增** 使用 /api/expert/session/:id 验证专家会话状态。
+  - **新增** 使用 /api/expert/session/:id/confirm 验证会话确认流程。
+  - **新增** 使用 /api/expert/session/:id/stream 验证流式传输。
+  - **新增** 使用 /api/expert/session/:id/deliverables 验证交付成果。
+  - **新增** 使用 /api/expert/session/:id/research 验证研究资料。
+  - **新增** 使用 /api/expert/session/:id/acceptance-tests 验证验收测试。
   - **新增** 使用 /api/quests/:id/plan 验证计划生成。
   - **新增** 使用 /api/sub-agents 验证子代理管理功能。
   - **新增** 使用 /api/system-agents/:id/invoke 验证系统代理调用。
@@ -611,6 +703,7 @@ Router-->>Client : JSON 响应
 - [README.md:79-85](file://README.md#L79-L85)
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
 - [apps/server/src/index.ts:114-123](file://apps/server/src/index.ts#L114-L123)
+- [packages/core/src/expert/persistence.test.ts:1-54](file://packages/core/src/expert/persistence.test.ts#L1-L54)
 
 ## 依赖分析
 
@@ -626,7 +719,9 @@ F --> H["packages/core/src/store.ts"]
 I["packages/core/src/orchestrator.ts"] --> F
 J["packages/core/src/tools/habits.ts"] --> F
 K["packages/core/src/tools/failure.ts"] --> F
-L["apps/server/src/index.test.ts"] --> A
+L["packages/core/src/expert/types.ts"] --> F
+M["apps/server/src/index.test.ts"] --> A
+N["packages/core/src/expert/persistence.test.ts"] --> F
 ```
 
 **图表来源**
@@ -638,6 +733,7 @@ L["apps/server/src/index.test.ts"] --> A
 - [packages/core/src/orchestrator.ts:1-200](file://packages/core/src/orchestrator.ts#L1-L200)
 - [packages/core/src/tools/habits.ts:1-185](file://packages/core/src/tools/habits.ts#L1-L185)
 - [packages/core/src/tools/failure.ts:1-264](file://packages/core/src/tools/failure.ts#L1-L264)
+- [packages/core/src/expert/types.ts:1-173](file://packages/core/src/expert/types.ts#L1-L173)
 
 **章节来源**
 - [apps/server/src/index.ts:1-11](file://apps/server/src/index.ts#L1-L11)
@@ -648,6 +744,8 @@ L["apps/server/src/index.test.ts"] --> A
 - 模型缓存：ProviderModelsResult 支持缓存（TTL），refresh=true 可强制刷新，降低对外部提供商的请求压力。
 - 并发与资源：同时运行多个 Quest 时，注意 Git worktree 创建与外部 CLI 执行的资源占用。
 - 状态持久化：SQLite 相比 JSON 更适合增量写入与并发场景，建议在生产环境优先使用 SqliteStateStore。
+- **新增** 专家会话性能：专家会话数据采用 JSON 序列化存储，支持按 questId 过滤查询，避免全量扫描。
+- **新增** 专家会话缓存：专家会话状态变更后进行内存缓存，减少数据库访问频率。
 - **新增** 计划执行性能：编排器按依赖顺序执行，支持并行度优化；子代理使用池化管理提高复用率。
 - **新增** 子代理性能：子代理配置可复用，避免重复初始化开销；支持使用计数统计优化调度。
 - **新增** 系统代理性能：系统代理调用支持工具调用循环，最大迭代次数限制为8次，避免无限循环。
@@ -661,6 +759,7 @@ L["apps/server/src/index.test.ts"] --> A
 - [packages/core/src/service.ts:999-1027](file://packages/core/src/service.ts#L999-L1027)
 - [packages/core/src/service.ts:1089-1103](file://packages/core/src/service.ts#L1089-L1103)
 - [packages/core/src/service.ts:1164-1196](file://packages/core/src/service.ts#L1164-L1196)
+- [packages/core/src/store.ts:169-193](file://packages/core/src/store.ts#L169-L193)
 
 ## 故障排查指南
 - 常见错误
@@ -673,6 +772,7 @@ L["apps/server/src/index.test.ts"] --> A
   - "System agent not found"：检查系统代理ID是否正确，确认是否存在。
   - "User preference not found"：检查用户偏好ID是否正确，确认是否存在。
   - "Failure pattern not found"：检查失败模式ID是否正确，确认是否存在。
+  - "Session not found"：检查专家会话ID是否正确，确认是否存在。
   - "No entry sub-agent configured"：检查入口子代理是否已设置。
   - "No plan found"：检查 Quest 是否已生成计划。
   - "System agent requires a BYOK ModelKit"：检查系统代理使用的ModelKit类型。
@@ -684,6 +784,12 @@ L["apps/server/src/index.test.ts"] --> A
   - 使用 /api/state 检查当前状态。
   - 使用 /api/audit-log 审核最近决策与拒绝原因。
   - 使用 /api/security-policy 检查安全策略是否过严导致命令被阻断。
+  - **新增** 使用 /api/expert/session/:id 检查专家会话状态。
+  - **新增** 使用 /api/expert/session/:id/confirm 验证会话确认流程。
+  - **新增** 使用 /api/expert/session/:id/stream 检查流式传输连接。
+  - **新增** 使用 /api/expert/session/:id/deliverables 验证交付成果。
+  - **新增** 使用 /api/expert/session/:id/research 验证研究资料。
+  - **新增** 使用 /api/expert/session/:id/acceptance-tests 验证验收测试。
   - **新增** 使用 /api/quests/:id/plan 检查计划状态。
   - **新增** 使用 /api/sub-agents 验证子代理状态。
   - **新增** 使用 /api/system-agents/:id/invoke 验证系统代理调用。
@@ -696,9 +802,10 @@ L["apps/server/src/index.test.ts"] --> A
 - [packages/core/src/service.ts:965-967](file://packages/core/src/service.ts#L965-L967)
 - [packages/core/src/service.ts:1042-1044](file://packages/core/src/service.ts#L1042-L1044)
 - [packages/core/src/service.ts:1135-1137](file://packages/core/src/service.ts#L1135-L1137)
+- [packages/core/src/service.ts:2670-2684](file://packages/core/src/service.ts#L2670-L2684)
 
 ## 结论
-RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的系统代理API、用户偏好管理API、失败模式管理API**进一步增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
+RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的专家编排API**进一步增强了系统的智能化水平，提供专家级任务管理、动态代理池、研究资料收集和验收测试能力。**新增的系统代理API、用户偏好管理API、失败模式管理API**进一步增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
 
 ## 附录
 
@@ -740,6 +847,17 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 接受能力推荐：POST /api/quests/:id/capabilities/:capabilityId/accept
 - 拒绝能力推荐：POST /api/quests/:id/capabilities/:capabilityId/dismiss
 
+**新增** 专家会话管理端点
+- 创建专家会话：POST /api/expert/session（请求体：questId/requirement/workspaceId/entryAgentId/projectIds）
+- 获取专家会话：GET /api/expert/session/:id
+- 更新专家会话：PATCH /api/expert/session/:id（请求体：任意 ExpertSession 字段）
+- 确认专家会话：POST /api/expert/session/:id/confirm（请求体：acceptanceTestIds/skipAcceptanceTests）
+- 获取交付成果：GET /api/expert/session/:id/deliverables
+- 获取参考资料：GET /api/expert/session/:id/references
+- 流式传输：GET /api/expert/session/:id/stream
+- 获取研究资料：GET /api/expert/session/:id/research
+- 获取验收测试：GET /api/expert/session/:id/acceptance-tests
+
 **新增** 系统代理调用端点
 - 系统代理调用：POST /api/system-agents/:id/invoke（请求体：task/context）
 
@@ -768,4 +886,4 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 获取入口子代理：GET /api/sub-agents/entry
 
 **章节来源**
-- [apps/server/src/index.ts:114-740](file://apps/server/src/index.ts#L114-L740)
+- [apps/server/src/index.ts:114-904](file://apps/server/src/index.ts#L114-L904)
