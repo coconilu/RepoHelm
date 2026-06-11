@@ -15,6 +15,7 @@
 - [packages/core/src/tools/failure.ts](file://packages/core/src/tools/failure.ts)
 - [packages/core/src/expert/types.ts](file://packages/core/src/expert/types.ts)
 - [packages/core/src/expert/persistence.test.ts](file://packages/core/src/expert/persistence.test.ts)
+- [packages/core/src/expert/session-manager.ts](file://packages/core/src/expert/session-manager.ts)
 - [apps/server/package.json](file://apps/server/package.json)
 - [packages/core/package.json](file://packages/core/package.json)
 - [README.md](file://README.md)
@@ -35,11 +36,11 @@
 ## 简介
 本文件为 RepoHelm 服务器 API 的全面设计文档，面向前端与集成开发者，系统性说明 RESTful API 的端点、请求/响应模式、数据验证（Zod）、路由与中间件、CORS 与安全策略、错误处理、版本与兼容性、客户端实现与性能优化、测试与调试方法，以及与核心服务的集成关系。RepoHelm 以 Hono 为基础构建 API，使用 Zod 对输入进行强类型校验，通过 @repohelm/core 提供业务逻辑与状态持久化。
 
-**更新** 本次更新新增了完整的专家编排API端点，包括 /api/expert/session、/api/expert/session/:id、/api/expert/session/:id/confirm、/api/expert/session/:id/deliverables、/api/expert/session/:id/references、/api/expert/session/:id/research、/api/expert/session/:id/acceptance-tests 等端点。这些新功能为复杂任务提供专家级编排能力，支持任务树管理、验收测试、研究资料收集和动态代理池管理。**新增** 服务器端增强：新增了优雅关闭处理程序，支持SIGINT和SIGTERM信号，改进了错误管理和数据库连接关闭机制。
+**更新** 本次更新新增了完整的专家编排API端点、Quest Spec流式传输端点、专家会话SSE流、打开目录API等新API端点。这些新功能为复杂任务提供专家级编排能力，支持任务树管理、验收测试、研究资料收集和动态代理池管理，同时提供真实的流式Spec生成体验。
 
 ## 项目结构
 - 应用层
-  - 服务器应用：apps/server，基于 Hono，提供 REST API。
+  - 服务器应用：apps/server，基于 Hono，提供 REST API 和 SSE 流传输。
   - Web 前端：apps/web，提供调用 API 的封装函数与类型定义。
 - 核心库
   - @repohelm/core：包含业务服务 RepoHelmService、类型定义、状态存储、编排器等。
@@ -49,14 +50,15 @@
 ```mermaid
 graph TB
 subgraph "应用层"
-S["apps/server<br/>Hono 服务器"]
-W["apps/web<br/>前端 API 封装"]
+S["apps/server<br/>Hono 服务器 + SSE"]
+W["apps/web<br/>前端 API 封装 + EventSource"]
 end
 subgraph "核心库"
 C["@repohelm/core<br/>RepoHelmService/Types/Store/Orchestrator"]
 T1["Habits Tools<br/>用户偏好管理"]
 T2["Failure Tools<br/>失败模式管理"]
 E["Expert Session<br/>专家编排系统"]
+Q["Quest Streaming<br/>Spec 流式生成"]
 end
 subgraph "外部"
 F["浏览器/客户端"]
@@ -67,6 +69,7 @@ S --> C
 C --> T1
 C --> T2
 C --> E
+C --> Q
 ```
 
 **图表来源**
@@ -78,8 +81,8 @@ C --> E
 - [packages/core/src/expert/types.ts:1-173](file://packages/core/src/expert/types.ts#L1-L173)
 
 **章节来源**
-- [apps/server/src/index.ts:1-943](file://apps/server/src/index.ts#L1-L943)
-- [apps/web/src/api.ts:1-909](file://apps/web/src/api.ts#L1-L909)
+- [apps/server/src/index.ts:1-1021](file://apps/server/src/index.ts#L1-L1021)
+- [apps/web/src/api.ts:1-954](file://apps/web/src/api.ts#L1-L954)
 - [packages/core/src/service.ts:1-2690](file://packages/core/src/service.ts#L1-L2690)
 - [README.md:1-100](file://README.md#L1-L100)
 
@@ -98,8 +101,12 @@ C --> E
   - **新增** 计划管理：生成、批准、拒绝 Quest 计划，支持自动批准配置。
   - **新增** 子代理管理：创建、更新、删除、查询子代理，支持入口代理设置和权限配置。
   - **新增** 编排器：基于入口代理生成执行计划，按依赖顺序委派给工作代理执行。
+  - **新增** Quest Spec 流式生成：支持真实的流式Spec生成，提供SSE事件流。
 - 状态存储（StateStore）
   - 支持 JSON 与 SQLite 两种实现，含迁移逻辑与默认配置，新增专家会话表、用户偏好和失败模式集合。
+- **新增** SSE 流传输基础设施
+  - 提供通用的SSE设置和格式化函数，支持Server-Sent Events流式传输。
+  - 支持专家会话实时状态更新和Quest Spec流式生成。
 - **新增** 优雅关闭处理程序
   - 支持 SIGINT 和 SIGTERM 信号，提供平滑的服务终止。
   - 自动关闭 HTTP 服务器和数据库连接，确保资源正确释放。
@@ -108,7 +115,8 @@ C --> E
 **章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
 - [apps/server/src/index.ts:51-184](file://apps/server/src/index.ts#L51-L184)
-- [apps/server/src/index.ts:888-922](file://apps/server/src/index.ts#L888-L922)
+- [apps/server/src/index.ts:888-1021](file://apps/server/src/index.ts#L888-L1021)
+- [apps/server/src/sse.ts:1-13](file://apps/server/src/sse.ts#L1-L13)
 - [packages/core/src/service.ts:959-1028](file://packages/core/src/service.ts#L959-L1028)
 - [packages/core/src/service.ts:1042-1128](file://packages/core/src/service.ts#L1042-L1128)
 - [packages/core/src/service.ts:1135-1230](file://packages/core/src/service.ts#L1135-L1230)
@@ -117,8 +125,8 @@ C --> E
 
 ## 架构总览
 服务器 API 采用"路由层 + 服务层 + 存储层"的分层设计：
-- 路由层：Hono 路由注册与中间件装配，Zod 输入校验，统一错误处理。
-- 服务层：RepoHelmService 组织业务流程，协调 Git、Provider、Knowledge、Audit、**ModelKit**、**SubAgent**、**Orchestrator**、**Habits Tools**、**Failure Tools**、**Expert Session** 等子系统。
+- 路由层：Hono 路由注册与中间件装配，Zod 输入校验，统一错误处理，SSE 流传输支持。
+- 服务层：RepoHelmService 组织业务流程，协调 Git、Provider、Knowledge、Audit、**ModelKit**、**SubAgent**、**Orchestrator**、**Habits Tools**、**Failure Tools**、**Expert Session**、**Quest Streaming** 等子系统。
 - 存储层：SqliteStateStore/JsonStateStore 提供状态持久化与迁移。
 
 ```mermaid
@@ -148,11 +156,15 @@ Service->>WikiStore : 知识库检索与持久化
 Service->>Git : 创建/清理 worktree
 Service->>Provider : 列表/探测模型
 Service-->>Router : 返回业务结果
+alt SSE 流请求
+Router-->>Client : SSE 事件流
+else 普通请求
 Router-->>Client : JSON 响应
+end
 ```
 
 **图表来源**
-- [apps/server/src/index.ts:114-943](file://apps/server/src/index.ts#L114-L943)
+- [apps/server/src/index.ts:114-1021](file://apps/server/src/index.ts#L114-L1021)
 - [packages/core/src/service.ts:959-1028](file://packages/core/src/service.ts#L959-L1028)
 - [packages/core/src/tools/habits.ts:109-184](file://packages/core/src/tools/habits.ts#L109-L184)
 - [packages/core/src/tools/failure.ts:128-263](file://packages/core/src/tools/failure.ts#L128-L263)
@@ -166,10 +178,14 @@ Router-->>Client : JSON 响应
   - CORS 中间件：限定来源为本地开发端口，允许常见方法与 Content-Type。
 - 错误处理
   - 全局 onError 捕获异常，统一返回 500 与错误消息。
+- **新增** SSE 支持
+  - setupSSE 函数：设置正确的SSE响应头（Content-Type: text/event-stream, Cache-Control: no-cache, Connection: keep-alive）。
+  - formatSSE 函数：格式化SSE事件消息，支持事件类型和数据。
 
 **章节来源**
 - [apps/server/src/index.ts:41-49](file://apps/server/src/index.ts#L41-L49)
 - [apps/server/src/index.ts:854-862](file://apps/server/src/index.ts#L854-L862)
+- [apps/server/src/sse.ts:1-13](file://apps/server/src/sse.ts#L1-L13)
 
 ### 数据验证（Zod）与类型系统
 - 输入校验 Schema
@@ -205,7 +221,7 @@ Router-->>Client : JSON 响应
 
 ### API 端点清单与规范
 
-**更新** 新增完整的专家编排API端点，包括会话管理、任务树操作、验收测试、研究资料和流式传输
+**更新** 新增完整的专家编排API端点、Quest Spec流式传输端点、专家会话SSE流、打开目录API等新API端点
 
 说明
 - 所有端点均返回 JSON。
@@ -213,6 +229,7 @@ Router-->>Client : JSON 响应
 - 查询参数通过 URL 查询字符串传递；路径参数通过 URL 路径占位符传递。
 - 请求体为 JSON；Content-Type: application/json。
 - 身份验证：本项目未实现鉴权中间件，API 未包含鉴权头或令牌。
+- **新增** SSE 端点：支持 Server-Sent Events 流式传输，使用 text/event-stream 响应类型。
 
 #### 专家会话管理端点
 - 创建专家会话
@@ -252,13 +269,13 @@ Router-->>Client : JSON 响应
   - 参数：路径参数 id
   - 功能：获取会话的研究资料和参考信息
   - 响应：{ references: { knowledge: CodeResearchResult[], preferences: [], failurePatterns: [] } }
-- 流式传输状态
+- **新增** 专家会话SSE流
   - 方法：GET
   - 路径：/api/expert/session/:id/stream
   - 参数：路径参数 id
   - 功能：建立 Server-Sent Events 连接，实时推送会话状态更新
   - 响应：SSE 流（connected/session_update）
-  - 说明：当前实现为占位符，实际事件订阅待实现
+  - 说明：定时推送会话更新，演示用30秒后关闭
 - 获取研究资料
   - 方法：GET
   - 路径：/api/expert/session/:id/research
@@ -381,6 +398,31 @@ Router-->>Client : JSON 响应
   - 路径：/api/sub-agents/entry
   - 功能：获取当前入口子代理
   - 响应：SubAgent 或 null
+
+#### **新增** Quest Spec 流式传输端点
+- **新增** Quest Spec 流式传输
+  - 方法：GET
+  - 路径：/api/quests/:id/spec-stream
+  - 参数：路径参数 id
+  - 功能：建立 Server-Sent Events 连接，流式传输Spec生成过程
+  - 响应：SSE 流（analysis_delta/spec_ready/event_added/done/error）
+  - 说明：提供需求分析叙述流、结构化Spec生成、时间线事件、完成通知和错误处理
+
+#### **新增** 打开目录API端点
+- **新增** 打开项目目录
+  - 方法：POST
+  - 路径：/api/projects/:id/open-directory
+  - 参数：路径参数 id
+  - 功能：在本机打开项目目录（平台相关）
+  - 响应：{ ok: boolean }
+  - 说明：支持 macOS（open）、Windows（explorer）、Linux（xdg-open）
+- **新增** 打开工作树目录
+  - 方法：POST
+  - 路径：/api/workspaces/:id/worktrees/:projectId/open-directory
+  - 参数：路径参数 id（workspaceId）、路径参数 projectId
+  - 功能：在本机打开指定项目的工作树目录
+  - 响应：{ ok: boolean }
+  - 说明：支持 macOS（open）、Windows（explorer）、Linux（xdg-open）
 
 端点一览（其余端点保持不变）
 - 健康检查
@@ -529,12 +571,6 @@ Router-->>Client : JSON 响应
   - 参数：路径参数 id
   - 功能：检查项目健康状态
   - 响应：Project
-- 打开项目目录
-  - 方法：POST
-  - 路径：/api/projects/:id/open-directory
-  - 参数：路径参数 id
-  - 功能：在本机打开项目目录（平台相关）
-  - 响应：{ ok: boolean }
 - 选择目录
   - 方法：POST
   - 路径：/api/pick-directory
@@ -590,7 +626,7 @@ Router-->>Client : JSON 响应
   - 响应：Quest
 
 **章节来源**
-- [apps/server/src/index.ts:756-852](file://apps/server/src/index.ts#L756-L852)
+- [apps/server/src/index.ts:756-1021](file://apps/server/src/index.ts#L756-L1021)
 
 ### 请求/响应示例与错误处理
 - 示例
@@ -602,7 +638,7 @@ Router-->>Client : JSON 响应
   - **新增** 确认专家会话：POST /api/expert/session/:id/confirm → 返回 { session: ExpertSession }
   - **新增** 获取交付成果：GET /api/expert/session/:id/deliverables → 返回 { deliverables: TaskArtifact[] }
   - **新增** 获取参考资料：GET /api/expert/session/:id/references → 返回 { references: {...} }
-  - **新增** 流式传输：GET /api/expert/session/:id/stream → 返回 SSE 流
+  - **新增** 专家会话SSE流：GET /api/expert/session/:id/stream → 返回 SSE 流（connected/session_update）
   - **新增** 获取研究资料：GET /api/expert/session/:id/research → 返回 { research: CodeResearchResult[] }
   - **新增** 获取验收测试：GET /api/expert/session/:id/acceptance-tests → 返回 { tests: AcceptanceTest[] }
   - **新增** 系统代理调用：POST /api/system-agents/:id/invoke → 请求体包含 task/context；响应 { content: string }
@@ -612,6 +648,9 @@ Router-->>Client : JSON 响应
   - **新增** 获取计划：GET /api/quests/:id/plan → 返回 OrchestrationPlan 或 { error: "No plan found" }（404)
   - **新增** 批准计划：POST /api/quests/:id/approve-plan → 返回 Quest
   - **新增** 拒绝计划：POST /api/quests/:id/reject-plan → 返回 Quest
+  - **新增** Quest Spec流式传输：GET /api/quests/:id/spec-stream → 返回 SSE 流（analysis_delta/spec_ready/event_added/done）
+  - **新增** 打开项目目录：POST /api/projects/:id/open-directory → 返回 { ok: boolean }
+  - **新增** 打开工作树目录：POST /api/workspaces/:id/worktrees/:projectId/open-directory → 返回 { ok: boolean }
 - 错误处理
   - 全局 onError：捕获异常并返回 500 与错误消息。
   - 路由层 Zod 校验失败：将触发 400（由 Hono 默认行为处理，具体取决于框架行为）。
@@ -635,6 +674,7 @@ Router-->>Client : JSON 响应
   - 身份验证：未实现鉴权中间件，不包含 Authorization 头或令牌。
   - **新增** 专家会话安全：专家会话状态变更需要明确的确认流程，防止意外状态转换。
   - **新增** 系统代理安全：系统代理调用需要 BYOK ModelKit，且系统代理必须为 system 模式。
+  - **新增** SSE 安全：SSE 流传输使用标准的 text/event-stream 响应类型，支持连接保持和缓存控制。
 
 **章节来源**
 - [apps/server/src/index.ts:42-49](file://apps/server/src/index.ts#L42-L49)
@@ -651,6 +691,7 @@ Router-->>Client : JSON 响应
   - **新增** 专家会话API作为扩展特性，不影响现有 API 兼容性。
   - **新增** 用户偏好和失败模式集合在状态存储中得到支持，提供向后兼容的数据迁移。
   - **新增** 专家会话表结构在 SQLite 存储中得到支持，提供向后兼容的数据迁移。
+  - **新增** Quest Spec 流式传输作为新特性，不影响现有 API 兼容性。
 
 **章节来源**
 - [apps/server/package.json:1-22](file://apps/server/package.json#L1-L22)
@@ -662,6 +703,7 @@ Router-->>Client : JSON 响应
 ### 客户端实现指南与性能优化
 - 客户端实现
   - 前端封装：apps/web/src/api.ts 提供统一的请求函数与类型定义，便于在 UI 中直接调用。
+  - **新增** SSE 客户端：支持 EventSource 订阅，处理 analysis_delta、spec_ready、event_added、done、error 事件。
   - 建议：使用 fetch 包装统一处理 4xx/5xx，提取错误消息，避免重复代码。
 - 性能优化
   - 提供商模型缓存：ProviderModelsResult 支持缓存（TTL），减少频繁请求。
@@ -672,6 +714,7 @@ Router-->>Client : JSON 响应
   - **新增** 子代理池：编排器维护子代理池，提高执行效率。
   - **新增** 系统代理缓存：系统代理调用结果可缓存，减少重复计算。
   - **新增** 用户偏好缓存：用户偏好查询可缓存，提高响应速度。
+  - **新增** SSE 连接管理：合理管理 EventSource 连接，避免内存泄漏。
 
 **章节来源**
 - [apps/web/src/api.ts:276-422](file://apps/web/src/api.ts#L276-L422)
@@ -686,12 +729,14 @@ Router-->>Client : JSON 响应
   - **新增** 系统代理测试：覆盖系统代理调用、用户偏好管理、失败模式管理等完整流程。
   - **新增** 用户偏好测试：覆盖偏好记录、更新、查询、删除等功能。
   - **新增** 失败模式测试：覆盖失败模式记录、搜索、风险检查、更新等功能。
+  - **新增** Quest Spec 流式传输测试：验证流式生成过程和SSE事件传输。
 - 端到端测试
   - e2e 使用 Playwright，覆盖从 UI 创建 Quest、生成 Spec、确认能力推荐、运行 Quest、搜索知识库、展示 worktree/review/diff、交付、清理、安全审计、产品就绪度与 CLI backend 的主流程。
   - **新增** 专家会话测试：验证专家会话创建、状态变更、流式传输等功能。
   - **新增** 系统代理测试：验证系统代理调用功能。
   - **新增** 用户偏好测试：验证用户偏好记录和查询功能。
   - **新增** 失败模式测试：验证失败模式记录和风险检查功能。
+  - **新增** Quest Spec 流式传输测试：验证流式生成和事件处理。
 - 调试
   - 启用日志中间件，观察请求与响应。
   - 使用 /api/health 检查服务状态与根目录配置。
@@ -707,6 +752,8 @@ Router-->>Client : JSON 响应
   - **新增** 使用 /api/system-agents/:id/invoke 验证系统代理调用。
   - **新增** 使用 /api/preferences 验证用户偏好管理功能。
   - **新增** 使用 /api/failures 验证失败模式管理功能。
+  - **新增** 使用 /api/quests/:id/spec-stream 验证 Quest Spec 流式传输。
+  - **新增** 使用 /api/projects/:id/open-directory 验证目录打开功能。
 
 **章节来源**
 - [README.md:79-85](file://README.md#L79-L85)
@@ -732,7 +779,7 @@ Router-->>Client : JSON 响应
   - 保证知识库和状态数据的正确持久化
 
 **章节来源**
-- [apps/server/src/index.ts:888-922](file://apps/server/src/index.ts#L888-L922)
+- [apps/server/src/index.ts:888-1021](file://apps/server/src/index.ts#L888-L1021)
 - [packages/core/src/store.ts:219-224](file://packages/core/src/store.ts#L219-L224)
 - [packages/core/src/wiki-store.ts:130-135](file://packages/core/src/wiki-store.ts#L130-L135)
 
@@ -754,6 +801,7 @@ L["packages/core/src/tools/failure.ts"] --> F
 M["packages/core/src/expert/types.ts"] --> F
 N["apps/server/src/index.test.ts"] --> A
 O["packages/core/src/expert/persistence.test.ts"] --> F
+P["apps/server/src/sse.ts"] --> A
 ```
 
 **图表来源**
@@ -785,6 +833,8 @@ O["packages/core/src/expert/persistence.test.ts"] --> F
 - **新增** 用户偏好性能：用户偏好查询支持按分类和最低置信度过滤，提高查询效率。
 - **新增** 失败模式性能：失败模式搜索使用关键词匹配，支持按类别和项目ID过滤，排序规则优化查询结果。
 - **新增** 数据库连接管理：优雅关闭处理程序确保数据库连接正确释放，避免连接泄漏。
+- **新增** SSE 性能：SSE 流传输使用高效的 ReadableStream 实现，支持事件缓冲和连接保持。
+- **新增** Quest Spec 流式传输性能：流式生成使用异步生成器，支持事件驱动的Spec生成，避免长时间阻塞。
 
 **章节来源**
 - [packages/core/src/service.ts:422-455](file://packages/core/src/service.ts#L422-L455)
@@ -813,6 +863,8 @@ O["packages/core/src/expert/persistence.test.ts"] --> F
   - "Agent is not a system agent"：检查代理模式是否为system。
   - macOS 目录选择器：仅支持 macOS，其他平台返回空路径。
   - 分支枚举失败：当路径无效时返回默认分支与空列表。
+  - **新增** SSE 连接失败：检查 EventSource 连接状态和网络状况。
+  - **新增** Quest Spec 流式传输失败：检查流式生成状态和模型可用性。
 - 排查步骤
   - 使用 /api/health 确认服务可用与根目录配置。
   - 使用 /api/state 检查当前状态。
@@ -829,6 +881,8 @@ O["packages/core/src/expert/persistence.test.ts"] --> F
   - **新增** 使用 /api/system-agents/:id/invoke 验证系统代理调用。
   - **新增** 使用 /api/preferences 验证用户偏好管理功能。
   - **新增** 使用 /api/failures 验证失败模式管理功能。
+  - **新增** 使用 /api/quests/:id/spec-stream 验证 Quest Spec 流式传输。
+  - **新增** 使用 /api/projects/:id/open-directory 验证目录打开功能。
 
 **章节来源**
 - [apps/server/src/index.ts:273-291](file://apps/server/src/index.ts#L273-L291)
@@ -839,7 +893,7 @@ O["packages/core/src/expert/persistence.test.ts"] --> F
 - [packages/core/src/service.ts:2670-2684](file://packages/core/src/service.ts#L2670-L2684)
 
 ## 结论
-RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的专家编排API**进一步增强了系统的智能化水平，提供专家级任务管理、动态代理池、研究资料收集和验收测试能力。**新增的系统代理API、用户偏好管理API、失败模式管理API**进一步增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。**新增的优雅关闭处理程序**确保了服务的稳定性和可靠性，支持 SIGINT 和 SIGTERM 信号，提供平滑的服务终止和资源清理机制。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
+RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repohelm/core 业务服务，提供了围绕 Quest 工作区的完整 REST API。其设计强调安全性（本地安全策略与审计日志）、可观测性（日志与审计）、可维护性（统一类型与中间件）。当前版本为 MVP，**新增的专家编排API**进一步增强了系统的智能化水平，提供专家级任务管理、动态代理池、研究资料收集和验收测试能力。**新增的系统代理API、用户偏好管理API、失败模式管理API**进一步增强了系统的智能化水平，包括用户习惯学习、失败经验积累和风险预警能力。**新增的Quest Spec流式传输API**提供了真实的流式Spec生成体验，支持SSE事件流传输。**新增的打开目录API**简化了项目和工作树目录的访问。**新增的优雅关闭处理程序**确保了服务的稳定性和可靠性，支持 SIGINT 和 SIGTERM 信号，提供平滑的服务终止和资源清理机制。建议在生产环境中启用更严格的鉴权与限流策略，并根据业务增长引入分页与缓存优化。
 
 ## 附录
 
@@ -870,7 +924,8 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 更新项目：PATCH /api/projects/:id（请求体：部分字段）
 - 删除项目：DELETE /api/projects/:id
 - 检查项目健康：POST /api/projects/:id/check
-- 打开项目目录：POST /api/projects/:id/open-directory
+- **新增** 打开项目目录：POST /api/projects/:id/open-directory
+- **新增** 打开工作树目录：POST /api/workspaces/:id/worktrees/:projectId/open-directory
 - 选择目录：POST /api/pick-directory
 - 列举分支：GET /api/branches?path=...
 - 创建 Quest：POST /api/quests（请求体：workspaceId/title/requirement/agentBackendId/affectedProjectIds/entrySubAgentId/autoApprovePlan）
@@ -888,7 +943,7 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 确认专家会话：POST /api/expert/session/:id/confirm（请求体：acceptanceTestIds/skipAcceptanceTests）
 - 获取交付成果：GET /api/expert/session/:id/deliverables
 - 获取参考资料：GET /api/expert/session/:id/references
-- 流式传输：GET /api/expert/session/:id/stream
+- **新增** 专家会话SSE流：GET /api/expert/session/:id/stream
 - 获取研究资料：GET /api/expert/session/:id/research
 - 获取验收测试：GET /api/expert/session/:id/acceptance-tests
 
@@ -919,6 +974,9 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 设置入口子代理：POST /api/sub-agents/set-entry（请求体：id）
 - 获取入口子代理：GET /api/sub-agents/entry
 
+**新增** Quest Spec 流式传输端点
+- **新增** Quest Spec 流式传输：GET /api/quests/:id/spec-stream
+
 **新增** 优雅关闭处理程序
 - SIGINT 处理：Ctrl+C 中断信号处理
 - SIGTERM 处理：标准终止信号处理
@@ -926,4 +984,4 @@ RepoHelm 服务器 API 以 Hono 为核心，结合 Zod 强类型校验与 @repoh
 - 错误处理：关闭过程中的异常捕获与日志记录
 
 **章节来源**
-- [apps/server/src/index.ts:114-943](file://apps/server/src/index.ts#L114-L943)
+- [apps/server/src/index.ts:114-1021](file://apps/server/src/index.ts#L114-L1021)
