@@ -1,5 +1,6 @@
+import { minimalContract } from "./task-contract.js";
 import type { SubAgentBackend } from "./orchestrator.js";
-import type { OrchestrationPlan, Quest, SubAgent } from "./types.js";
+import type { OrchestrationPlan, Quest, SubAgent, TaskContract } from "./types.js";
 
 /**
  * Assess the complexity of a quest to determine if it can use a simplified plan.
@@ -48,7 +49,12 @@ IMPORTANT: Output ONLY a JSON object (no markdown, no code fences, no explanatio
       "agentName": "Agent Display Name",
       "dependencies": [],
       "expectedOutput": "What the step produces",
-      "targetProjectId": "project-id-from-affected-projects"
+      "targetProjectId": "project-id-from-affected-projects",
+      "contract": {
+        "boundaries": "What the worker must NOT do / scope limits",
+        "sourcesGuidance": "Files, prior results, or notes the worker should consult",
+        "doneCriteria": "Concrete definition of done"
+      }
     }
   ],
   "notes": "Any risks or assumptions"
@@ -62,7 +68,8 @@ Rules:
 - If the quest can be completed by a single agent in one pass, produce exactly one step.
 - Step descriptions must be specific and actionable, not generic.
 - Avoid creating artificial steps like "clarify requirements" unless the requirement is genuinely ambiguous.
-- If no agents are suitable, produce a plan with a single step assigned to the most capable agent.`;
+- If no agents are suitable, produce a plan with a single step assigned to the most capable agent.
+- Each step MUST include a "contract" with "boundaries" and "doneCriteria" so the worker knows its limits and what "done" looks like. "sourcesGuidance" is optional free text (do not reference a knowledge base).`;
 
 export interface PlanGeneratorInput {
   entryAgent: SubAgent;
@@ -154,7 +161,8 @@ function parsePlanFromResponse(content: string, quest: Quest, agentPool: SubAgen
           agentName: defaultAgent.name,
           dependencies: [] as string[],
           expectedOutput: "Implementation code and artifacts",
-          targetProjectId: defaultProjectId
+          targetProjectId: defaultProjectId,
+          contract: minimalContract("Implementation code and artifacts")
         }
       ]
     : [];
@@ -171,18 +179,32 @@ function parsePlanFromResponse(content: string, quest: Quest, agentPool: SubAgen
 function validatePlan(raw: any, questId: string, agentPool: SubAgent[], quest: Quest): OrchestrationPlan {
   const agentIds = new Set(agentPool.map((a) => a.id));
   const defaultProjectId = quest.affectedProjectIds[0];
+
+  function parseContract(rawContract: any): TaskContract | undefined {
+    if (!rawContract || typeof rawContract !== "object") return undefined;
+    const out: TaskContract = {};
+    for (const key of ["outputFormat", "boundaries", "sourcesGuidance", "doneCriteria"] as const) {
+      if (typeof rawContract[key] === "string" && rawContract[key].trim().length > 0) out[key] = rawContract[key].trim();
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
   const steps = Array.isArray(raw.steps)
     ? raw.steps
         .filter((s: any) => s && typeof s.id === "string" && typeof s.agentId === "string")
-        .map((s: any) => ({
-          id: s.id,
-          description: s.description || "",
-          agentId: s.agentId,
-          agentName: s.agentName || agentPool.find((a) => a.id === s.agentId)?.name || s.agentId,
-          dependencies: Array.isArray(s.dependencies) ? s.dependencies.filter((d: any) => typeof d === "string") : [],
-          expectedOutput: s.expectedOutput || "",
-          targetProjectId: s.targetProjectId || defaultProjectId
-        }))
+        .map((s: any) => {
+          const contract = parseContract(s.contract);
+          return {
+            id: s.id,
+            description: s.description || "",
+            agentId: s.agentId,
+            agentName: s.agentName || agentPool.find((a) => a.id === s.agentId)?.name || s.agentId,
+            dependencies: Array.isArray(s.dependencies) ? s.dependencies.filter((d: any) => typeof d === "string") : [],
+            expectedOutput: s.expectedOutput || "",
+            targetProjectId: s.targetProjectId || defaultProjectId,
+            ...(contract ? { contract } : {})
+          };
+        })
     : [];
 
   return {
