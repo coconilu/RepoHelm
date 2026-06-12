@@ -1491,8 +1491,23 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
               {step.dependencies.length > 0 ? ` · 依赖: ${step.dependencies.join(", ")}` : ""}
             </div>
             <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-              预期输出: {step.expectedOutput}
+              预期输出: {step.contract?.outputFormat || step.expectedOutput}
             </div>
+            {step.contract?.boundaries ? (
+              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
+                边界: {step.contract.boundaries}
+              </div>
+            ) : null}
+            {step.contract?.sourcesGuidance ? (
+              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
+                信息源: {step.contract.sourcesGuidance}
+              </div>
+            ) : null}
+            {step.contract?.doneCriteria ? (
+              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
+                完成判据: {step.contract.doneCriteria}
+              </div>
+            ) : null}
           </div>
         ))}
         {plan.notes ? (
