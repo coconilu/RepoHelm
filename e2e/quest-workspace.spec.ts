@@ -166,4 +166,12 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // moved from the legacy direct mock-backend (which this test used to assert) to sub-agent
   // orchestration with a human Approve & Execute gate, covered by unit/integration tests.
   await expect(page.getByText("编排计划已生成").first()).toBeVisible();
+
+  // Navigate to the Plan tab and verify the task contract is rendered.
+  // Under REPOHELM_FAKE_MODELS=1 the planner output is not valid plan JSON, so parsePlanFromResponse
+  // falls back to a single step with minimalContract("Implementation code and artifacts"),
+  // which sets doneCriteria = "Implementation code and artifacts". This path is deterministic.
+  await page.locator(".inspector-tabs").getByRole("button", { name: "Plan" }).click();
+  await expect(page.getByText("完成判据:").first()).toBeVisible();
+  await expect(page.getByText(/完成判据:.*Implementation code and artifacts/).first()).toBeVisible();
 });
