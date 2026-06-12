@@ -112,6 +112,33 @@ describe("QuestWorkspaceManager", () => {
     });
   });
 
+  it("does not add a contract property for legacy plans without one", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-test-"));
+    const manager = new QuestWorkspaceManager(rootDir);
+    const questId = "quest_no_contract_test";
+    const plan: OrchestrationPlan = {
+      questId,
+      generatedAt: "2026-06-12T00:00:00.000Z",
+      summary: "Plan without contract",
+      notes: "",
+      steps: [
+        {
+          id: "step_1",
+          description: "Build A",
+          agentId: "coder",
+          agentName: "Coder",
+          dependencies: [],
+          expectedOutput: "Code for A"
+        }
+      ]
+    };
+
+    await manager.writePlan(questId, plan);
+    const readBack = await manager.readPlan(questId);
+
+    expect(readBack!.steps[0]).not.toHaveProperty("contract");
+  });
+
   it("round-trips plans whose descriptions contain newlines", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-test-"));
     const manager = new QuestWorkspaceManager(rootDir);
