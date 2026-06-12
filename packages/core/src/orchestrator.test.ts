@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
 import type { OrchestrationPlan } from "./types.js";
+import { resolveContract, renderContractSection } from "./task-contract.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { writeFile } from "node:fs/promises";
@@ -284,5 +285,26 @@ describe("Plan-then-execute flow", () => {
     const nextState = await service.getState();
     const persistedQuest = nextState.quests.find((item) => item.id === quest.id);
     expect(persistedQuest?.autoApprovePlan).toBe(false);
+  });
+});
+
+describe("worker contract injection", () => {
+  it("renders objective, boundaries, done criteria and upstream results", () => {
+    const section = renderContractSection(
+      resolveContract({
+        id: "step_2",
+        description: "Review A",
+        agentId: "rev",
+        agentName: "Reviewer",
+        dependencies: ["step_1"],
+        expectedOutput: "Review notes",
+        contract: { boundaries: "No refactor", doneCriteria: "Notes written" }
+      }),
+      [{ stepId: "step_1", result: "implemented A" }]
+    );
+    expect(section).toContain("- Objective: Review A");
+    expect(section).toContain("- Boundaries: No refactor");
+    expect(section).toContain("- Done when: Notes written");
+    expect(section).toContain("- step_1: implemented A");
   });
 });

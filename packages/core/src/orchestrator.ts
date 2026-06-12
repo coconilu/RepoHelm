@@ -17,7 +17,8 @@ import {
   type DelegateInput
 } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL, fsToolSpecs } from "./tools/fs.js";
-import type { ModelKit, OrchestrationPlan, Quest, SubAgent, WorktreeState } from "./types.js";
+import { resolveContract, renderContractSection, minimalContract, type DependencyResult } from "./task-contract.js";
+import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -124,7 +125,8 @@ export class SubAgentOrchestrator {
           agentName: codingAgent.name,
           dependencies: [],
           expectedOutput: "Implementation code and artifacts",
-          targetProjectId: projectId
+          targetProjectId: projectId,
+          contract: minimalContract("Implementation code and artifacts")
         }
       ],
       notes: "Auto-generated simple plan for straightforward task",
@@ -171,32 +173,18 @@ export class SubAgentOrchestrator {
           continue;
         }
 
-        // Get the target project and worktree for this step
+        // Get the target project for this step
         const targetProjectId = step.targetProjectId || quest.affectedProjectIds[0];
-        const targetWorktree = quest.worktrees.find((w) => w.projectId === targetProjectId);
 
-        const context: Record<string, unknown> = {
-          stepId: step.id,
-          questTitle: quest.title,
-          questRequirement: quest.requirement,
-          targetProjectId,
-          targetWorktree: targetWorktree
-            ? {
-                path: targetWorktree.worktreePath,
-                branch: targetWorktree.branchName
-              }
-            : undefined,
-          dependencies: step.dependencies.map((dep) => ({
-            stepId: dep,
-            result: stepResults.get(dep) || ""
-          }))
-        };
+        const dependencies: DependencyResult[] = step.dependencies.map((dep) => ({
+          stepId: dep,
+          result: stepResults.get(dep) || ""
+        }));
 
         const result = await this.invokeWorkerAgent(agent, {
-          task: step.description,
-          context,
+          step,
+          dependencies,
           quest,
-          stepId: step.id,
           targetProjectId
         });
 
@@ -247,10 +235,9 @@ export class SubAgentOrchestrator {
   private async invokeWorkerAgent(
     worker: SubAgent,
     input: {
-      task: string;
-      context: Record<string, unknown>;
+      step: OrchestrationPlanStep;
+      dependencies: DependencyResult[];
       quest: Quest;
-      stepId?: string;
       targetProjectId?: string;
     }
   ): Promise<{ content: string; error?: string; writtenFiles?: string[] }> {
@@ -261,9 +248,10 @@ export class SubAgentOrchestrator {
         `You are a specialized worker agent named "${worker.name}". ` +
           `Your capabilities: ${worker.capabilities?.join(", ") || "general"}. ` +
           `Produce a concise, high-quality result for the task below.`;
-      const userContent = input.context && Object.keys(input.context).length > 0
-        ? `${input.task}\n\nContext:\n${JSON.stringify(input.context, null, 2)}`
-        : input.task;
+      const userContent = renderContractSection(
+        resolveContract(input.step),
+        input.dependencies
+      );
 
       // Find the worktree for the target project, or fall back to the first created worktree
       const worktree = input.targetProjectId
@@ -327,10 +315,10 @@ export class SubAgentOrchestrator {
 
       await this.updateSubAgentUsage(worker.id);
 
-      if (input.stepId) {
+      if (input.step.id) {
         await this.questWorkspace.writeWorkerArtifact(
           input.quest.id,
-          input.stepId,
+          input.step.id,
           worker.name,
           content
         );
