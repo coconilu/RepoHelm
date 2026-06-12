@@ -84,6 +84,13 @@ export interface PlanApproval {
   rejectionReason?: string;
 }
 
+export interface TaskContract {
+  outputFormat?: string;
+  boundaries?: string;
+  sourcesGuidance?: string;
+  doneCriteria?: string;
+}
+
 export interface OrchestrationPlanStep {
   id: string;
   description: string;
@@ -91,6 +98,7 @@ export interface OrchestrationPlanStep {
   agentName: string;
   dependencies: string[];
   expectedOutput: string;
+  contract?: TaskContract;
 }
 
 export interface OrchestrationPlan {

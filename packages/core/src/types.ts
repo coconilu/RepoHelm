@@ -77,6 +77,13 @@ export interface PlanApproval {
   rejectionReason?: string;
 }
 
+export interface TaskContract {
+  outputFormat?: string;     // 产出格式（缺则回退到 step.expectedOutput）
+  boundaries?: string;       // 边界 / 不要做什么
+  sourcesGuidance?: string;  // 信息源与注意事项（纯文本）
+  doneCriteria?: string;     // 完成判据（done 长什么样）
+}
+
 export interface OrchestrationPlanStep {
   id: string;
   description: string;
@@ -85,6 +92,7 @@ export interface OrchestrationPlanStep {
   dependencies: string[];
   expectedOutput: string;
   targetProjectId?: string;
+  contract?: TaskContract;
 }
 
 export interface OrchestrationPlan {
