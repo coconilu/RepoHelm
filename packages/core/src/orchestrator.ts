@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { basename } from "node:path";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { RepoHelmService } from "./service.js";
 import {
@@ -17,7 +19,13 @@ import {
   type DelegateInput
 } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL, fsToolSpecs } from "./tools/fs.js";
-import { resolveContract, renderContractSection, minimalContract, type DependencyResult } from "./task-contract.js";
+import {
+  resolveContract,
+  renderContractSection,
+  minimalContract,
+  validateMaterialOutput,
+  type DependencyResult
+} from "./task-contract.js";
 import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -147,6 +155,7 @@ export class SubAgentOrchestrator {
     const agentPool = await this.listDelegatableAgents(entryAgent.id);
     const delegations: OrchestratorQuestResult["delegations"] = [];
     const stepResults = new Map<string, string>();
+    const failedSteps = new Set<string>();
 
     const executed = new Set<string>();
     const stepsToRun = [...plan.steps];
@@ -168,6 +177,23 @@ export class SubAgentOrchestrator {
             ok: false,
             summary: `agent ${step.agentId} not found in pool`
           });
+          failedSteps.add(step.id);
+          executed.add(step.id);
+          stepsToRun.splice(stepsToRun.indexOf(step), 1);
+          continue;
+        }
+
+        const failedDependencies = step.dependencies.filter((dep) => failedSteps.has(dep));
+        if (failedDependencies.length > 0) {
+          const summary = `skipped: dependency failed (${failedDependencies.join(", ")})`;
+          delegations.push({
+            agentId: agent.id,
+            agentName: agent.name,
+            ok: false,
+            summary
+          });
+          stepResults.set(step.id, summary);
+          failedSteps.add(step.id);
           executed.add(step.id);
           stepsToRun.splice(stepsToRun.indexOf(step), 1);
           continue;
@@ -187,23 +213,29 @@ export class SubAgentOrchestrator {
           quest,
           targetProjectId
         });
+        const material = !result.error
+          ? validateMaterialOutput(step, result.writtenFiles ?? [])
+          : { ok: false, required: false };
+        const stepError = result.error || (!material.ok ? material.reason : undefined);
 
         const filesNote =
           result.writtenFiles && result.writtenFiles.length > 0
             ? `\n写入文件: ${result.writtenFiles.join(", ")}`
             : "";
-        const summary = result.error
-          ? `error: ${result.error}`
+        const summary = stepError
+          ? `error: ${stepError}${result.content ? `\nWorker output: ${truncate(result.content, 300)}` : ""}`
           : `${truncate(result.content, 400)}${filesNote}`;
         delegations.push({
           agentId: agent.id,
           agentName: agent.name,
-          ok: !result.error,
+          ok: !stepError,
           summary
         });
 
-        if (!result.error) {
+        if (!stepError) {
           stepResults.set(step.id, result.content);
+        } else {
+          failedSteps.add(step.id);
         }
         executed.add(step.id);
         stepsToRun.splice(stepsToRun.indexOf(step), 1);
@@ -264,6 +296,7 @@ export class SubAgentOrchestrator {
       const writtenFiles = new Set<string>();
 
       if (worktree) {
+        const beforeChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
         const projectDir = basename(worktree.worktreePath);
         const systemPrompt =
           `${basePrompt}\n\n` +
@@ -297,6 +330,10 @@ export class SubAgentOrchestrator {
           await fsHandlers.handle(FS_WRITE_TOOL, { path: file.path, content: file.content });
         }
         fsHandlers.written.forEach((file) => writtenFiles.add(file));
+        const afterChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
+        for (const file of changedPathsSince(beforeChanges, afterChanges)) {
+          writtenFiles.add(file);
+        }
 
         if (!content) {
           content = writtenFiles.size > 0 ? `Wrote ${writtenFiles.size} file(s).` : "(worker returned no content)";
@@ -508,6 +545,66 @@ function resolveCliEnvVar(backendId: string | undefined): string {
     default:
       return "REPOHELM_GENERIC_CLI_COMMAND";
   }
+}
+
+async function readWorktreeChangeSnapshot(worktreePath: string): Promise<Map<string, string>> {
+  const paths = new Set<string>();
+  await addGitSnapshotPaths(paths, worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"], "status");
+  await addGitSnapshotPaths(paths, worktreePath, ["diff", "--name-only"], "name-only");
+  await addGitSnapshotPaths(paths, worktreePath, ["diff", "--cached", "--name-only"], "name-only");
+
+  const snapshot = new Map<string, string>();
+  for (const path of paths) {
+    snapshot.set(path, await fileSignature(worktreePath, path));
+  }
+  return snapshot;
+}
+
+async function addGitSnapshotPaths(
+  paths: Set<string>,
+  worktreePath: string,
+  args: string[],
+  mode: "status" | "name-only"
+): Promise<void> {
+  const { stdout } = await execFileAsync("git", args, { cwd: worktreePath });
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const path = mode === "status" ? pathFromGitStatusLine(trimmed) : cleanGitPath(trimmed);
+    if (path) paths.add(path);
+  }
+}
+
+function changedPathsSince(before: Map<string, string>, after: Map<string, string>): string[] {
+  const paths = new Set<string>();
+  const allPaths = new Set([...before.keys(), ...after.keys()]);
+  for (const path of allPaths) {
+    if (before.get(path) !== after.get(path)) {
+      paths.add(path);
+    }
+  }
+  return [...paths].sort();
+}
+
+async function fileSignature(worktreePath: string, path: string): Promise<string> {
+  try {
+    const content = await readFile(join(worktreePath, path));
+    return createHash("sha256").update(content).digest("hex");
+  } catch {
+    return "<missing>";
+  }
+}
+
+function pathFromGitStatusLine(line: string): string {
+  const porcelainPath = line.slice(3);
+  const renamedPath = porcelainPath.includes(" -> ")
+    ? porcelainPath.split(" -> ").pop() ?? porcelainPath
+    : porcelainPath;
+  return cleanGitPath(renamedPath);
+}
+
+function cleanGitPath(path: string): string {
+  return path.trim().replace(/^"|"$/g, "");
 }
 
 function truncate(value: string, max: number): string {

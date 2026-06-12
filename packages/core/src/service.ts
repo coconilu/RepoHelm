@@ -1860,10 +1860,14 @@ export class RepoHelmService {
     const hasFailures = result.delegations.some((d) => !d.ok);
     // Only claim "ready to deliver" when the execution actually produced file changes.
     const produced = changedFiles.length > 0;
-    const status: QuestStatus = produced ? "ready" : "blocked";
+    const status: QuestStatus = produced && !hasFailures ? "ready" : "blocked";
 
-    const reviewNote = produced
-      ? `执行产生了 ${changedFiles.length} 个文件变更，可进入交付。`
+    const reviewNote = hasFailures
+      ? produced
+        ? `执行产生了 ${changedFiles.length} 个文件变更，但存在失败步骤，暂不可交付。`
+        : "执行存在失败步骤且未产生任何文件变更，无可交付内容。"
+      : produced
+        ? `执行产生了 ${changedFiles.length} 个文件变更，可进入交付。`
       : createdWorktrees.length === 0
         ? "执行未创建任何 worktree（受影响项目不是可用的 Git 仓库），没有可交付内容。"
         : "执行完成但未产生任何文件变更，无可交付内容。请检查需求或在 worktree 中确认 Agent 输出。";
@@ -1890,18 +1894,20 @@ export class RepoHelmService {
         this.event(
           questId,
           d.ok ? "step.completed" : "step.failed",
-          `步骤完成: ${d.agentName}`,
+          `${d.ok ? "步骤完成" : "步骤失败"}: ${d.agentName}`,
           d.summary,
           d.agentName
         )
       ),
       this.event(
         questId,
-        produced ? "orchestrator.completed" : "orchestrator.no_changes",
-        produced ? "编排执行完成" : hasFailures ? "编排执行失败" : "编排执行完成（无文件变更）",
-        produced
-          ? `执行了 ${result.iterations} 个步骤，产生 ${changedFiles.length} 个文件变更。`
-          : `执行了 ${result.iterations} 个步骤，但没有产生文件变更。${reviewNote}`,
+        hasFailures ? "orchestrator.failed" : produced ? "orchestrator.completed" : "orchestrator.no_changes",
+        hasFailures ? "编排执行失败" : produced ? "编排执行完成" : "编排执行完成（无文件变更）",
+        hasFailures
+          ? `执行了 ${result.iterations} 个步骤，失败 ${result.delegations.filter((d) => !d.ok).length} 个。${reviewNote}`
+          : produced
+            ? `执行了 ${result.iterations} 个步骤，产生 ${changedFiles.length} 个文件变更。`
+            : `执行了 ${result.iterations} 个步骤，但没有产生文件变更。${reviewNote}`,
         result.entryAgentName
       )
     ];

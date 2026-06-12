@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
@@ -250,6 +250,73 @@ describe("Plan-then-execute flow", () => {
     };
   }
 
+  async function configureCliAgents(service: RepoHelmService, commandPath: string) {
+    process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+    await service.createModelKit({
+      id: "test-cli-kit",
+      name: "Test CLI",
+      type: "cli",
+      backendId: "generic",
+      model: "default",
+      config: { backendId: "generic" }
+    });
+    await service.createSubAgent({
+      id: "supervisor",
+      name: "Supervisor",
+      role: "Entry supervisor",
+      capabilities: ["planning"],
+      modelKitId: "test-cli-kit",
+      mode: "entry",
+      permissions: { allowedTools: [], deniedTools: [] }
+    });
+    await service.createSubAgent({
+      id: "coder",
+      name: "Coder",
+      role: "Writes code",
+      capabilities: ["coding"],
+      modelKitId: "test-cli-kit",
+      mode: "worker",
+      permissions: { allowedTools: [], deniedTools: [] }
+    });
+    await service.setEntrySubAgent("supervisor");
+  }
+
+  async function createWorkerCommand(rootDir: string) {
+    const commandPath = join(rootDir, "worker-output.mjs");
+    await writeFile(
+      commandPath,
+      [
+        "#!/usr/bin/env node",
+        "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { dirname, join } from 'node:path';",
+        "const prompt = process.argv.slice(2).join('\\n');",
+        "if (process.env.REPOHELM_TEST_PLAN_JSON && prompt.includes('Produce an execution plan')) {",
+        "  console.log(process.env.REPOHELM_TEST_PLAN_JSON);",
+        "  process.exit(0);",
+        "}",
+        "const writeRules = JSON.parse(process.env.REPOHELM_TEST_WORKER_WRITES_JSON || '[]');",
+        "for (const rule of writeRules) {",
+        "  if (!rule.contains || prompt.includes(rule.contains)) {",
+        "    const abs = join(process.cwd(), rule.path);",
+        "    mkdirSync(dirname(abs), { recursive: true });",
+        "    writeFileSync(abs, rule.content || 'written = true\\n');",
+        "  }",
+        "}",
+        "const writePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;",
+        "const writeWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;",
+        "if (writePath && (!writeWhen || prompt.includes(writeWhen))) {",
+        "  const abs = join(process.cwd(), writePath);",
+        "  mkdirSync(dirname(abs), { recursive: true });",
+        "  writeFileSync(abs, process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT || 'written = true\\n');",
+        "}",
+        "console.log(process.env.REPOHELM_TEST_WORKER_OUTPUT || 'Worker inspected the project but wrote nothing.');"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(commandPath, 0o755);
+    return commandPath;
+  }
+
   it("runQuest with no entry agent throws guidance error", async () => {
     const { service } = await createGitRepoService();
     const state = await service.bootstrap();
@@ -285,6 +352,607 @@ describe("Plan-then-execute flow", () => {
     const nextState = await service.getState();
     const persistedQuest = nextState.quests.find((item) => item.id === quest.id);
     expect(persistedQuest?.autoApprovePlan).toBe(false);
+  });
+
+  it("marks implementation steps failed when a worker writes no material output", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Now let me inspect the existing UI patterns first.";
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Implement material guard",
+        requirement: "Implement material guard.",
+        affectedProjectIds: [project.id]
+      });
+
+      const planned = await service.runQuest(quest.id);
+      expect(planned.planApproval?.status).toBe("pending");
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles).toHaveLength(0);
+      expect(executed.agentSummary).toContain("Coder (fail)");
+      expect(executed.agentSummary).toContain("Worker completed without required material output");
+
+      const finalState = await service.getState();
+      const events = finalState.events.filter((event) => event.questId === quest.id);
+      expect(events.some((event) => event.type === "step.failed" && event.title === "步骤失败: Coder")).toBe(true);
+      expect(events.some((event) => event.type === "orchestrator.failed")).toBe(true);
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+    }
+  });
+
+  it("accepts implementation steps when worker output materializes files", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = [
+        "Implemented the requested file.",
+        "```src/material-guard.ts",
+        "export const materialGuard = true;",
+        "```"
+      ].join("\n");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Implement material guard file",
+        requirement: "Implement material guard file.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((file) => file.path)).toContain("src/material-guard.ts");
+      expect(executed.agentSummary).toContain("Coder (ok)");
+      expect(executed.agentSummary).toContain("写入文件: src/material-guard.ts");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+    }
+  });
+
+  it("accepts direct CLI worktree edits even without fenced file output", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Implemented via direct CLI edit.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/direct-cli-edit.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const directCliEdit = true;\n";
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Implement direct CLI edit",
+        requirement: "Implement direct CLI edit.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((file) => file.path)).toContain("src/direct-cli-edit.ts");
+      expect(executed.agentSummary).toContain("Coder (ok)");
+      expect(executed.agentSummary).toContain("写入文件: src/direct-cli-edit.ts");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+    }
+  });
+
+  it("keeps quests blocked when a later required step fails after earlier file changes", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Two step material validation",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement first file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes for first file",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Code file written" }
+          },
+          {
+            id: "step_2",
+            description: "Update knowledge memory with the new model",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: ["step_1"],
+            expectedOutput: "Updated knowledge documentation",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Knowledge memory file written" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "I inspected the task.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/first-file.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "Implement first file";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const firstFile = true;\n";
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Step one writes and step two fails",
+        requirement: "Step one writes a file, then step two updates knowledge memory.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles.map((file) => file.path)).toContain("src/first-file.ts");
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
+      expect(executed.agentSummary).toContain("2. Coder (fail)");
+      expect(executed.reviewNotes).toContain("执行产生了 1 个文件变更，但存在失败步骤，暂不可交付。");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+    }
+  });
+
+  it("accepts direct CLI edits to a file that was already dirty from an earlier step", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const oldWrites = process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Dirty same file validation",
+        steps: [
+          {
+            id: "step_1",
+            description: "Write shared file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes for shared file",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Shared file written" }
+          },
+          {
+            id: "step_2",
+            description: "Rewrite shared file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: ["step_1"],
+            expectedOutput: "Code changes for shared file",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Shared file rewritten" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Direct edit complete.";
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Write shared file", path: "src/shared.ts", content: "export const shared = 'one';\n" },
+        { contains: "Rewrite shared file", path: "src/shared.ts", content: "export const shared = 'two';\n" }
+      ]);
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Rewrite dirty same file",
+        requirement: "step 1 write shared file; step 2 rewrite the same file.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
+      expect(executed.agentSummary).toContain("2. Coder (ok)");
+      expect(executed.changedFiles.map((file) => file.path)).toContain("src/shared.ts");
+      expect(await readFile(join(executed.worktrees[0]!.worktreePath!, "src/shared.ts"), "utf8")).toContain("'two'");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+      if (oldWrites === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITES_JSON = oldWrites;
+      }
+    }
+  });
+
+  it("skips dependent steps after a missing-agent failure", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const oldWrites = process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Missing dependency validation",
+        steps: [
+          {
+            id: "step_1",
+            description: "Missing agent step",
+            agentId: "missing-agent",
+            agentName: "Missing Agent",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm"
+          },
+          {
+            id: "step_2",
+            description: "Downstream implementation",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: ["step_1"],
+            expectedOutput: "Code changes for downstream",
+            targetProjectId: "project_repohelm"
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "This downstream worker should not run.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/downstream.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "Downstream implementation";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const downstream = true;\n";
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Missing agent dependency",
+        requirement: "A missing agent step should stop downstream work.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles).toHaveLength(0);
+      expect(executed.agentSummary).toContain("1. Missing Agent (fail): agent missing-agent not found in pool");
+      expect(executed.agentSummary).toContain("2. Coder (fail): skipped: dependency failed (step_1)");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+      if (oldWrites === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITES_JSON = oldWrites;
+      }
+    }
+  });
+
+  it("counts reverting an already-dirty tracked file to clean as material output", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const oldWrites = process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Revert dirty file validation",
+        steps: [
+          {
+            id: "step_1",
+            description: "Modify README",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes for README",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "README modified" }
+          },
+          {
+            id: "step_2",
+            description: "Restore README",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: ["step_1"],
+            expectedOutput: "Code changes for README",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "README restored" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Direct edit complete.";
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Modify README", path: "README.md", content: "# Fixture\nchanged\n" },
+        { contains: "Restore README", path: "README.md", content: "# Fixture\n" }
+      ]);
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Restore dirty README",
+        requirement: "step 1 modify README; step 2 restore README.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles).toHaveLength(0);
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
+      expect(executed.agentSummary).toContain("2. Coder (ok)");
+      expect(executed.agentSummary).not.toContain("Worker completed without required material output");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      }
+      if (oldWriteWhen === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+      if (oldWrites === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITES_JSON = oldWrites;
+      }
+    }
   });
 });
 

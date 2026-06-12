@@ -4,7 +4,9 @@ import {
   renderContractSection,
   minimalContract,
   renderContractMarkdownLines,
-  parseContractFromBlock
+  parseContractFromBlock,
+  requiresMaterialOutput,
+  validateMaterialOutput
 } from "./task-contract.js";
 import type { OrchestrationPlanStep } from "./types.js";
 
@@ -85,6 +87,96 @@ describe("minimalContract", () => {
     expect(minimalContract("Implementation artifacts")).toEqual({
       doneCriteria: "Implementation artifacts"
     });
+  });
+});
+
+describe("material output validation", () => {
+  it("requires material output for implementation and knowledge-update steps", () => {
+    expect(
+      requiresMaterialOutput(
+        step({
+          description: "Implement core domain model and API endpoints",
+          expectedOutput: "Code changes and tests",
+          contract: { doneCriteria: "All new code compiles" }
+        })
+      )
+    ).toBe(true);
+
+    expect(
+      requiresMaterialOutput(
+        step({
+          description: "Update knowledge memory with the new model",
+          expectedOutput: "Updated knowledge documentation"
+        })
+      )
+    ).toBe(true);
+  });
+
+  it("allows text-only review and analysis steps", () => {
+    expect(
+      requiresMaterialOutput(
+        step({
+          description: "Review feature A",
+          expectedOutput: "Review notes for feature A"
+        })
+      )
+    ).toBe(false);
+    expect(
+      validateMaterialOutput(
+        step({
+          description: "Analyze feature A",
+          expectedOutput: "Architecture analysis report"
+        }),
+        []
+      )
+    ).toEqual({ required: false, ok: true });
+  });
+
+  it("allows review and analysis notes that mention material surfaces", () => {
+    expect(
+      requiresMaterialOutput(
+        step({
+          description: "Review test coverage gaps and API boundary drift",
+          expectedOutput: "Review notes with findings"
+        })
+      )
+    ).toBe(false);
+    expect(
+      requiresMaterialOutput(
+        step({
+          description: "Analyze persistence schema risks",
+          expectedOutput: "Architecture analysis report"
+        })
+      )
+    ).toBe(false);
+  });
+
+  it("rejects required material output when no files were written", () => {
+    const result = validateMaterialOutput(
+      step({
+        description: "Implement feature A",
+        expectedOutput: "Source code changes for feature A",
+        contract: { doneCriteria: "Tests pass" }
+      }),
+      []
+    );
+
+    expect(result.required).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("Worker completed without required material output");
+    expect(result.reason).toContain("Tests pass");
+  });
+
+  it("accepts required material output when files were written", () => {
+    expect(
+      validateMaterialOutput(
+        step({
+          description: "Implement feature A",
+          expectedOutput: "Source code changes for feature A"
+        }),
+        ["src/feature.ts"]
+      )
+    ).toEqual({ required: true, ok: true });
   });
 });
 
