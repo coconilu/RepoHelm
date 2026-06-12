@@ -74,6 +74,44 @@ describe("QuestWorkspaceManager", () => {
     });
   });
 
+  it("round-trips a step contract", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-test-"));
+    const manager = new QuestWorkspaceManager(rootDir);
+    const questId = "quest_contract_test";
+    const plan: OrchestrationPlan = {
+      questId,
+      generatedAt: "2026-06-12T00:00:00.000Z",
+      summary: "Plan with contract",
+      notes: "",
+      steps: [
+        {
+          id: "step_1",
+          description: "Build A",
+          agentId: "coder",
+          agentName: "Coder",
+          dependencies: [],
+          expectedOutput: "Code for A",
+          contract: {
+            boundaries: "Do not touch auth",
+            sourcesGuidance: "See README",
+            doneCriteria: "Tests pass"
+          }
+        }
+      ]
+    };
+
+    await manager.writePlan(questId, plan);
+    const readBack = await manager.readPlan(questId);
+
+    expect(readBack!.steps[0]!.agentId).toBe("coder");
+    expect(readBack!.steps[0]!.expectedOutput).toBe("Code for A");
+    expect(readBack!.steps[0]!.contract).toEqual({
+      boundaries: "Do not touch auth",
+      sourcesGuidance: "See README",
+      doneCriteria: "Tests pass"
+    });
+  });
+
   it("round-trips plans whose descriptions contain newlines", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-test-"));
     const manager = new QuestWorkspaceManager(rootDir);

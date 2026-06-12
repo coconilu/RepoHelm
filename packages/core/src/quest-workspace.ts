@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { OrchestrationPlan } from "./types.js";
+import { renderContractMarkdownLines, parseContractFromBlock } from "./task-contract.js";
 
 export class QuestWorkspaceManager {
   constructor(private readonly rootDir: string) {}
@@ -82,6 +83,9 @@ function renderPlanMarkdown(plan: OrchestrationPlan): string {
     lines.push(`- **Agent**: ${step.agentName} (\`${step.agentId}\`)`);
     lines.push(`- **Dependencies**: ${step.dependencies.length > 0 ? step.dependencies.join(", ") : "none"}`);
     lines.push(`- **Expected Output**: ${step.expectedOutput}`);
+    for (const contractLine of renderContractMarkdownLines(step)) {
+      lines.push(contractLine);
+    }
     lines.push(``);
   }
   if (plan.notes) {
@@ -120,13 +124,15 @@ function parsePlanMarkdown(content: string): OrchestrationPlan {
       continue;
     }
     const depsRaw = depsMatch[1]!.trim();
+    const contract = parseContractFromBlock(block);
     steps.push({
       id: stepId,
       description,
       agentName: agentMatch[1]!.trim(),
       agentId: agentMatch[2]!.trim(),
       dependencies: depsRaw === "none" ? [] : depsRaw.split(",").map((d) => d.trim()),
-      expectedOutput: outputMatch[1]!.trim()
+      expectedOutput: outputMatch[1]!.trim(),
+      ...(contract ? { contract } : {})
     });
   }
 
