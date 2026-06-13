@@ -10,6 +10,8 @@ import { promisify } from "node:util";
 import { writeFile } from "node:fs/promises";
 import { RepoHelmService } from "./service.js";
 import { SqliteStateStore } from "./store.js";
+import { SubAgentOrchestrator } from "./orchestrator.js";
+import type { ModelKit, Quest, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1153,5 +1155,79 @@ describe("worker contract injection", () => {
     expect(section).toContain("- Boundaries: No refactor");
     expect(section).toContain("- Done when: Notes written");
     expect(section).toContain("- step_1: implemented A");
+  });
+});
+
+describe("CLI backend streaming integration", () => {
+  function cliModelKit(): ModelKit {
+    return {
+      id: "stream-cli-kit",
+      name: "Stream CLI",
+      type: "cli",
+      backendId: "generic",
+      model: "default",
+      config: { backendId: "generic" },
+      metadata: {
+        createdAt: "2025-01-01T00:00:00.000Z",
+        testedAt: "2025-01-01T00:00:00.000Z",
+        costTier: "free",
+        performanceProfile: "fast"
+      }
+    };
+  }
+
+  async function writeStreamJsonCli(rootDir: string): Promise<string> {
+    const commandPath = join(rootDir, "stream-cli.mjs");
+    const lines = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Planning the change" }] } }),
+      JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "pnpm test" } }] }
+      }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "All done" })
+    ];
+    await writeFile(
+      commandPath,
+      ["#!/usr/bin/env node", `const lines = ${JSON.stringify(lines)};`, "for (const l of lines) console.log(l);"].join(
+        "\n"
+      ),
+      "utf8"
+    );
+    await chmod(commandPath, 0o755);
+    return commandPath;
+  }
+
+  it("surfaces streamed tool calls and results as backend events", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-stream-cli-"));
+    const commandPath = await writeStreamJsonCli(rootDir);
+    process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+
+    try {
+      const orchestrator = new SubAgentOrchestrator({} as RepoHelmService, rootDir);
+      const backend = await orchestrator.createBackendFromModelKit(cliModelKit());
+      const worktree: WorktreeState = {
+        projectId: "project-a",
+        status: "created",
+        worktreePath: rootDir
+      } as WorktreeState;
+
+      const result = await backend.run({
+        systemPrompt: "You are a coder.",
+        messages: [{ role: "user", content: "Implement the feature." }],
+        tools: [],
+        worktrees: [worktree],
+        quest: { id: "q1", title: "t", requirement: "r", worktrees: [worktree] } as Quest
+      });
+
+      const types = result.events.map((event) => event.type);
+      expect(types).toContain("agent.tool_call");
+      expect(types).toContain("agent.completed");
+      const toolEvent = result.events.find((event) => event.type === "agent.tool_call");
+      expect(toolEvent!.detail).toContain("pnpm test");
+      expect(result.content).toContain("All done");
+    } finally {
+      delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    }
   });
 });

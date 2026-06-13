@@ -72,8 +72,10 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
     }
   }
 
-  // Recognized JSON envelope but nothing actionable in it → ignore as noise.
-  return undefined;
+  // Not a recognized streaming envelope — likely a print-mode CLI emitting its whole
+  // answer (plan/result payload) as a single JSON line. Preserve it as raw output so
+  // it reaches `content` rather than being silently dropped.
+  return { type: "agent.output", title: "输出", detail: trimmed, agent };
 }
 
 export interface RunStreamingCliOptions {

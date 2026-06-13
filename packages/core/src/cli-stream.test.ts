@@ -69,6 +69,16 @@ describe("parseCliStreamLine", () => {
     const line = JSON.stringify({ type: "system", subtype: "init", session_id: "abc" });
     expect(parseCliStreamLine(line, AGENT)).toBeUndefined();
   });
+
+  it("preserves an unrecognized JSON object as agent.output (e.g. a plan/result payload)", () => {
+    // Print-mode CLIs often emit their whole answer as a single JSON line that is
+    // not a streaming envelope. It must reach `content`, not be dropped as noise.
+    const line = JSON.stringify({ summary: "plan", steps: [{ id: "s1" }] });
+    const event = parseCliStreamLine(line, AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.output");
+    expect(event!.detail).toContain("\"summary\":\"plan\"");
+  });
 });
 
 /** Write a tiny node script that emits the given stdout lines, then exits with `code`. */

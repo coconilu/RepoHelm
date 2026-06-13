@@ -19,6 +19,7 @@ import {
   type DelegateInput
 } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL, fsToolSpecs } from "./tools/fs.js";
+import { runStreamingCli } from "./cli-stream.js";
 import {
   resolveContract,
   renderContractSection,
@@ -516,27 +517,38 @@ export class SubAgentOrchestrator {
           cliArgs = [prompt];
         }
 
-        const { stdout, stderr } = await execFileAsync(command, cliArgs, {
-          maxBuffer: 10 * 1024 * 1024,
-          cwd: createdWorktree?.worktreePath
-        }).catch((error: { stdout?: string; stderr?: string; message?: string }) => {
-          throw new Error(
-            `CLI backend ${backendId} failed: ${error.message}\n${error.stderr ?? ""}`
-          );
+        // Stream the CLI's stdout so its tool calls / messages / result surface on
+        // the timeline incrementally instead of as a single opaque blob.
+        const stream = await runStreamingCli({
+          command,
+          args: cliArgs,
+          agent: modelKit.name,
+          cwd: createdWorktree?.worktreePath,
+          timeoutMs: Number(process.env.REPOHELM_AGENT_TIMEOUT_MS ?? 120_000)
         });
-        const content = (stdout || "").trim() || (stderr || "").trim();
+        if (stream.exitCode !== 0 && stream.exitCode !== null) {
+          const tail = stream.events.slice(-3).map((event) => event.detail).filter(Boolean).join("\n");
+          throw new Error(`CLI backend ${backendId} failed (exit ${stream.exitCode})\n${tail}`);
+        }
+        const content = stream.content.trim();
+        // Fall back to a single completion event only when the CLI emitted nothing
+        // parseable (e.g. a silent print-mode CLI), so the step still has a record.
+        const events =
+          stream.events.length > 0
+            ? stream.events
+            : [
+                {
+                  type: "agent.cli.call",
+                  title: `CLI ${backendId} 调用完成`,
+                  detail: truncate(content, 200) || "(empty)",
+                  agent: modelKit.name
+                }
+              ];
         return {
           content,
           toolCalls: [],
           finishReason: "stop",
-          events: [
-            {
-              type: "agent.cli.call",
-              title: `CLI ${backendId} 调用完成`,
-              detail: truncate(content, 200) || "(empty)",
-              agent: modelKit.name
-            }
-          ]
+          events
         };
       }
     };
