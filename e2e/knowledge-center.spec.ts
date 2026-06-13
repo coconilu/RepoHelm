@@ -8,8 +8,14 @@ test("opens knowledge center, renders a wiki page, and exits", async ({ page }) 
     page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" })
   ).toBeVisible();
 
+  // 入口固定在侧边栏顶部工具条,而不是旧的底部 footer.
+  const sidebarTopbar = page.locator(".sidebar .sidebar-topbar");
+  const knowledgeButton = sidebarTopbar.getByRole("button", { name: "打开知识中心" });
+  await expect(knowledgeButton).toHaveClass(/sidebar-knowledge-button/);
+  await expect(page.locator(".sidebar-footer")).toHaveCount(0);
+
   // 进入知识中心
-  await page.getByRole("button", { name: "知识中心" }).click();
+  await knowledgeButton.click();
   await expect(page.locator(".knowledge-center")).toBeVisible();
   await expect(page.getByRole("button", { name: "Repo Wiki" })).toBeVisible();
   await expect(page.getByRole("button", { name: "记忆" })).toBeVisible();

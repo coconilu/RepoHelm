@@ -71,19 +71,29 @@ export interface ExtractedFile {
 
 const FENCE_RE = /```([^\n]*)\n([\s\S]*?)```/g;
 const PATH_LIKE = /[\w./-]+\.[A-Za-z0-9]+/;
+const CODE_MEMBER_LIKE = /^(?:Array|Boolean|Date|JSON|Math|Number|Object|Promise|String|console|document|process|window)\./;
+
+function cleanPathToken(token: string): string {
+  return token.replace(/^['"`]|['"`]$/g, "");
+}
+
+function isPathLikeToken(token: string): boolean {
+  const cleaned = cleanPathToken(token);
+  return !CODE_MEMBER_LIKE.test(cleaned) && (cleaned.includes("/") || /^[\w.-]+\.[A-Za-z0-9]+$/.test(cleaned));
+}
 
 function pathFromInfoString(info: string): string | undefined {
   const tokens = info.trim().split(/\s+/).filter(Boolean);
   for (const token of tokens) {
     const tagged = token.match(/^(?:path|file|filename|title|name)=(.+)$/i);
     if (tagged?.[1]) {
-      return tagged[1].replace(/^['"`]|['"`]$/g, "");
+      return cleanPathToken(tagged[1]);
     }
   }
   for (const token of tokens) {
     // A token that contains a slash or a dotted filename (but not a bare language tag).
-    if (token.includes("/") || /^[\w.-]+\.[A-Za-z0-9]+$/.test(token)) {
-      return token.replace(/^['"`]|['"`]$/g, "");
+    if (isPathLikeToken(token)) {
+      return cleanPathToken(token);
     }
   }
   return undefined;
@@ -100,7 +110,8 @@ function pathFromPrecedingText(text: string): string | undefined {
   }
   // Otherwise the last backticked path-like token in the preceding text.
   const backticked = [...tail.matchAll(/`([\w./-]+\.[A-Za-z0-9]+)`/g)];
-  return backticked.length > 0 ? backticked[backticked.length - 1]![1] : undefined;
+  const pathLike = backticked.map((item) => item[1]!).filter(isPathLikeToken);
+  return pathLike.length > 0 ? pathLike[pathLike.length - 1] : undefined;
 }
 
 function defaultPathForBody(info: string, body: string): string | undefined {

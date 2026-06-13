@@ -841,10 +841,22 @@ function Sidebar({
 }) {
   return (
     <aside className="sidebar">
-      <button className="new-quest-button" onClick={onCreateWorkspace} type="button">
-        <Plus size={16} />
-        <span>创建 Workspace</span>
-      </button>
+      <div className="sidebar-topbar">
+        <button className="new-quest-button" onClick={onCreateWorkspace} type="button">
+          <Plus size={16} />
+          <span>创建 Workspace</span>
+        </button>
+        <button
+          aria-label={`打开知识中心，${knowledgeCount} 个项目已有知识库`}
+          className="sidebar-knowledge-button"
+          onClick={onKnowledgeOpen}
+          title="知识中心"
+          type="button"
+        >
+          <BookOpen size={16} />
+          <em>{knowledgeCount}</em>
+        </button>
+      </div>
 
       <section className="sidebar-section grow">
         <span className="section-label">Workspaces</span>
@@ -937,11 +949,6 @@ function Sidebar({
         </div>
       </section>
 
-      <button className="sidebar-footer" onClick={onKnowledgeOpen} type="button">
-        <BookOpen size={15} />
-        <span>知识中心</span>
-        <em>{knowledgeCount}</em>
-      </button>
     </aside>
   );
 }

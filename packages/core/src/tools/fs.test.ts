@@ -36,6 +36,17 @@ describe("extractFilesFromContent", () => {
     expect(extractFilesFromContent(content)).toEqual([]);
   });
 
+  it("does not treat code member references as file paths for language fences", () => {
+    const content = [
+      "Added a live `import` + `console.log` example.",
+      "",
+      "```js",
+      'console.log(listQuests());',
+      "```"
+    ].join("\n");
+    expect(extractFilesFromContent(content)).toEqual([]);
+  });
+
   it("de-dupes by path, last write wins", () => {
     const content = ["```a.txt", "first", "```", "```a.txt", "second", "```"].join("\n");
     expect(extractFilesFromContent(content)).toEqual([{ path: "a.txt", content: "second" }]);
