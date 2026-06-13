@@ -93,6 +93,8 @@ export interface StreamingCliResult {
   content: string;
   events: CliStreamEvent[];
   exitCode: number | null;
+  /** Captured stderr — kept for diagnosing CLI auth/model failures. */
+  stderr: string;
 }
 
 /**
@@ -114,6 +116,7 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
     let resultText: string | undefined;
     const textParts: string[] = [];
     let buffer = "";
+    let stderr = "";
     let settled = false;
 
     const handleEvent = (event: CliStreamEvent) => {
@@ -156,13 +159,20 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
       }
     });
 
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
     child.on("error", (error) => finish(() => reject(error)));
 
     child.on("close", (code) => {
       if (buffer.length > 0) {
         consumeLine(buffer);
       }
-      finish(() => resolve({ content: resultText ?? textParts.join("\n"), events, exitCode: code }));
+      // Fall back to stderr for content when stdout produced nothing parseable,
+      // so a stderr-only failure is still diagnosable rather than empty.
+      const content = resultText ?? (textParts.length > 0 ? textParts.join("\n") : stderr.trim());
+      finish(() => resolve({ content, events, exitCode: code, stderr }));
     });
 
     // Close stdin so CLIs that read it (codex exec, opencode run) get EOF.

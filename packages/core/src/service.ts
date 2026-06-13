@@ -64,6 +64,16 @@ import { defaultEngineConfig, type StateStore } from "./store.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
+
+/**
+ * Return the first shell control/metacharacter found in a command, or undefined.
+ * Used to reject model-generated commands that would chain, substitute or
+ * redirect through `sh -lc`, defeating a leading-token allowlist.
+ */
+function detectShellComposition(command: string): string | undefined {
+  const match = command.match(/[;&|<>`$(){}\n\r\\]/);
+  return match ? match[0] : undefined;
+}
 const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 // Delay between streamed quest-spec timeline events, for a "thinking" cadence in the UI.
 const SPEC_EVENT_PACE_MS = 350;
@@ -2217,7 +2227,14 @@ export class RepoHelmService {
    */
   async authorizeCommand(command: string, subject = "worker run_command"): Promise<boolean> {
     return this.mutateState(async (state) => {
-      const permission = this.evaluateCommandPermission(state.securityPolicy, subject, command);
+      // A model-generated command runs through `sh -lc`, so an allowlisted first
+      // token (pnpm/git/node) is not enough: chaining/substitution/redirection
+      // could run un-allowlisted commands. Reject shell-composition metacharacters
+      // before the allowlist check so the leading token actually IS the command.
+      const unsafe = detectShellComposition(command);
+      const permission = unsafe
+        ? { allowed: false, detail: `${subject} 命令包含 shell 组合元字符 "${unsafe}"，已拒绝自动执行。` }
+        : this.evaluateCommandPermission(state.securityPolicy, subject, command);
       const entry = this.audit("command", permission.allowed ? "allowed" : "denied", command, permission.detail);
       return {
         newState: { ...state, auditLog: [entry, ...state.auditLog] },

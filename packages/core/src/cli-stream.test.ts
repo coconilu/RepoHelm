@@ -157,4 +157,21 @@ describe("runStreamingCli", () => {
     expect(result.events.map((e) => e.type)).toEqual(["agent.output", "agent.output"]);
     expect(result.content).toContain("Tests passed");
   });
+
+  it("captures stderr and uses it as fallback content on a stderr-only non-zero exit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rh-cli-stderr-"));
+    const file = join(dir, "stderr-cli.mjs");
+    await writeFile(
+      file,
+      "process.stderr.write('auth failed: invalid api key\\n');\nprocess.exit(2);\n",
+      "utf8"
+    );
+
+    const result = await runStreamingCli({ command: process.execPath, args: [file], agent: AGENT });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("auth failed: invalid api key");
+    // stdout produced nothing parseable; stderr must not be silently dropped.
+    expect(result.content).toContain("auth failed: invalid api key");
+  });
 });

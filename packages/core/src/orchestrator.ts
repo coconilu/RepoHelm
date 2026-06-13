@@ -574,7 +574,10 @@ export class SubAgentOrchestrator {
         });
         if (stream.exitCode !== 0 && stream.exitCode !== null) {
           const tail = stream.events.slice(-3).map((event) => event.detail).filter(Boolean).join("\n");
-          throw new Error(`CLI backend ${backendId} failed (exit ${stream.exitCode})\n${tail}`);
+          const stderrTail = stream.stderr.trim().slice(-500);
+          throw new Error(
+            `CLI backend ${backendId} failed (exit ${stream.exitCode})\n${tail}${stderrTail ? `\nstderr: ${stderrTail}` : ""}`
+          );
         }
         const content = stream.content.trim();
         // Fall back to a single completion event only when the CLI emitted nothing
