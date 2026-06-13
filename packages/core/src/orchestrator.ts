@@ -18,7 +18,9 @@ import {
   delegateToolSpec,
   type DelegateInput
 } from "./tools/delegate.js";
-import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL, fsToolSpecs } from "./tools/fs.js";
+import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL } from "./tools/fs.js";
+import { buildWorkerToolset } from "./tools/worker-tools.js";
+import { runStreamingCli } from "./cli-stream.js";
 import {
   resolveContract,
   renderContractSection,
@@ -43,18 +45,26 @@ export interface SubAgentBackend {
   }): Promise<SubAgentBackendResult>;
 }
 
+/** A fine-grained execution event (tool call, message, command output, …). */
+export interface BackendEvent {
+  type: string;
+  title: string;
+  detail: string;
+  agent: string;
+}
+
 export interface SubAgentBackendResult {
   content: string;
   toolCalls: LlmToolCall[];
   finishReason: string;
-  events: Array<{ type: string; title: string; detail: string; agent: string }>;
+  events: BackendEvent[];
 }
 
 export interface OrchestratorQuestResult {
   entryAgentId: string;
   entryAgentName: string;
   finalContent: string;
-  delegations: Array<{ agentId: string; agentName: string; ok: boolean; summary: string }>;
+  delegations: Array<{ agentId: string; agentName: string; ok: boolean; summary: string; events?: BackendEvent[] }>;
   iterations: number;
 }
 
@@ -229,7 +239,8 @@ export class SubAgentOrchestrator {
           agentId: agent.id,
           agentName: agent.name,
           ok: !stepError,
-          summary
+          summary,
+          events: result.events
         });
 
         if (!stepError) {
@@ -272,7 +283,8 @@ export class SubAgentOrchestrator {
       quest: Quest;
       targetProjectId?: string;
     }
-  ): Promise<{ content: string; error?: string; writtenFiles?: string[] }> {
+  ): Promise<{ content: string; error?: string; writtenFiles?: string[]; events?: BackendEvent[] }> {
+    const workerEvents: BackendEvent[] = [];
     try {
       const modelKit = await this.requireModelKit(worker);
       const basePrompt =
@@ -315,10 +327,20 @@ export class SubAgentOrchestrator {
           `Provide complete file contents (not diffs). Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".`;
 
         if (modelKit.type === "byok") {
-          // Tool-capable models can write files directly via the file-system tools.
-          const loop = await this.runWorkerWithFsTools(modelKit, systemPrompt, userContent, worktree.worktreePath);
+          // Tool-capable models can write files directly via the file-system tools
+          // and verify them via the allowlist-gated command tool.
+          const isAllowed = this.resolveCommandGate();
+          const loop = await this.runWorkerWithFsTools(
+            modelKit,
+            systemPrompt,
+            userContent,
+            worktree.worktreePath,
+            worker.name,
+            isAllowed
+          );
           content = loop.content || "";
           loop.written.forEach((file) => writtenFiles.add(file));
+          workerEvents.push(...loop.events);
         } else {
           // CLI / other backends: run in the worktree and capture their answer.
           const backend = await this.createBackendFromModelKit(modelKit);
@@ -330,6 +352,7 @@ export class SubAgentOrchestrator {
             quest: input.quest
           });
           content = result.content || "";
+          workerEvents.push(...result.events);
         }
 
         // Backend-agnostic safety net: materialize any files described in the answer
@@ -357,6 +380,7 @@ export class SubAgentOrchestrator {
           quest: input.quest
         });
         content = result.content || "(worker returned no content)";
+        workerEvents.push(...result.events);
       }
 
       await this.updateSubAgentUsage(worker.id);
@@ -369,36 +393,42 @@ export class SubAgentOrchestrator {
           content
         );
       }
-      return { content, writtenFiles: [...writtenFiles] };
+      return { content, writtenFiles: [...writtenFiles], events: workerEvents };
     } catch (error) {
       return {
         content: "",
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        events: workerEvents
       };
     }
   }
 
   /**
    * Run a worker BYOK model in a bounded tool-calling loop, letting it write real
-   * files into the worktree. Returns the worker's final text and the list of files
-   * it created/overwrote (worktree-relative paths).
+   * files into the worktree and run allowlisted commands. Returns the worker's
+   * final text, the files it created/overwrote, and one event per tool call so
+   * the orchestrator can surface them on the Quest timeline.
    */
   private async runWorkerWithFsTools(
     modelKit: ModelKit,
     systemPrompt: string,
     userContent: string,
-    worktreeRoot: string
-  ): Promise<{ content: string; written: string[] }> {
-    const fs = buildFsToolHandlers(worktreeRoot);
+    worktreeRoot: string,
+    agentName: string,
+    isAllowed?: (command: string) => boolean | Promise<boolean>
+  ): Promise<{ content: string; written: string[]; events: BackendEvent[] }> {
+    const tools = buildWorkerToolset(worktreeRoot, { isAllowed });
+    const events: BackendEvent[] = [];
     const messages: LlmMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent }
     ];
     let finalContent = "";
     for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
-      const result = await callLlmWithModelKit({ modelKit, messages, tools: fsToolSpecs });
+      const result = await callLlmWithModelKit({ modelKit, messages, tools: tools.specs });
       if (result.content) {
         finalContent = result.content;
+        events.push({ type: "agent.message", title: "助手消息", detail: truncate(result.content, 500), agent: agentName });
       }
       if (!result.toolCalls || result.toolCalls.length === 0) {
         break;
@@ -411,11 +441,28 @@ export class SubAgentOrchestrator {
         } catch {
           args = {};
         }
-        const output = await fs.handle(call.function.name, args);
+        events.push({
+          type: "agent.tool_call",
+          title: `调用工具: ${call.function.name}`,
+          detail: truncate(call.function.arguments || "", 300),
+          agent: agentName
+        });
+        const output = await tools.handle(call.function.name, args);
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     }
-    return { content: finalContent, written: [...fs.written] };
+    return { content: finalContent, written: [...tools.written], events };
+  }
+
+  /**
+   * Build the command gate for the worker `run_command` tool. Each command is
+   * evaluated against the security-policy allowlist AND recorded in the audit
+   * log via the service, so every execution attempt is captured. Defaults to
+   * deny on any error.
+   */
+  private resolveCommandGate(): (command: string) => Promise<boolean> {
+    return (command: string) =>
+      this.service.authorizeCommand(command, "worker run_command").catch(() => false);
   }
 
   private async requireModelKit(agent: SubAgent): Promise<ModelKit> {
@@ -516,27 +563,41 @@ export class SubAgentOrchestrator {
           cliArgs = [prompt];
         }
 
-        const { stdout, stderr } = await execFileAsync(command, cliArgs, {
-          maxBuffer: 10 * 1024 * 1024,
-          cwd: createdWorktree?.worktreePath
-        }).catch((error: { stdout?: string; stderr?: string; message?: string }) => {
-          throw new Error(
-            `CLI backend ${backendId} failed: ${error.message}\n${error.stderr ?? ""}`
-          );
+        // Stream the CLI's stdout so its tool calls / messages / result surface on
+        // the timeline incrementally instead of as a single opaque blob.
+        const stream = await runStreamingCli({
+          command,
+          args: cliArgs,
+          agent: modelKit.name,
+          cwd: createdWorktree?.worktreePath,
+          timeoutMs: Number(process.env.REPOHELM_AGENT_TIMEOUT_MS ?? 120_000)
         });
-        const content = (stdout || "").trim() || (stderr || "").trim();
+        if (stream.exitCode !== 0 && stream.exitCode !== null) {
+          const tail = stream.events.slice(-3).map((event) => event.detail).filter(Boolean).join("\n");
+          const stderrTail = stream.stderr.trim().slice(-500);
+          throw new Error(
+            `CLI backend ${backendId} failed (exit ${stream.exitCode})\n${tail}${stderrTail ? `\nstderr: ${stderrTail}` : ""}`
+          );
+        }
+        const content = stream.content.trim();
+        // Fall back to a single completion event only when the CLI emitted nothing
+        // parseable (e.g. a silent print-mode CLI), so the step still has a record.
+        const events =
+          stream.events.length > 0
+            ? stream.events
+            : [
+                {
+                  type: "agent.cli.call",
+                  title: `CLI ${backendId} 调用完成`,
+                  detail: truncate(content, 200) || "(empty)",
+                  agent: modelKit.name
+                }
+              ];
         return {
           content,
           toolCalls: [],
           finishReason: "stop",
-          events: [
-            {
-              type: "agent.cli.call",
-              title: `CLI ${backendId} 调用完成`,
-              detail: truncate(content, 200) || "(empty)",
-              agent: modelKit.name
-            }
-          ]
+          events
         };
       }
     };
