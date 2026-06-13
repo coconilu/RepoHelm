@@ -83,6 +83,9 @@ function renderPlanMarkdown(plan: OrchestrationPlan): string {
     lines.push(`- **Agent**: ${step.agentName} (\`${step.agentId}\`)`);
     lines.push(`- **Dependencies**: ${step.dependencies.length > 0 ? step.dependencies.join(", ") : "none"}`);
     lines.push(`- **Expected Output**: ${step.expectedOutput}`);
+    if (step.targetProjectId) {
+      lines.push(`- **Target Project**: ${step.targetProjectId}`);
+    }
     for (const contractLine of renderContractMarkdownLines(step)) {
       lines.push(contractLine);
     }
@@ -120,6 +123,7 @@ function parsePlanMarkdown(content: string): OrchestrationPlan {
     const agentMatch = block.match(/- \*\*Agent\*\*: (.+?) \(`([^)]+)`\)/);
     const depsMatch = block.match(/- \*\*Dependencies\*\*: (.+)/);
     const outputMatch = block.match(/- \*\*Expected Output\*\*: (.+)/);
+    const targetProjectMatch = block.match(/- \*\*Target Project\*\*: (.+)/);
     if (!agentMatch || !depsMatch || !outputMatch) {
       continue;
     }
@@ -132,6 +136,7 @@ function parsePlanMarkdown(content: string): OrchestrationPlan {
       agentId: agentMatch[2]!.trim(),
       dependencies: depsRaw === "none" ? [] : depsRaw.split(",").map((d) => d.trim()),
       expectedOutput: outputMatch[1]!.trim(),
+      ...(targetProjectMatch?.[1]?.trim() ? { targetProjectId: targetProjectMatch[1].trim() } : {}),
       ...(contract ? { contract } : {})
     });
   }

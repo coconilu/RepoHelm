@@ -98,6 +98,7 @@ export interface OrchestrationPlanStep {
   agentName: string;
   dependencies: string[];
   expectedOutput: string;
+  targetProjectId?: string;
   contract?: TaskContract;
 }
 

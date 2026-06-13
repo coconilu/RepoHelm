@@ -285,12 +285,21 @@ export class SubAgentOrchestrator {
         input.dependencies
       );
 
-      // Find the worktree for the target project, or fall back to the first created worktree
+      // Find the worktree for the target project, or fall back only when the
+      // plan did not specify a target. A stale target must not silently run in
+      // another repo's worktree.
       const worktree = input.targetProjectId
         ? input.quest.worktrees.find(
             (item) => item.projectId === input.targetProjectId && item.status === "created" && item.worktreePath
           )
         : input.quest.worktrees.find((item) => item.status === "created" && item.worktreePath);
+
+      if (input.targetProjectId && !worktree) {
+        return {
+          content: "",
+          error: `target project ${input.targetProjectId} has no created worktree`
+        };
+      }
 
       let content: string;
       const writtenFiles = new Set<string>();
@@ -317,7 +326,7 @@ export class SubAgentOrchestrator {
             systemPrompt,
             messages: [{ role: "user", content: userContent }],
             tools: [],
-            worktrees: input.quest.worktrees,
+            worktrees: [worktree],
             quest: input.quest
           });
           content = result.content || "";

@@ -25,7 +25,8 @@ function samplePlan(questId: string): OrchestrationPlan {
         agentId: "agent-impl",
         agentName: "Implementation Agent",
         dependencies: [],
-        expectedOutput: "Source code changes for feature A"
+        expectedOutput: "Source code changes for feature A",
+        targetProjectId: "project-a"
       },
       {
         id: "step-2",
@@ -33,7 +34,8 @@ function samplePlan(questId: string): OrchestrationPlan {
         agentId: "agent-review",
         agentName: "Review Agent",
         dependencies: ["step-1"],
-        expectedOutput: "Review notes for feature A"
+        expectedOutput: "Review notes for feature A",
+        targetProjectId: "project-b"
       }
     ],
     notes: "This is a test plan with notes."
@@ -63,7 +65,8 @@ describe("QuestWorkspaceManager", () => {
       agentId: "agent-impl",
       agentName: "Implementation Agent",
       dependencies: [],
-      expectedOutput: "Source code changes for feature A"
+      expectedOutput: "Source code changes for feature A",
+      targetProjectId: "project-a"
     });
     expect(readBack!.steps[1]).toMatchObject({
       id: "step-2",
@@ -71,7 +74,8 @@ describe("QuestWorkspaceManager", () => {
       agentId: "agent-review",
       agentName: "Review Agent",
       dependencies: ["step-1"],
-      expectedOutput: "Review notes for feature A"
+      expectedOutput: "Review notes for feature A",
+      targetProjectId: "project-b"
     });
   });
 
@@ -553,6 +557,181 @@ describe("Plan-then-execute flow", () => {
         delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
       } else {
         process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      }
+      if (oldWriteContent === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+      }
+    }
+  });
+
+  it("runs CLI worker steps in their target project worktrees", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWrites = process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    const secondRepo = join(rootDir, "second-repo");
+    try {
+      await execFileAsync("git", ["init", "-b", "main", secondRepo]);
+      await writeFile(join(secondRepo, "README.md"), "# Second\n", "utf8");
+      await execFileAsync("git", ["add", "README.md"], { cwd: secondRepo });
+      await execFileAsync("git", ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "Initial commit"], {
+        cwd: secondRepo
+      });
+
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const firstProject = state.projects[0]!;
+      const secondProject = await service.createProject({
+        name: "second-repo",
+        path: secondRepo,
+        defaultBranch: "main"
+      });
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Targeted multi-repo plan",
+        steps: [
+          {
+            id: "step_1",
+            description: "Write first repo file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "First repo code",
+            targetProjectId: firstProject.id,
+            contract: { doneCriteria: "Code file written" }
+          },
+          {
+            id: "step_2",
+            description: "Write second repo file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: ["step_1"],
+            expectedOutput: "Second repo code",
+            targetProjectId: secondProject.id,
+            contract: { doneCriteria: "Code file written" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Direct edit complete.";
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Write first repo file", path: "src/first.ts", content: "export const first = true;\n" },
+        { contains: "Write second repo file", path: "src/second.ts", content: "export const second = true;\n" }
+      ]);
+
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Targeted multi repo writes",
+        requirement: "Write files in two different project worktrees.",
+        affectedProjectIds: [firstProject.id, secondProject.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((file) => `${file.projectId}:${file.path}`).sort()).toEqual([
+        `${firstProject.id}:src/first.ts`,
+        `${secondProject.id}:src/second.ts`
+      ].sort());
+      const firstWorktree = executed.worktrees.find((item) => item.projectId === firstProject.id)!;
+      const secondWorktree = executed.worktrees.find((item) => item.projectId === secondProject.id)!;
+      await expect(readFile(join(firstWorktree.worktreePath!, "src", "first.ts"), "utf8")).resolves.toContain("first");
+      await expect(readFile(join(secondWorktree.worktreePath!, "src", "second.ts"), "utf8")).resolves.toContain("second");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWrites === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITES_JSON;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITES_JSON = oldWrites;
+      }
+    }
+  });
+
+  it("blocks worker steps with an unknown target project instead of editing another worktree", async () => {
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Invalid target plan",
+        steps: [
+          {
+            id: "step_1",
+            description: "Write should not run",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "No code changes",
+            targetProjectId: "project_missing",
+            contract: { doneCriteria: "Code file written" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "This should not run.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/wrong-repo.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const wrong = true;\n";
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Invalid target project",
+        requirement: "Step 1 uses a plan target project that has no worktree.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles).toHaveLength(0);
+      expect(executed.agentSummary).toContain("target project project_missing has no created worktree");
+    } finally {
+      if (oldCommand === undefined) {
+        delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      } else {
+        process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      }
+      if (oldOutput === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      }
+      if (oldPlan === undefined) {
+        delete process.env.REPOHELM_TEST_PLAN_JSON;
+      } else {
+        process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      }
+      if (oldWritePath === undefined) {
+        delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      } else {
+        process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
       }
       if (oldWriteContent === undefined) {
         delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
