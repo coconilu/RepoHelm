@@ -1890,7 +1890,10 @@ export class RepoHelmService {
         `开始执行 ${plan.steps.length} 个步骤。`,
         "User"
       ),
-      ...result.delegations.map((d) =>
+      ...result.delegations.flatMap((d) => [
+        // Surface the worker's fine-grained execution events (tool calls,
+        // messages, command output) first, then the step's conclusion.
+        ...(d.events ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent)),
         this.event(
           questId,
           d.ok ? "step.completed" : "step.failed",
@@ -1898,7 +1901,7 @@ export class RepoHelmService {
           d.summary,
           d.agentName
         )
-      ),
+      ]),
       this.event(
         questId,
         hasFailures ? "orchestrator.failed" : produced ? "orchestrator.completed" : "orchestrator.no_changes",
