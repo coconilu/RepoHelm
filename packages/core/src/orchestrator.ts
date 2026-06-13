@@ -389,7 +389,11 @@ export class SubAgentOrchestrator {
     userContent: string,
     worktreeRoot: string
   ): Promise<{ content: string; written: string[] }> {
-    const fs = buildFsToolHandlers(worktreeRoot);
+    const securityPolicy = await this.service.getSecurityPolicy();
+    const fs = buildFsToolHandlers(worktreeRoot, {
+      commandApprovalMode: securityPolicy.commandApprovalMode,
+      allowedCommands: securityPolicy.allowedCommands
+    });
     const messages: LlmMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent }
