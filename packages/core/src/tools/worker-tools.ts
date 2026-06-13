@@ -1,5 +1,6 @@
 import type { LlmToolSpec } from "../llm.js";
 import { buildFsToolHandlers, fsToolSpecs } from "./fs.js";
+import { buildSearchToolHandler, SEARCH_TOOL, searchToolSpec } from "./search.js";
 import { buildShellToolHandler, SHELL_RUN_TOOL, shellToolSpec } from "./shell.js";
 
 export interface WorkerToolOptions {
@@ -27,13 +28,17 @@ export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}
     isAllowed: options.isAllowed,
     timeoutMs: options.commandTimeoutMs
   });
+  const search = buildSearchToolHandler(root);
 
   return {
-    specs: [...fsToolSpecs, shellToolSpec],
+    specs: [...fsToolSpecs, searchToolSpec, shellToolSpec],
     written: fs.written,
     async handle(name, args) {
       if (name === SHELL_RUN_TOOL) {
         return shell.handle(name, args);
+      }
+      if (name === SEARCH_TOOL) {
+        return search.handle(name, args);
       }
       return fs.handle(name, args);
     }

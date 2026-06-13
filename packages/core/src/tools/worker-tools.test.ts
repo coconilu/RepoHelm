@@ -9,12 +9,23 @@ async function worktree(): Promise<string> {
 }
 
 describe("buildWorkerToolset", () => {
-  it("exposes both file-system and command tools to the worker", () => {
+  it("exposes file-system, command and search tools to the worker", () => {
     const toolset = buildWorkerToolset("/tmp/x");
     const names = toolset.specs.map((spec) => spec.function.name);
     expect(names).toContain("write_file");
     expect(names).toContain("read_file");
     expect(names).toContain("run_command");
+    expect(names).toContain("search_files");
+  });
+
+  it("routes search_files to the search handler", async () => {
+    const root = await worktree();
+    const toolset = buildWorkerToolset(root);
+    await toolset.handle("write_file", { path: "src/a.ts", content: "export const marker = 1;\n" });
+
+    const result = JSON.parse(await toolset.handle("search_files", { query: "marker" }));
+    expect(result.ok).toBe(true);
+    expect(result.matches.map((m: { file: string }) => m.file)).toContain("src/a.ts");
   });
 
   it("routes write_file to the file-system handler and tracks written files", async () => {
