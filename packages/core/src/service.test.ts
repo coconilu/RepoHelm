@@ -803,4 +803,30 @@ describe("createQuest + streamQuestSpec (streaming)", () => {
       delete process.env.REPOHELM_FAKE_STREAM_TEXT;
     }
   });
+
+  it("authorizeCommand allows an allowlisted command and records an audit entry", async () => {
+    const { service } = await createService();
+    await service.bootstrap();
+
+    const allowed = await service.authorizeCommand("pnpm test", "worker run_command");
+
+    expect(allowed).toBe(true);
+    const audit = await service.listAuditLog();
+    const entry = audit.find((e) => e.type === "command" && e.subject === "pnpm test");
+    expect(entry).toBeDefined();
+    expect(entry!.decision).toBe("allowed");
+  });
+
+  it("authorizeCommand denies a command outside the allowlist and records the denial", async () => {
+    const { service } = await createService();
+    await service.bootstrap();
+
+    const allowed = await service.authorizeCommand("rm -rf /", "worker run_command");
+
+    expect(allowed).toBe(false);
+    const audit = await service.listAuditLog();
+    const entry = audit.find((e) => e.type === "command" && e.subject === "rm -rf /");
+    expect(entry).toBeDefined();
+    expect(entry!.decision).toBe("denied");
+  });
 });

@@ -28,7 +28,7 @@ import {
   validateMaterialOutput,
   type DependencyResult
 } from "./task-contract.js";
-import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SecurityPolicy, SubAgent, WorktreeState } from "./types.js";
+import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -329,7 +329,7 @@ export class SubAgentOrchestrator {
         if (modelKit.type === "byok") {
           // Tool-capable models can write files directly via the file-system tools
           // and verify them via the allowlist-gated command tool.
-          const isAllowed = await this.resolveCommandGate();
+          const isAllowed = this.resolveCommandGate();
           const loop = await this.runWorkerWithFsTools(
             modelKit,
             systemPrompt,
@@ -415,7 +415,7 @@ export class SubAgentOrchestrator {
     userContent: string,
     worktreeRoot: string,
     agentName: string,
-    isAllowed?: (command: string) => boolean
+    isAllowed?: (command: string) => boolean | Promise<boolean>
   ): Promise<{ content: string; written: string[]; events: BackendEvent[] }> {
     const tools = buildWorkerToolset(worktreeRoot, { isAllowed });
     const events: BackendEvent[] = [];
@@ -455,25 +455,14 @@ export class SubAgentOrchestrator {
   }
 
   /**
-   * Build the command gate for the worker `run_command` tool from the active
-   * security policy. Mirrors the service's allowlist semantics: manual approval
-   * mode denies all automatic execution; allowlist mode permits commands whose
-   * leading token is on `allowedCommands`. Defaults to deny on any error.
+   * Build the command gate for the worker `run_command` tool. Each command is
+   * evaluated against the security-policy allowlist AND recorded in the audit
+   * log via the service, so every execution attempt is captured. Defaults to
+   * deny on any error.
    */
-  private async resolveCommandGate(): Promise<(command: string) => boolean> {
-    let policy: SecurityPolicy;
-    try {
-      policy = await this.service.getSecurityPolicy();
-    } catch {
-      return () => false;
-    }
-    return (command: string) => {
-      if (policy.commandApprovalMode !== "allowlist") {
-        return false;
-      }
-      const name = command.trim().split(/\s+/)[0] ?? command;
-      return policy.allowedCommands.includes(name);
-    };
+  private resolveCommandGate(): (command: string) => Promise<boolean> {
+    return (command: string) =>
+      this.service.authorizeCommand(command, "worker run_command").catch(() => false);
   }
 
   private async requireModelKit(agent: SubAgent): Promise<ModelKit> {

@@ -5,8 +5,9 @@ import { buildSearchToolHandler, SEARCH_TOOL, searchToolSpec } from "./search.js
 import { buildShellToolHandler, SHELL_RUN_TOOL, shellToolSpec } from "./shell.js";
 
 export interface WorkerToolOptions {
-  /** Gate for `run_command`. Defaults to deny-all (commands won't run). */
-  isAllowed?: (command: string) => boolean;
+  /** Gate for `run_command`. Defaults to deny-all (commands won't run). May be
+   *  async so the caller can record an audit entry per command. */
+  isAllowed?: (command: string) => boolean | Promise<boolean>;
   commandTimeoutMs?: number;
 }
 

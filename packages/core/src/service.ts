@@ -2210,6 +2210,22 @@ export class RepoHelmService {
     return state.auditLog.slice(0, 100);
   }
 
+  /**
+   * Evaluate a command against the security-policy allowlist AND record an audit
+   * entry, returning whether it may run. Used to gate each worker `run_command`
+   * tool call so every command execution is captured in the audit log.
+   */
+  async authorizeCommand(command: string, subject = "worker run_command"): Promise<boolean> {
+    return this.mutateState(async (state) => {
+      const permission = this.evaluateCommandPermission(state.securityPolicy, subject, command);
+      const entry = this.audit("command", permission.allowed ? "allowed" : "denied", command, permission.detail);
+      return {
+        newState: { ...state, auditLog: [entry, ...state.auditLog] },
+        result: permission.allowed
+      };
+    });
+  }
+
   async getProductReadiness(workspaceId?: string): Promise<ProductReadiness> {
     const state = await this.getState();
     const workspace = workspaceId

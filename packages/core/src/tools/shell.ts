@@ -32,8 +32,9 @@ export const shellToolSpec: LlmToolSpec = {
 };
 
 export interface ShellToolOptions {
-  /** Returns true if the command may run. Defaults to deny-all. */
-  isAllowed?: (command: string) => boolean;
+  /** Returns true if the command may run. Defaults to deny-all. May be async so
+   *  callers can record an audit entry while deciding. */
+  isAllowed?: (command: string) => boolean | Promise<boolean>;
   timeoutMs?: number;
   /** Max bytes of stdout/stderr to keep in the tool result. */
   maxOutputBytes?: number;
@@ -61,7 +62,7 @@ export function buildShellToolHandler(root: string, options: ShellToolOptions = 
       if (!command) {
         return JSON.stringify({ ok: false, error: "command is required" });
       }
-      if (!isAllowed(command)) {
+      if (!(await isAllowed(command))) {
         const name = command.split(/\s+/)[0] ?? command;
         return JSON.stringify({ ok: false, error: `command not permitted: ${name}` });
       }
