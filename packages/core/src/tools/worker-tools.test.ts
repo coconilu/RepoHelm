@@ -16,6 +16,19 @@ describe("buildWorkerToolset", () => {
     expect(names).toContain("read_file");
     expect(names).toContain("run_command");
     expect(names).toContain("search_files");
+    expect(names).toContain("edit_file");
+  });
+
+  it("routes edit_file to the edit handler and tracks the modified file as written", async () => {
+    const root = await worktree();
+    const toolset = buildWorkerToolset(root);
+    await toolset.handle("write_file", { path: "src/a.ts", content: "const v = 1;\n" });
+
+    const result = JSON.parse(
+      await toolset.handle("edit_file", { path: "src/a.ts", oldText: "const v = 1;", newText: "const v = 2;" })
+    );
+    expect(result.ok).toBe(true);
+    expect(toolset.written.has("src/a.ts")).toBe(true);
   });
 
   it("routes search_files to the search handler", async () => {

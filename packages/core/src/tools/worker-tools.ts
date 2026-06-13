@@ -1,4 +1,5 @@
 import type { LlmToolSpec } from "../llm.js";
+import { buildEditToolHandler, EDIT_TOOL, editToolSpec } from "./edit.js";
 import { buildFsToolHandlers, fsToolSpecs } from "./fs.js";
 import { buildSearchToolHandler, SEARCH_TOOL, searchToolSpec } from "./search.js";
 import { buildShellToolHandler, SHELL_RUN_TOOL, shellToolSpec } from "./shell.js";
@@ -24,23 +25,37 @@ export interface WorkerToolset {
  */
 export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}): WorkerToolset {
   const fs = buildFsToolHandlers(root);
+  const edit = buildEditToolHandler(root);
   const shell = buildShellToolHandler(root, {
     isAllowed: options.isAllowed,
     timeoutMs: options.commandTimeoutMs
   });
   const search = buildSearchToolHandler(root);
 
+  // Union of files touched via write_file (fs) and edit_file (edit), so the
+  // orchestrator's material-output check sees every change regardless of tool.
+  const written = new Set<string>();
+  const mergeWritten = () => {
+    for (const path of fs.written) written.add(path);
+    for (const path of edit.written) written.add(path);
+  };
+
   return {
-    specs: [...fsToolSpecs, searchToolSpec, shellToolSpec],
-    written: fs.written,
+    specs: [...fsToolSpecs, editToolSpec, searchToolSpec, shellToolSpec],
+    written,
     async handle(name, args) {
+      let output: string;
       if (name === SHELL_RUN_TOOL) {
-        return shell.handle(name, args);
+        output = await shell.handle(name, args);
+      } else if (name === SEARCH_TOOL) {
+        output = await search.handle(name, args);
+      } else if (name === EDIT_TOOL) {
+        output = await edit.handle(name, args);
+      } else {
+        output = await fs.handle(name, args);
       }
-      if (name === SEARCH_TOOL) {
-        return search.handle(name, args);
-      }
-      return fs.handle(name, args);
+      mergeWritten();
+      return output;
     }
   };
 }
