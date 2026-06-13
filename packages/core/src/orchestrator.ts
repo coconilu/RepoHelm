@@ -18,7 +18,8 @@ import {
   delegateToolSpec,
   type DelegateInput
 } from "./tools/delegate.js";
-import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL, fsToolSpecs } from "./tools/fs.js";
+import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL } from "./tools/fs.js";
+import { buildWorkerToolset } from "./tools/worker-tools.js";
 import { runStreamingCli } from "./cli-stream.js";
 import {
   resolveContract,
@@ -27,7 +28,7 @@ import {
   validateMaterialOutput,
   type DependencyResult
 } from "./task-contract.js";
-import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SubAgent, WorktreeState } from "./types.js";
+import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SecurityPolicy, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -316,8 +317,16 @@ export class SubAgentOrchestrator {
           `Provide complete file contents (not diffs). Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".`;
 
         if (modelKit.type === "byok") {
-          // Tool-capable models can write files directly via the file-system tools.
-          const loop = await this.runWorkerWithFsTools(modelKit, systemPrompt, userContent, worktree.worktreePath);
+          // Tool-capable models can write files directly via the file-system tools
+          // and verify them via the allowlist-gated command tool.
+          const isAllowed = await this.resolveCommandGate();
+          const loop = await this.runWorkerWithFsTools(
+            modelKit,
+            systemPrompt,
+            userContent,
+            worktree.worktreePath,
+            isAllowed
+          );
           content = loop.content || "";
           loop.written.forEach((file) => writtenFiles.add(file));
         } else {
@@ -388,16 +397,17 @@ export class SubAgentOrchestrator {
     modelKit: ModelKit,
     systemPrompt: string,
     userContent: string,
-    worktreeRoot: string
+    worktreeRoot: string,
+    isAllowed?: (command: string) => boolean
   ): Promise<{ content: string; written: string[] }> {
-    const fs = buildFsToolHandlers(worktreeRoot);
+    const tools = buildWorkerToolset(worktreeRoot, { isAllowed });
     const messages: LlmMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent }
     ];
     let finalContent = "";
     for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
-      const result = await callLlmWithModelKit({ modelKit, messages, tools: fsToolSpecs });
+      const result = await callLlmWithModelKit({ modelKit, messages, tools: tools.specs });
       if (result.content) {
         finalContent = result.content;
       }
@@ -412,11 +422,33 @@ export class SubAgentOrchestrator {
         } catch {
           args = {};
         }
-        const output = await fs.handle(call.function.name, args);
+        const output = await tools.handle(call.function.name, args);
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     }
-    return { content: finalContent, written: [...fs.written] };
+    return { content: finalContent, written: [...tools.written] };
+  }
+
+  /**
+   * Build the command gate for the worker `run_command` tool from the active
+   * security policy. Mirrors the service's allowlist semantics: manual approval
+   * mode denies all automatic execution; allowlist mode permits commands whose
+   * leading token is on `allowedCommands`. Defaults to deny on any error.
+   */
+  private async resolveCommandGate(): Promise<(command: string) => boolean> {
+    let policy: SecurityPolicy;
+    try {
+      policy = await this.service.getSecurityPolicy();
+    } catch {
+      return () => false;
+    }
+    return (command: string) => {
+      if (policy.commandApprovalMode !== "allowlist") {
+        return false;
+      }
+      const name = command.trim().split(/\s+/)[0] ?? command;
+      return policy.allowedCommands.includes(name);
+    };
   }
 
   private async requireModelKit(agent: SubAgent): Promise<ModelKit> {
