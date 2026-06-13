@@ -64,6 +64,46 @@ import { defaultEngineConfig, type StateStore } from "./store.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
+
+/**
+ * Return the first shell control/metacharacter found in a command, or undefined.
+ * Used to reject model-generated commands that would chain, substitute or
+ * redirect through `sh -lc`, defeating a leading-token allowlist.
+ */
+function detectShellComposition(command: string): string | undefined {
+  const match = command.match(/[;&|<>`$(){}\n\r\\]/);
+  return match ? match[0] : undefined;
+}
+
+/**
+ * Default argv-prefix templates a worker `run_command` may run. Deliberately
+ * narrow (verification/inspection only): a trusted binary name like `pnpm` or
+ * `git` is NOT enough — the argv must match a template. Anything broader
+ * (`node -e`, `pnpm exec/dlx/run <arbitrary>`, `git push`, `git -C`) is denied
+ * and left to manual approval. See issue #12.
+ */
+const DEFAULT_COMMAND_TEMPLATES = [
+  "pnpm test",
+  "pnpm run build",
+  "pnpm run test",
+  "pnpm typecheck",
+  "pnpm lint",
+  "git status",
+  "git diff",
+  "git diff --name-only"
+];
+
+/** True if `command`'s argv starts with any template's argv (token-wise). */
+function matchesCommandTemplate(command: string, templates: string[]): boolean {
+  const tokens = command.trim().split(/\s+/);
+  return templates.some((template) => {
+    const templateTokens = template.trim().split(/\s+/).filter(Boolean);
+    if (templateTokens.length === 0 || tokens.length < templateTokens.length) {
+      return false;
+    }
+    return templateTokens.every((token, index) => token === tokens[index]);
+  });
+}
 const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 // Delay between streamed quest-spec timeline events, for a "thinking" cadence in the UI.
 const SPEC_EVENT_PACE_MS = 350;
@@ -1890,7 +1930,10 @@ export class RepoHelmService {
         `开始执行 ${plan.steps.length} 个步骤。`,
         "User"
       ),
-      ...result.delegations.map((d) =>
+      ...result.delegations.flatMap((d) => [
+        // Surface the worker's fine-grained execution events (tool calls,
+        // messages, command output) first, then the step's conclusion.
+        ...(d.events ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent)),
         this.event(
           questId,
           d.ok ? "step.completed" : "step.failed",
@@ -1898,7 +1941,7 @@ export class RepoHelmService {
           d.summary,
           d.agentName
         )
-      ),
+      ]),
       this.event(
         questId,
         hasFailures ? "orchestrator.failed" : produced ? "orchestrator.completed" : "orchestrator.no_changes",
@@ -2205,6 +2248,50 @@ export class RepoHelmService {
   async listAuditLog(): Promise<AuditLogEntry[]> {
     const state = await this.getState();
     return state.auditLog.slice(0, 100);
+  }
+
+  /**
+   * Evaluate a command against the security-policy allowlist AND record an audit
+   * entry, returning whether it may run. Used to gate each worker `run_command`
+   * tool call so every command execution is captured in the audit log.
+   */
+  async authorizeCommand(command: string, subject = "worker run_command"): Promise<boolean> {
+    return this.mutateState(async (state) => {
+      const policy = state.securityPolicy;
+      const templates = policy.commandTemplates ?? DEFAULT_COMMAND_TEMPLATES;
+      const trimmed = command.trim();
+      const unsafe = detectShellComposition(command);
+      const leading = trimmed.split(/\s+/)[0] ?? trimmed;
+
+      // A model-generated command runs through `sh -lc`. An allowlisted leading
+      // token (pnpm/git/node) is NOT sufficient: (1) chaining/substitution/
+      // redirection could run un-allowlisted commands; (2) even without those, a
+      // trusted binary can do too much (node -e, pnpm exec/dlx, git push, git -C).
+      // So: reject shell composition, then require an exact argv-template match.
+      let allowed: boolean;
+      let detail: string;
+      if (!trimmed) {
+        allowed = true;
+        detail = `${subject} 命令为空，按跳过处理。`;
+      } else if (unsafe) {
+        allowed = false;
+        detail = `${subject} 命令包含 shell 组合元字符 "${unsafe}"，已拒绝自动执行。`;
+      } else if (policy.commandApprovalMode === "manual") {
+        allowed = false;
+        detail = `${subject} 需要人工审批，当前安全策略不允许自动执行。`;
+      } else if (matchesCommandTemplate(command, templates)) {
+        allowed = true;
+        detail = `${subject} 命令命中命令模板 allowlist。`;
+      } else {
+        allowed = false;
+        detail = `${subject} 命令 "${leading}" 不匹配任何命令模板，需人工审批后才能执行。`;
+      }
+      const entry = this.audit("command", allowed ? "allowed" : "denied", command, detail);
+      return {
+        newState: { ...state, auditLog: [entry, ...state.auditLog] },
+        result: allowed
+      };
+    });
   }
 
   async getProductReadiness(workspaceId?: string): Promise<ProductReadiness> {
@@ -2673,6 +2760,7 @@ export class RepoHelmService {
     return {
       commandApprovalMode: "allowlist",
       allowedCommands: ["mock", "node", "git", "pnpm"],
+      commandTemplates: [...DEFAULT_COMMAND_TEMPLATES],
       fileScopes: ["workspace", "worktree", "knowledge"],
       networkScopes: ["localhost"],
       secretsPolicy: "redact-env",

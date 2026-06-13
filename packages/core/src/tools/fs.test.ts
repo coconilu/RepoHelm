@@ -75,9 +75,9 @@ describe("buildFsToolHandlers", () => {
     }
   }
 
-  it("exposes search, patch, and shell tools to workers", () => {
+  it("exposes apply_patch to workers", () => {
     const names = fsToolSpecs.map((spec) => spec.function.name);
-    expect(names).toEqual(expect.arrayContaining([FS_SEARCH_TOOL, FS_APPLY_PATCH_TOOL, FS_SHELL_RUN_TOOL]));
+    expect(names).toContain(FS_APPLY_PATCH_TOOL);
   });
 
   it("searches matching text files inside the worktree", async () => {

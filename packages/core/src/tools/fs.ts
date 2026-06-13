@@ -72,27 +72,6 @@ export const fsToolSpecs: LlmToolSpec[] = [
   {
     type: "function",
     function: {
-      name: FS_SEARCH_TOOL,
-      description:
-        "Search text files inside the project worktree. Supports substring search by default, optional regex, optional glob, and returns matching paths/lines.",
-      parameters: {
-        type: "object",
-        required: ["query"],
-        additionalProperties: false,
-        properties: {
-          query: { type: "string", description: "Text or regex pattern to search for." },
-          path: { type: "string", description: "Directory or file path relative to the worktree root. Defaults to root." },
-          glob: { type: "string", description: "Optional file glob such as \"src/**/*.ts\" or \"*.md\"." },
-          regex: { type: "boolean", description: "Treat query as a JavaScript regular expression. Defaults to false." },
-          caseSensitive: { type: "boolean", description: "Use case-sensitive matching. Defaults to false." },
-          maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50, max 200." }
-        }
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
       name: FS_APPLY_PATCH_TOOL,
       description:
         "Apply a unified diff patch inside the project worktree. Context lines are verified before writing files.",
@@ -102,23 +81,6 @@ export const fsToolSpecs: LlmToolSpec[] = [
         additionalProperties: false,
         properties: {
           patch: { type: "string", description: "Unified diff patch text with ---/+++ file headers and @@ hunks." }
-        }
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: FS_SHELL_RUN_TOOL,
-      description:
-        "Run an allowlisted command inside the project worktree (shell.run equivalent). Commands are executed without a shell and are constrained by the security allowlist.",
-      parameters: {
-        type: "object",
-        required: ["command"],
-        additionalProperties: false,
-        properties: {
-          command: { type: "string", description: "Command line to run, e.g. \"pnpm test\"." },
-          timeoutMs: { type: "number", description: "Optional timeout in milliseconds. Defaults to 30000, max 120000." }
         }
       }
     }
@@ -265,7 +227,7 @@ interface PatchWritePlan {
 export function buildFsToolHandlers(root: string, options: FsToolHandlerOptions = {}): FsToolHandlers {
   const written = new Set<string>();
   const maxOutputBytes = boundedNumber(options.maxOutputBytes, 24_000, 1024, 200_000);
-  const rootRealpath = realpath(root);
+  let rootRealpath: Promise<string> | undefined;
 
   function resolveSafe(rawPath: string): { abs: string; rel: string } {
     const cleaned = String(rawPath ?? "").replace(/^[/\\]+/, "");
@@ -278,6 +240,7 @@ export function buildFsToolHandlers(root: string, options: FsToolHandlerOptions 
   }
 
   async function assertRealPathInside(abs: string, rawPath: string): Promise<void> {
+    rootRealpath ??= realpath(root);
     const [realRoot, realAbs] = await Promise.all([rootRealpath, realpath(abs)]);
     const rel = relative(realRoot, realAbs);
     if (rel.startsWith("..") || isAbsolute(rel)) {

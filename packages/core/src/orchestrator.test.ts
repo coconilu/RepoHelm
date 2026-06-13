@@ -10,6 +10,8 @@ import { promisify } from "node:util";
 import { writeFile } from "node:fs/promises";
 import { RepoHelmService } from "./service.js";
 import { SqliteStateStore } from "./store.js";
+import { SubAgentOrchestrator } from "./orchestrator.js";
+import type { ModelKit, Quest, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1153,5 +1155,193 @@ describe("worker contract injection", () => {
     expect(section).toContain("- Boundaries: No refactor");
     expect(section).toContain("- Done when: Notes written");
     expect(section).toContain("- step_1: implemented A");
+  });
+});
+
+describe("CLI backend streaming integration", () => {
+  function cliModelKit(): ModelKit {
+    return {
+      id: "stream-cli-kit",
+      name: "Stream CLI",
+      type: "cli",
+      backendId: "generic",
+      model: "default",
+      config: { backendId: "generic" },
+      metadata: {
+        createdAt: "2025-01-01T00:00:00.000Z",
+        testedAt: "2025-01-01T00:00:00.000Z",
+        costTier: "free",
+        performanceProfile: "fast"
+      }
+    };
+  }
+
+  async function writeStreamJsonCli(rootDir: string): Promise<string> {
+    const commandPath = join(rootDir, "stream-cli.mjs");
+    const lines = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Planning the change" }] } }),
+      JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "pnpm test" } }] }
+      }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "All done" })
+    ];
+    await writeFile(
+      commandPath,
+      ["#!/usr/bin/env node", `const lines = ${JSON.stringify(lines)};`, "for (const l of lines) console.log(l);"].join(
+        "\n"
+      ),
+      "utf8"
+    );
+    await chmod(commandPath, 0o755);
+    return commandPath;
+  }
+
+  it("surfaces streamed tool calls and results as backend events", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-stream-cli-"));
+    const commandPath = await writeStreamJsonCli(rootDir);
+    process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+
+    try {
+      const orchestrator = new SubAgentOrchestrator({} as RepoHelmService, rootDir);
+      const backend = await orchestrator.createBackendFromModelKit(cliModelKit());
+      const worktree: WorktreeState = {
+        projectId: "project-a",
+        status: "created",
+        worktreePath: rootDir
+      } as WorktreeState;
+
+      const result = await backend.run({
+        systemPrompt: "You are a coder.",
+        messages: [{ role: "user", content: "Implement the feature." }],
+        tools: [],
+        worktrees: [worktree],
+        quest: { id: "q1", title: "t", requirement: "r", worktrees: [worktree] } as Quest
+      });
+
+      const types = result.events.map((event) => event.type);
+      expect(types).toContain("agent.tool_call");
+      expect(types).toContain("agent.completed");
+      const toolEvent = result.events.find((event) => event.type === "agent.tool_call");
+      expect(toolEvent!.detail).toContain("pnpm test");
+      expect(result.content).toContain("All done");
+    } finally {
+      delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    }
+  });
+});
+
+describe("CLI backend timeline propagation", () => {
+  async function gitRepoService() {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-timeline-"));
+    await execFileAsync("git", ["init", "-b", "main"], { cwd: rootDir });
+    await writeFile(join(rootDir, "README.md"), "# Fixture\n", "utf8");
+    await execFileAsync("git", ["add", "README.md"], { cwd: rootDir });
+    await execFileAsync(
+      "git",
+      ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "init"],
+      { cwd: rootDir }
+    );
+    return { rootDir, service: new RepoHelmService(new SqliteStateStore(rootDir), rootDir) };
+  }
+
+  async function streamingWorkerCli(rootDir: string): Promise<string> {
+    const commandPath = join(rootDir, "stream-worker.mjs");
+    await writeFile(
+      commandPath,
+      [
+        "#!/usr/bin/env node",
+        "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { join } from 'node:path';",
+        "const prompt = process.argv.slice(2).join('\\n');",
+        "if (process.env.REPOHELM_TEST_PLAN_JSON && prompt.includes('Produce an execution plan')) {",
+        "  console.log(process.env.REPOHELM_TEST_PLAN_JSON); process.exit(0);",
+        "}",
+        "mkdirSync(join(process.cwd(), 'src'), { recursive: true });",
+        "writeFileSync(join(process.cwd(), 'src/impl.ts'), 'export const impl = true;\\n');",
+        "console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'pnpm test' } }] } }));",
+        "console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done' }));"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(commandPath, 0o755);
+    return commandPath;
+  }
+
+  it("records streamed worker tool calls as quest timeline events", async () => {
+    const { rootDir, service } = await gitRepoService();
+    const commandPath = await streamingWorkerCli(rootDir);
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+
+    try {
+      await service.bootstrap();
+      await service.createModelKit({
+        id: "timeline-cli-kit",
+        name: "Timeline CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "timeline-cli-kit",
+        mode: "entry",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Writes code",
+        capabilities: ["coding"],
+        modelKitId: "timeline-cli-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Timeline plan",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code",
+            targetProjectId: project.id,
+            contract: { doneCriteria: "Code file written" }
+          }
+        ]
+      });
+
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Timeline propagation",
+        requirement: "Implement a feature and surface tool calls on the timeline.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      await service.approvePlan(quest.id);
+
+      const events = (await service.getState()).events;
+      const toolCall = events.find((event) => event.type === "agent.tool_call");
+      expect(toolCall).toBeDefined();
+      expect(toolCall!.detail).toContain("pnpm test");
+    } finally {
+      if (oldCommand === undefined) delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      else process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      delete process.env.REPOHELM_TEST_PLAN_JSON;
+    }
   });
 });

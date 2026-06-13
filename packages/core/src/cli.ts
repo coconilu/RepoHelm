@@ -54,12 +54,14 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     fallbackBins: ["openclaude"],
     versionArgs: ["--version"],
     ping: { build: (prompt, model) => (model ? ["-p", prompt, "--model", model] : ["-p", prompt]) },
-    // Agentic run: auto-accept file edits so the agent can actually write into the worktree.
+    // Agentic run: stream JSON events (requires --verbose in -p mode) so RepoHelm
+    // can surface tool calls/messages on the timeline, and auto-accept file edits
+    // so the agent can actually write into the worktree.
     exec: {
-      build: (prompt, model) =>
-        model
-          ? ["-p", prompt, "--model", model, "--permission-mode", "acceptEdits"]
-          : ["-p", prompt, "--permission-mode", "acceptEdits"]
+      build: (prompt, model) => {
+        const base = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"];
+        return model ? [...base, "--model", model] : base;
+      }
     },
     providerId: "anthropic",
     aliasModels: [

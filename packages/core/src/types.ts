@@ -171,6 +171,13 @@ export interface CapabilityRecommendation {
 export interface SecurityPolicy {
   commandApprovalMode: "allowlist" | "manual";
   allowedCommands: string[];
+  /**
+   * argv-prefix templates that a model-generated worker `run_command` may run
+   * (e.g. "pnpm test", "git diff --name-only"). Stricter than `allowedCommands`
+   * (which is a bare command-name list used for user-configured validation),
+   * because workers run through a shell and a bare binary name is too broad.
+   */
+  commandTemplates: string[];
   fileScopes: string[];
   networkScopes: string[];
   secretsPolicy: "redact-env" | "deny";
