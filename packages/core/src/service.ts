@@ -74,6 +74,36 @@ function detectShellComposition(command: string): string | undefined {
   const match = command.match(/[;&|<>`$(){}\n\r\\]/);
   return match ? match[0] : undefined;
 }
+
+/**
+ * Default argv-prefix templates a worker `run_command` may run. Deliberately
+ * narrow (verification/inspection only): a trusted binary name like `pnpm` or
+ * `git` is NOT enough — the argv must match a template. Anything broader
+ * (`node -e`, `pnpm exec/dlx/run <arbitrary>`, `git push`, `git -C`) is denied
+ * and left to manual approval. See issue #12.
+ */
+const DEFAULT_COMMAND_TEMPLATES = [
+  "pnpm test",
+  "pnpm run build",
+  "pnpm run test",
+  "pnpm typecheck",
+  "pnpm lint",
+  "git status",
+  "git diff",
+  "git diff --name-only"
+];
+
+/** True if `command`'s argv starts with any template's argv (token-wise). */
+function matchesCommandTemplate(command: string, templates: string[]): boolean {
+  const tokens = command.trim().split(/\s+/);
+  return templates.some((template) => {
+    const templateTokens = template.trim().split(/\s+/).filter(Boolean);
+    if (templateTokens.length === 0 || tokens.length < templateTokens.length) {
+      return false;
+    }
+    return templateTokens.every((token, index) => token === tokens[index]);
+  });
+}
 const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 // Delay between streamed quest-spec timeline events, for a "thinking" cadence in the UI.
 const SPEC_EVENT_PACE_MS = 350;
@@ -2227,18 +2257,39 @@ export class RepoHelmService {
    */
   async authorizeCommand(command: string, subject = "worker run_command"): Promise<boolean> {
     return this.mutateState(async (state) => {
-      // A model-generated command runs through `sh -lc`, so an allowlisted first
-      // token (pnpm/git/node) is not enough: chaining/substitution/redirection
-      // could run un-allowlisted commands. Reject shell-composition metacharacters
-      // before the allowlist check so the leading token actually IS the command.
+      const policy = state.securityPolicy;
+      const templates = policy.commandTemplates ?? DEFAULT_COMMAND_TEMPLATES;
+      const trimmed = command.trim();
       const unsafe = detectShellComposition(command);
-      const permission = unsafe
-        ? { allowed: false, detail: `${subject} 命令包含 shell 组合元字符 "${unsafe}"，已拒绝自动执行。` }
-        : this.evaluateCommandPermission(state.securityPolicy, subject, command);
-      const entry = this.audit("command", permission.allowed ? "allowed" : "denied", command, permission.detail);
+      const leading = trimmed.split(/\s+/)[0] ?? trimmed;
+
+      // A model-generated command runs through `sh -lc`. An allowlisted leading
+      // token (pnpm/git/node) is NOT sufficient: (1) chaining/substitution/
+      // redirection could run un-allowlisted commands; (2) even without those, a
+      // trusted binary can do too much (node -e, pnpm exec/dlx, git push, git -C).
+      // So: reject shell composition, then require an exact argv-template match.
+      let allowed: boolean;
+      let detail: string;
+      if (!trimmed) {
+        allowed = true;
+        detail = `${subject} 命令为空，按跳过处理。`;
+      } else if (unsafe) {
+        allowed = false;
+        detail = `${subject} 命令包含 shell 组合元字符 "${unsafe}"，已拒绝自动执行。`;
+      } else if (policy.commandApprovalMode === "manual") {
+        allowed = false;
+        detail = `${subject} 需要人工审批，当前安全策略不允许自动执行。`;
+      } else if (matchesCommandTemplate(command, templates)) {
+        allowed = true;
+        detail = `${subject} 命令命中命令模板 allowlist。`;
+      } else {
+        allowed = false;
+        detail = `${subject} 命令 "${leading}" 不匹配任何命令模板，需人工审批后才能执行。`;
+      }
+      const entry = this.audit("command", allowed ? "allowed" : "denied", command, detail);
       return {
         newState: { ...state, auditLog: [entry, ...state.auditLog] },
-        result: permission.allowed
+        result: allowed
       };
     });
   }
@@ -2709,6 +2760,7 @@ export class RepoHelmService {
     return {
       commandApprovalMode: "allowlist",
       allowedCommands: ["mock", "node", "git", "pnpm"],
+      commandTemplates: [...DEFAULT_COMMAND_TEMPLATES],
       fileScopes: ["workspace", "worktree", "knowledge"],
       networkScopes: ["localhost"],
       secretsPolicy: "redact-env",

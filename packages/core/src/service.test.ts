@@ -854,4 +854,29 @@ describe("createQuest + streamQuestSpec (streaming)", () => {
     // A clean allowlisted command with arguments still passes.
     expect(await service.authorizeCommand("pnpm run build", "worker run_command")).toBe(true);
   });
+
+  it("authorizeCommand denies over-broad use of trusted binaries that no template covers", async () => {
+    const { service } = await createService();
+    await service.bootstrap();
+
+    // No shell metacharacters, leading token is a "trusted" binary, but the
+    // argv is not an allowlisted command template → must not auto-run.
+    const overBroad = [
+      "node scripts/anything.js",
+      "node -e console.log(1)",
+      "pnpm exec vitest",
+      "pnpm dlx some-package",
+      "pnpm run deploy",
+      "git push origin main",
+      "git -C /tmp/other status"
+    ];
+    for (const command of overBroad) {
+      expect(await service.authorizeCommand(command, "worker run_command"), command).toBe(false);
+    }
+
+    // The narrowly-templated verification commands still pass.
+    for (const command of ["pnpm test", "pnpm run build", "git status", "git diff --name-only"]) {
+      expect(await service.authorizeCommand(command, "worker run_command"), command).toBe(true);
+    }
+  });
 });
