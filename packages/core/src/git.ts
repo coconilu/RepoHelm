@@ -139,8 +139,7 @@ export class GitWorktreeManager {
     const output = await this.git(worktreePath, ["status", "--short", "--untracked-files=all"]);
     const entries = output
       .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
+      .filter((line) => line.trim())
       .map((line) => this.parseStatusLine(line))
       .filter((entry) => entry.path.length > 0);
 

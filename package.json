@@ -11,6 +11,7 @@
     "typecheck": "pnpm --filter @repohelm/core build && pnpm --filter @repohelm/server typecheck && pnpm --filter @repohelm/web typecheck",
     "test": "pnpm --filter @repohelm/core test",
     "test:e2e": "NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test",
+    "test:agent": "pnpm predev && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test -c playwright.agent.config.ts",
     "test:all": "pnpm typecheck && pnpm test && pnpm test:e2e"
   },
   "devDependencies": {

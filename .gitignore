@@ -6,3 +6,4 @@ dist/
 .repohelm/
 test-results/
 playwright-report/
+playwright-agent-report/

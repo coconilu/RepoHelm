@@ -50,6 +50,13 @@ describe("GitWorktreeManager read helpers", () => {
     expect(changes.files.find((f) => f.path === "a.txt")!.diff).toContain("two");
   });
 
+  it("getChangedFiles preserves the first path character from porcelain status", async () => {
+    await writeFile(join(dir, "README.md"), "updated\n");
+    await writeFile(join(dir, "src.js"), "export const ok = true;\n");
+    const changes = await mgr.getChangedFiles("project-1", dir);
+    expect(changes.map((file) => file.path).sort()).toEqual(["README.md", "src.js"]);
+  });
+
   it("listTrackedFiles returns committed files", async () => {
     const files = await mgr.listTrackedFiles(dir, "main");
     expect(files).toContain("a.txt");
