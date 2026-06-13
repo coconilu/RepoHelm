@@ -50,6 +50,26 @@ describe("RepoHelmService", () => {
     expect(persisted.workspaces[0]?.id).toBe(state.workspaces[0]?.id);
   });
 
+  it("normalizes old security command templates when bootstrapping an empty state", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-test-"));
+    const store = new SqliteStateStore(rootDir);
+    const empty = await store.read();
+    await store.write({
+      ...empty,
+      securityPolicy: {
+        ...empty.securityPolicy,
+        commandTemplates: ["pnpm test"]
+      }
+    });
+    const service = new RepoHelmService(store, rootDir);
+
+    const state = await service.bootstrap();
+
+    expect(state.workspaces).toHaveLength(1);
+    expect(state.securityPolicy.commandTemplates).toContain("pnpm test");
+    expect(state.securityPolicy.commandTemplates).toContain("pnpm test:all");
+  });
+
   it("persists state through SQLite and migrates legacy JSON state", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-legacy-test-"));
     const legacyService = new RepoHelmService(new JsonStateStore(rootDir), rootDir);

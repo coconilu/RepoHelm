@@ -86,6 +86,7 @@ const DEFAULT_COMMAND_TEMPLATES = [
   "pnpm test",
   "pnpm run build",
   "pnpm run test",
+  "pnpm test:all",
   "pnpm typecheck",
   "pnpm lint",
   "git status",
@@ -423,6 +424,7 @@ export class RepoHelmService {
       return normalized;
     }
 
+    const normalizedState = this.normalizeState(state);
     const timestamp = now();
     const workspace: Workspace = {
       id: "ws_demo",
@@ -446,7 +448,7 @@ export class RepoHelmService {
       updatedAt: timestamp
     };
     const nextState: RepoHelmState = {
-      ...state,
+      ...normalizedState,
       workspaces: [workspace],
       projects: [project],
       knowledge: [],
@@ -2609,6 +2611,20 @@ export class RepoHelmService {
   }
 
   private normalizeState(state: RepoHelmState): RepoHelmState {
+    const defaultSecurityPolicy = this.seedSecurityPolicy(now());
+    const securityPolicy: SecurityPolicy = state.securityPolicy
+      ? {
+          ...defaultSecurityPolicy,
+          ...state.securityPolicy,
+          commandTemplates: [
+            ...new Set([
+              ...defaultSecurityPolicy.commandTemplates,
+              ...(state.securityPolicy.commandTemplates ?? [])
+            ])
+          ]
+        }
+      : defaultSecurityPolicy;
+
     return {
       ...state,
       workspaces: state.workspaces.map((workspace) => ({
@@ -2633,7 +2649,7 @@ export class RepoHelmService {
         autoApprovePlan: quest.autoApprovePlan ?? false
       })),
       capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now()),
-      securityPolicy: state.securityPolicy ?? this.seedSecurityPolicy(now()),
+      securityPolicy,
       auditLog: state.auditLog ?? [],
       engine: state.engine ?? defaultEngineConfig(),
       modelCache: state.modelCache ?? {},
@@ -2756,6 +2772,16 @@ export class RepoHelmService {
     ];
   }
 
+  async recordDeniedCommand(command: string, detail: string): Promise<void> {
+    await this.mutateState(async (state) => ({
+      newState: {
+        ...state,
+        auditLog: [this.audit("command", "denied", command, detail), ...state.auditLog]
+      },
+      result: undefined
+    }));
+  }
+
   private seedSecurityPolicy(timestamp: string): SecurityPolicy {
     return {
       commandApprovalMode: "allowlist",
@@ -2769,7 +2795,7 @@ export class RepoHelmService {
     };
   }
 
-  private evaluateCommandPermission(policy: SecurityPolicy, subject: string, command: string) {
+  evaluateCommandPermission(policy: SecurityPolicy, subject: string, command: string) {
     if (!command.trim()) {
       return {
         allowed: true,

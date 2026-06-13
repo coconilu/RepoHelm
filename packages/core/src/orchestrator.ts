@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -19,6 +19,7 @@ import {
   type DelegateInput
 } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL } from "./tools/fs.js";
+import { SHELL_RUN_TOOL } from "./tools/shell.js";
 import { buildWorkerToolset } from "./tools/worker-tools.js";
 import { runStreamingCli } from "./cli-stream.js";
 import {
@@ -318,28 +319,47 @@ export class SubAgentOrchestrator {
 
       if (worktree) {
         const beforeChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
+        const validation = await this.resolveWorkerValidation(input.targetProjectId ?? worktree.projectId);
         const projectDir = basename(worktree.worktreePath);
+        const validationArtifacts = new Set<string>();
+        const validationInstruction = validation.command
+          ? `After making changes, run the configured validation command with the run_command tool: "${validation.command}". If it fails, use the stdout/stderr/exitCode tool result to fix the issue and rerun validation until it passes or the tool-loop limit is reached.`
+          : validation.deniedReason
+            ? `The configured validation command is not available inside this worker loop because the security policy denied it: ${validation.deniedReason}. Make the requested file changes without running shell validation.`
+          : "This project has no validation command configured, so use the file-system tools to make the requested changes.";
         const systemPrompt =
           `${basePrompt}\n\n` +
           `You are implementing changes inside an isolated git worktree which IS the project root: "${worktree.worktreePath}". ` +
           `Output EVERY file you create or modify as a fenced code block whose info string is the file path relative to the project root, e.g.:\n` +
           "```index.html\n<full file contents>\n```\n" +
-          `Provide complete file contents (not diffs). Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".`;
+          `Provide complete file contents (not diffs). Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".\n` +
+          validationInstruction;
 
         if (modelKit.type === "byok") {
-          // Tool-capable models can write files directly via the file-system tools
-          // and verify them via the allowlist-gated command tool.
-          const isAllowed = this.resolveCommandGate();
+          // Tool-capable models can write files and run validation inside the same feedback loop.
+          const isAllowed = this.resolveCommandGate(validation.command);
           const loop = await this.runWorkerWithFsTools(
             modelKit,
             systemPrompt,
             userContent,
             worktree.worktreePath,
             worker.name,
-            isAllowed
+            isAllowed,
+            Boolean(validation.command)
           );
           content = loop.content || "";
           loop.written.forEach((file) => writtenFiles.add(file));
+          loop.validationArtifacts.forEach((file) => validationArtifacts.add(file));
+          for (const file of validationArtifacts) {
+            if (!loop.written.has(file)) {
+              workerEvents.push({
+                type: "agent.validation_artifact",
+                title: "验证产物已忽略",
+                detail: file,
+                agent: worker.name
+              });
+            }
+          }
           workerEvents.push(...loop.events);
         } else {
           // CLI / other backends: run in the worktree and capture their answer.
@@ -362,9 +382,16 @@ export class SubAgentOrchestrator {
           await fsHandlers.handle(FS_WRITE_TOOL, { path: file.path, content: file.content });
         }
         fsHandlers.written.forEach((file) => writtenFiles.add(file));
+        for (const file of validationArtifacts) {
+          if (!writtenFiles.has(file) && await isUntrackedPath(worktree.worktreePath, file)) {
+            await rm(join(worktree.worktreePath, file), { force: true, recursive: true });
+          }
+        }
         const afterChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
         for (const file of changedPathsSince(beforeChanges, afterChanges)) {
-          writtenFiles.add(file);
+          if (!validationArtifacts.has(file) || writtenFiles.has(file)) {
+            writtenFiles.add(file);
+          }
         }
 
         if (!content) {
@@ -415,10 +442,12 @@ export class SubAgentOrchestrator {
     userContent: string,
     worktreeRoot: string,
     agentName: string,
-    isAllowed?: (command: string) => boolean | Promise<boolean>
-  ): Promise<{ content: string; written: string[]; events: BackendEvent[] }> {
-    const tools = buildWorkerToolset(worktreeRoot, { isAllowed });
+    isAllowed?: (command: string) => boolean | Promise<boolean>,
+    includeShell = false
+  ): Promise<{ content: string; written: Set<string>; validationArtifacts: Set<string>; events: BackendEvent[] }> {
+    const tools = buildWorkerToolset(worktreeRoot, { isAllowed, includeShell });
     const events: BackendEvent[] = [];
+    const validationArtifacts = new Set<string>();
     const messages: LlmMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent }
@@ -447,11 +476,22 @@ export class SubAgentOrchestrator {
           detail: truncate(call.function.arguments || "", 300),
           agent: agentName
         });
+        const commandBefore = call.function.name === SHELL_RUN_TOOL
+          ? await readWorktreeChangeSnapshot(worktreeRoot)
+          : undefined;
         const output = await tools.handle(call.function.name, args);
+        if (commandBefore) {
+          const commandAfter = await readWorktreeChangeSnapshot(worktreeRoot);
+          for (const file of changedPathsSince(commandBefore, commandAfter)) {
+            if (!tools.written.has(file)) {
+              validationArtifacts.add(file);
+            }
+          }
+        }
         messages.push({ role: "tool", tool_call_id: call.id, content: output });
       }
     }
-    return { content: finalContent, written: [...tools.written], events };
+    return { content: finalContent, written: tools.written, validationArtifacts, events };
   }
 
   /**
@@ -460,9 +500,41 @@ export class SubAgentOrchestrator {
    * log via the service, so every execution attempt is captured. Defaults to
    * deny on any error.
    */
-  private resolveCommandGate(): (command: string) => Promise<boolean> {
-    return (command: string) =>
-      this.service.authorizeCommand(command, "worker run_command").catch(() => false);
+  private resolveCommandGate(validationCommand?: string): (command: string) => Promise<boolean> {
+    const allowedValidationCommand = validationCommand?.trim() ?? "";
+    return async (command: string) => {
+      if (!allowedValidationCommand || command.trim() !== allowedValidationCommand) {
+        await this.service.recordDeniedCommand(
+          command,
+          allowedValidationCommand
+            ? `worker run_command 只能执行项目 validation command: ${allowedValidationCommand}`
+            : "worker run_command 没有可执行的项目 validation command"
+        );
+        return false;
+      }
+      return this.service.authorizeCommand(command, "worker run_command").catch(() => false);
+    };
+  }
+
+  private async resolveWorkerValidation(projectId?: string): Promise<{ command?: string; deniedReason?: string }> {
+    if (!projectId) {
+      return {};
+    }
+    const state = await this.service.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    const command = project?.validationCommand?.trim() ?? "";
+    if (!project || !command) {
+      return {};
+    }
+    const permission = this.service.evaluateCommandPermission(
+      state.securityPolicy,
+      `validation:${project.id}`,
+      command
+    );
+    if (!permission.allowed) {
+      await this.service.recordDeniedCommand(command, permission.detail);
+    }
+    return permission.allowed ? { command } : { deniedReason: permission.detail };
   }
 
   private async requireModelKit(agent: SubAgent): Promise<ModelKit> {
@@ -654,6 +726,13 @@ function changedPathsSince(before: Map<string, string>, after: Map<string, strin
     }
   }
   return [...paths].sort();
+}
+
+async function isUntrackedPath(worktreePath: string, path: string): Promise<boolean> {
+  const { stdout } = await execFileAsync("git", ["ls-files", "--others", "--exclude-standard", "--", path], {
+    cwd: worktreePath
+  });
+  return stdout.split("\n").map((line) => line.trim()).includes(path);
 }
 
 async function fileSignature(worktreePath: string, path: string): Promise<string> {

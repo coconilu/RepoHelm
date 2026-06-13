@@ -9,6 +9,7 @@ export interface WorkerToolOptions {
    *  async so the caller can record an audit entry per command. */
   isAllowed?: (command: string) => boolean | Promise<boolean>;
   commandTimeoutMs?: number;
+  includeShell?: boolean;
 }
 
 export interface WorkerToolset {
@@ -27,10 +28,13 @@ export interface WorkerToolset {
 export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}): WorkerToolset {
   const fs = buildFsToolHandlers(root);
   const edit = buildEditToolHandler(root);
-  const shell = buildShellToolHandler(root, {
-    isAllowed: options.isAllowed,
-    timeoutMs: options.commandTimeoutMs
-  });
+  const includeShell = options.includeShell ?? true;
+  const shell = includeShell
+    ? buildShellToolHandler(root, {
+        isAllowed: options.isAllowed,
+        timeoutMs: options.commandTimeoutMs
+      })
+    : undefined;
   const search = buildSearchToolHandler(root);
 
   // Union of files touched via write_file (fs) and edit_file (edit), so the
@@ -42,12 +46,16 @@ export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}
   };
 
   return {
-    specs: [...fsToolSpecs, editToolSpec, searchToolSpec, shellToolSpec],
+    specs: includeShell
+      ? [...fsToolSpecs, editToolSpec, searchToolSpec, shellToolSpec]
+      : [...fsToolSpecs, editToolSpec, searchToolSpec],
     written,
     async handle(name, args) {
       let output: string;
       if (name === SHELL_RUN_TOOL) {
-        output = await shell.handle(name, args);
+        output = shell
+          ? await shell.handle(name, args)
+          : JSON.stringify({ ok: false, error: "run_command is not available for this worker" });
       } else if (name === SEARCH_TOOL) {
         output = await search.handle(name, args);
       } else if (name === EDIT_TOOL) {

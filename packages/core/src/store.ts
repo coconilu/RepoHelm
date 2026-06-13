@@ -13,7 +13,7 @@ const emptyState = (): RepoHelmState => ({
   securityPolicy: {
     commandApprovalMode: "allowlist",
     allowedCommands: ["mock", "node", "git", "pnpm"],
-    commandTemplates: ["pnpm test", "pnpm run build", "pnpm typecheck", "pnpm lint", "git status", "git diff"],
+    commandTemplates: ["pnpm test", "pnpm run build", "pnpm run test", "pnpm test:all", "pnpm typecheck", "pnpm lint", "git status", "git diff", "git diff --name-only"],
     fileScopes: ["workspace", "worktree", "knowledge"],
     networkScopes: ["localhost"],
     secretsPolicy: "redact-env",
