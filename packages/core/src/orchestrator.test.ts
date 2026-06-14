@@ -568,6 +568,67 @@ describe("Plan-then-execute flow", () => {
     }
   });
 
+  it("ignores a stray prose fence once the worker already made a direct edit", async () => {
+    // Reviewer follow-up on PR #13: the prose fallback gate must account for direct
+    // edits (not just write_file/edit_file tool writes). A worker that edits the
+    // worktree directly AND emits an unrelated path-tagged fence must NOT have that
+    // fence materialized — the direct edit alone satisfies "the worker produced
+    // output through its tools/edits", so prose is not scraped.
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
+    const oldPlan = process.env.REPOHELM_TEST_PLAN_JSON;
+    const oldWritePath = process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+    const oldWriteWhen = process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+    const oldWriteContent = process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      // The worker directly writes src/direct-edit.ts AND prints a stray fence for
+      // a different path (stray.txt) in its final answer.
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/direct-edit.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const directEdit = true;\n";
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = [
+        "Edited the file directly. For reference here is an extra snippet:",
+        "```stray.txt",
+        "should-not-be-written",
+        "```"
+      ].join("\n");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Direct edit plus stray fence",
+        requirement: "Worker edits a file directly and emits an unrelated fence.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((file) => file.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/direct-edit.ts");
+      expect(paths).not.toContain("stray.txt");
+    } finally {
+      if (oldCommand === undefined) delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      else process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      if (oldOutput === undefined) delete process.env.REPOHELM_TEST_WORKER_OUTPUT;
+      else process.env.REPOHELM_TEST_WORKER_OUTPUT = oldOutput;
+      if (oldPlan === undefined) delete process.env.REPOHELM_TEST_PLAN_JSON;
+      else process.env.REPOHELM_TEST_PLAN_JSON = oldPlan;
+      if (oldWritePath === undefined) delete process.env.REPOHELM_TEST_WORKER_WRITE_PATH;
+      else process.env.REPOHELM_TEST_WORKER_WRITE_PATH = oldWritePath;
+      if (oldWriteWhen === undefined) delete process.env.REPOHELM_TEST_WORKER_WRITE_WHEN;
+      else process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = oldWriteWhen;
+      if (oldWriteContent === undefined) delete process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT;
+      else process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = oldWriteContent;
+    }
+  });
+
   it("runs CLI worker steps in their target project worktrees", async () => {
     const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
     const oldOutput = process.env.REPOHELM_TEST_WORKER_OUTPUT;
