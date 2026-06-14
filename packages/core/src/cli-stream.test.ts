@@ -81,6 +81,96 @@ describe("parseCliStreamLine", () => {
   });
 });
 
+describe("parseCliStreamLine (Codex exec --json)", () => {
+  it("maps a Codex agent_message item to an agent.message event", () => {
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "Creating the router config." }
+    });
+    const event = parseCliStreamLine(line, AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.message");
+    expect(event!.detail).toContain("Creating the router config.");
+  });
+
+  it("maps a Codex file_change item to an agent.file_change event listing path and kind", () => {
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_1",
+        type: "file_change",
+        status: "completed",
+        changes: [
+          { path: "/work/src/hello.txt", kind: "add" },
+          { path: "/work/src/router.ts", kind: "update" }
+        ]
+      }
+    });
+    const event = parseCliStreamLine(line, AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.file_change");
+    expect(event!.detail).toContain("hello.txt");
+    expect(event!.detail).toContain("add");
+    expect(event!.detail).toContain("router.ts");
+    expect(event!.detail).toContain("update");
+  });
+
+  it("maps a Codex command_execution item to an agent.command event with command, exit code and output", () => {
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_2",
+        type: "command_execution",
+        command: "/bin/zsh -lc 'pnpm test'",
+        aggregated_output: "2 passed\n",
+        exit_code: 0,
+        status: "completed"
+      }
+    });
+    const event = parseCliStreamLine(line, AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.command");
+    expect(event!.detail).toContain("pnpm test");
+    expect(event!.detail).toContain("2 passed");
+    expect(event!.title).toContain("0"); // exit code surfaced
+  });
+
+  it("maps a Codex mcp_tool_call item to an agent.tool_call event", () => {
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: { id: "item_3", type: "mcp_tool_call", name: "search_docs", arguments: { query: "router" } }
+    });
+    const event = parseCliStreamLine(line, AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.tool_call");
+    expect(event!.title).toContain("search_docs");
+    expect(event!.detail).toContain("router");
+  });
+
+  it("ignores Codex item.started (only completed items surface, to avoid duplicates)", () => {
+    const line = JSON.stringify({
+      type: "item.started",
+      item: { id: "item_2", type: "command_execution", command: "cat x", aggregated_output: "", exit_code: null }
+    });
+    expect(parseCliStreamLine(line, AGENT)).toBeUndefined();
+  });
+
+  it("ignores Codex thread/turn lifecycle noise", () => {
+    expect(parseCliStreamLine(JSON.stringify({ type: "thread.started", thread_id: "x" }), AGENT)).toBeUndefined();
+    expect(parseCliStreamLine(JSON.stringify({ type: "turn.started" }), AGENT)).toBeUndefined();
+    expect(
+      parseCliStreamLine(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }), AGENT)
+    ).toBeUndefined();
+  });
+
+  it("surfaces a Codex error/turn.failed as agent.output so the failure stays visible", () => {
+    const event = parseCliStreamLine(JSON.stringify({ type: "error", message: "model overloaded" }), AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.output");
+    expect(event!.detail).toContain("model overloaded");
+  });
+});
+
 /** Write a tiny node script that emits the given stdout lines, then exits with `code`. */
 async function writeFakeCli(lines: string[], code = 0): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "rh-cli-stream-"));

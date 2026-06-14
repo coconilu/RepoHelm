@@ -10,8 +10,10 @@ import {
   FolderOpen,
   GitPullRequest,
   ListChecks,
+  MessageSquare,
   Moon,
   MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   Route,
@@ -20,7 +22,9 @@ import {
   ShieldCheck,
   Sparkles,
   Sun,
+  Terminal,
   Trash2,
+  Wrench,
   X
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -968,6 +972,23 @@ const INTERNAL_EVENT_TYPES = new Set([
   "implementation.changed_files"
 ]);
 
+/** Icon per structured agent-event type, so the Quest timeline distinguishes
+ *  file edits, command/test output and tool calls at a glance. */
+function eventIcon(type: string) {
+  switch (type) {
+    case "agent.file_change":
+      return <Pencil size={15} />;
+    case "agent.command":
+      return <Terminal size={15} />;
+    case "agent.tool_call":
+      return <Wrench size={15} />;
+    case "agent.message":
+      return <MessageSquare size={15} />;
+    default:
+      return <CheckCircle2 size={15} />;
+  }
+}
+
 function QuestStage({
   agentBackendId,
   agentBackends,
@@ -1162,7 +1183,7 @@ function QuestStage({
               .map((event) => (
                 <article className="chat-message assistant compact" key={event.id}>
                   <div className="chat-avatar">
-                    <CheckCircle2 size={15} />
+                    {eventIcon(event.type)}
                   </div>
                   <div className="chat-bubble">
                     <strong>{event.title}</strong>

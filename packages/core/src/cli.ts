@@ -83,6 +83,18 @@ export const CLI_DEFINITIONS: CliDefinition[] = [
     bin: "codex",
     versionArgs: ["--version"],
     ping: { build: (prompt, model) => (model ? ["exec", "--model", model, prompt] : ["exec", prompt]) },
+    // Agentic run: `codex exec --json` streams structured JSONL items (agent
+    // messages, file_change, command_execution, mcp_tool_call) so RepoHelm can
+    // surface them on the timeline. `workspace-write` lets it edit the worktree;
+    // `--skip-git-repo-check` allows running inside a worktree that git treats
+    // as a linked checkout.
+    exec: {
+      build: (prompt, model) => {
+        const base = ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check"];
+        const withModel = model ? [...base, "--model", model] : base;
+        return [...withModel, prompt];
+      }
+    },
     providerId: "openai",
     fallbackModels: [
       DEFAULT_MODEL_OPTION,

@@ -8,7 +8,13 @@ import { spawn } from "node:child_process";
  * Quest timeline incrementally instead of as a single opaque blob.
  */
 export interface CliStreamEvent {
-  type: "agent.message" | "agent.tool_call" | "agent.completed" | "agent.output";
+  type:
+    | "agent.message"
+    | "agent.tool_call"
+    | "agent.completed"
+    | "agent.output"
+    | "agent.file_change"
+    | "agent.command";
   title: string;
   detail: string;
   agent: string;
@@ -19,6 +25,64 @@ interface AssistantContentBlock {
   text?: string;
   name?: string;
   input?: unknown;
+}
+
+/** A single item in Codex `exec --json` (`item.completed` envelope). */
+interface CodexItem {
+  id?: string;
+  type?: string;
+  text?: string;
+  command?: string;
+  aggregated_output?: string;
+  exit_code?: number | null;
+  changes?: Array<{ path?: string; kind?: string }>;
+  name?: string;
+  arguments?: unknown;
+  input?: unknown;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/**
+ * Map one Codex `item.completed` payload to a normalized event.
+ *
+ * Codex `exec --json` emits structured items: `agent_message` (assistant text),
+ * `file_change` (edited paths), `command_execution` (shell/test output) and
+ * `mcp_tool_call`. We surface diffs and command output as dedicated event types
+ * so the Quest timeline shows what the external agent actually did, not a blob.
+ */
+function parseCodexItem(item: CodexItem, agent: string): CliStreamEvent | undefined {
+  switch (item.type) {
+    case "agent_message": {
+      const text = (item.text ?? "").trim();
+      return text ? { type: "agent.message", title: "助手消息", detail: text, agent } : undefined;
+    }
+    case "reasoning":
+      // Model's private chain-of-thought — keep it off the content/timeline.
+      return undefined;
+    case "file_change": {
+      const detail = (item.changes ?? [])
+        .map((change) => `${change.kind ?? "edit"} ${change.path ?? "(unknown)"}`)
+        .join("\n");
+      return { type: "agent.file_change", title: "文件变更", detail: detail || "(no files)", agent };
+    }
+    case "command_execution": {
+      const output = truncate((item.aggregated_output ?? "").trim(), 800);
+      const exit = item.exit_code === null || item.exit_code === undefined ? "" : ` (exit ${item.exit_code})`;
+      const detail = [item.command, output].filter(Boolean).join("\n");
+      return { type: "agent.command", title: `执行命令${exit}`, detail: detail || "(no output)", agent };
+    }
+    case "mcp_tool_call": {
+      const name = item.name ?? "tool";
+      const args = item.arguments ?? item.input;
+      const detail = args === undefined ? "" : JSON.stringify(args);
+      return { type: "agent.tool_call", title: `调用工具: ${name}`, detail, agent };
+    }
+    default:
+      return { type: "agent.output", title: "输出", detail: JSON.stringify(item), agent };
+  }
 }
 
 /**
@@ -47,10 +111,40 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
     return { type: "agent.output", title: "输出", detail: trimmed, agent };
   }
 
-  const obj = parsed as { type?: string; result?: unknown; message?: { content?: AssistantContentBlock[] } };
+  const obj = parsed as {
+    type?: string;
+    result?: unknown;
+    message?: { content?: AssistantContentBlock[] };
+    item?: CodexItem;
+    error?: unknown;
+  };
 
   if (obj.type === "system") {
     return undefined;
+  }
+
+  // Codex `exec --json` lifecycle envelopes. We only surface `item.completed`
+  // (each action emits both `item.started` and `item.completed`; emitting only
+  // the latter avoids duplicate timeline entries), and treat thread/turn
+  // bookkeeping as noise.
+  if (obj.type === "thread.started" || obj.type === "turn.started" || obj.type === "turn.completed") {
+    return undefined;
+  }
+  if (obj.type === "item.started" || obj.type === "item.updated") {
+    return undefined;
+  }
+  if (obj.type === "item.completed" && obj.item && typeof obj.item === "object") {
+    return parseCodexItem(obj.item, agent);
+  }
+  if (obj.type === "error" || obj.type === "turn.failed") {
+    const detail =
+      (obj as { message?: unknown }).message ?? obj.error ?? obj.result ?? "(unknown error)";
+    return {
+      type: "agent.output",
+      title: "错误",
+      detail: typeof detail === "string" ? detail : JSON.stringify(detail),
+      agent
+    };
   }
 
   if (obj.type === "result") {
