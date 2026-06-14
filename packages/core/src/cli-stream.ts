@@ -41,8 +41,18 @@ interface CodexItem {
   input?: unknown;
 }
 
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max)}…` : value;
+/**
+ * Truncate keeping BOTH the head and the tail. Command/test failures put the
+ * decisive error at the end, and the orchestrator feeds recent event details to
+ * the lead's recovery decision — so dropping the tail would hide the real cause.
+ * The tail is weighted heavier than the head for that reason.
+ */
+function truncateEnds(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const headLen = Math.floor(max * 0.3);
+  const tailLen = max - headLen;
+  const omitted = value.length - headLen - tailLen;
+  return `${value.slice(0, headLen)}\n…(省略 ${omitted} 字符)…\n${value.slice(value.length - tailLen)}`;
 }
 
 /**
@@ -69,7 +79,7 @@ function parseCodexItem(item: CodexItem, agent: string): CliStreamEvent | undefi
       return { type: "agent.file_change", title: "文件变更", detail: detail || "(no files)", agent };
     }
     case "command_execution": {
-      const output = truncate((item.aggregated_output ?? "").trim(), 800);
+      const output = truncateEnds((item.aggregated_output ?? "").trim(), 800);
       const exit = item.exit_code === null || item.exit_code === undefined ? "" : ` (exit ${item.exit_code})`;
       const detail = [item.command, output].filter(Boolean).join("\n");
       return { type: "agent.command", title: `执行命令${exit}`, detail: detail || "(no output)", agent };

@@ -135,6 +135,35 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     expect(event!.title).toContain("0"); // exit code surfaced
   });
 
+  it("keeps the TAIL of a long command output so trailing failure messages survive truncation", () => {
+    // Test/build failures put the decisive error at the END of the output, and the
+    // orchestrator feeds recent event `detail` to the lead's recovery decision —
+    // so a head-only truncation would hide the real failure cause.
+    const noise = "x".repeat(4000);
+    const line = JSON.stringify({
+      type: "item.completed",
+      item: {
+        id: "item_9",
+        type: "command_execution",
+        command: "pnpm test",
+        aggregated_output: `${noise}\nFAIL src/foo.test.ts\nAssertionError: expected 1 to be 2`,
+        exit_code: 1,
+        status: "completed"
+      }
+    });
+    const event = parseCliStreamLine(line, AGENT);
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.command");
+    // The trailing failure must be present.
+    expect(event!.detail).toContain("AssertionError: expected 1 to be 2");
+    expect(event!.detail).toContain("FAIL src/foo.test.ts");
+    // The command itself stays visible.
+    expect(event!.detail).toContain("pnpm test");
+    // Truncation actually happened (an elision marker), so we did not dump 4KB.
+    expect(event!.detail).toContain("省略");
+    expect(event!.detail.length).toBeLessThan(1500);
+  });
+
   it("maps a Codex mcp_tool_call item to an agent.tool_call event", () => {
     const line = JSON.stringify({
       type: "item.completed",
