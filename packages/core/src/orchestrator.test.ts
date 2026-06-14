@@ -1538,3 +1538,184 @@ describe("worker run/observe/fix feedback loop", () => {
     }
   });
 });
+
+// Issue #3: a tool-capable (BYOK) worker should produce file changes through the
+// write_file/edit_file tools, NOT by emitting fenced code blocks in prose. The
+// prose-parsing safety net (extractFilesFromContent) is downgraded to a TRUE
+// fallback: it only runs when the worker wrote nothing through tools.
+describe("weakened prose fallback for tool-capable workers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function gitRepoService() {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-prose-fallback-"));
+    await execFileAsync("git", ["init", "-b", "main"], { cwd: rootDir });
+    await writeFile(join(rootDir, "README.md"), "# Fixture\n", "utf8");
+    await execFileAsync("git", ["add", "README.md"], { cwd: rootDir });
+    await execFileAsync(
+      "git",
+      ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "init"],
+      { cwd: rootDir }
+    );
+    return { rootDir, service: new RepoHelmService(new SqliteStateStore(rootDir), rootDir) };
+  }
+
+  async function plannerCli(rootDir: string): Promise<string> {
+    const commandPath = join(rootDir, "planner-cli.mjs");
+    await writeFile(
+      commandPath,
+      [
+        "#!/usr/bin/env node",
+        "const prompt = process.argv.slice(2).join('\\n');",
+        "if (process.env.REPOHELM_TEST_PLAN_JSON && prompt.includes('Produce an execution plan')) {",
+        "  console.log(process.env.REPOHELM_TEST_PLAN_JSON); process.exit(0);",
+        "}",
+        "console.log('planner fallback');"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(commandPath, 0o755);
+    return commandPath;
+  }
+
+  function chatResponse(message: Record<string, unknown>, finishReason: string): Response {
+    return new Response(JSON.stringify({ choices: [{ finish_reason: finishReason, message }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  async function runByokWorker(turns: Array<{ message: Record<string, unknown>; finish: string }>) {
+    const { rootDir, service } = await gitRepoService();
+    const commandPath = await plannerCli(rootDir);
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+
+    let chatCalls = 0;
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const target = String(url);
+      if (target.includes("/chat/completions")) {
+        const turn = turns[chatCalls] ?? { finish: "stop", message: { content: "done" } };
+        chatCalls += 1;
+        return chatResponse(turn.message, turn.finish);
+      }
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await service.bootstrap();
+      await service.createModelKit({
+        id: "planner-cli-kit",
+        name: "Planner CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createModelKit({
+        id: "worker-byok-kit",
+        name: "Worker BYOK",
+        type: "byok",
+        providerId: "openai",
+        model: "gpt-test",
+        config: { provider: "openai", baseUrl: "https://api.example.com/v1", model: "gpt-test", apiKey: "sk-test" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "planner-cli-kit",
+        mode: "entry",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Writes code",
+        capabilities: ["coding"],
+        modelKitId: "worker-byok-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Prose fallback plan",
+        steps: [
+          {
+            id: "step_1",
+            description: "Produce a file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "a file",
+            targetProjectId: project.id,
+            contract: { doneCriteria: "file written" }
+          }
+        ]
+      });
+
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Prose fallback",
+        requirement: "Worker produces a file.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      return await service.approvePlan(quest.id);
+    } finally {
+      if (oldCommand === undefined) delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      else process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      delete process.env.REPOHELM_TEST_PLAN_JSON;
+    }
+  }
+
+  it("ignores stray code fences in prose once the worker has written via tools", async () => {
+    const executed = await runByokWorker([
+      // Turn 1: write a real file through the tool.
+      {
+        finish: "tool_calls",
+        message: {
+          content: "",
+          tool_calls: [
+            { id: "c1", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "real.txt", content: "real\n" }) } }
+          ]
+        }
+      },
+      // Turn 2: final prose carries a stray fence that must NOT be materialized.
+      {
+        finish: "stop",
+        message: { content: "Done. For reference:\n```bonus.txt\nshould-not-be-written\n```\n" }
+      }
+    ]);
+
+    const paths = executed.changedFiles.map((file) => file.path);
+    expect(paths).toContain("real.txt");
+    expect(paths).not.toContain("bonus.txt");
+    expect(executed.status).toBe("ready");
+  });
+
+  it("still materializes a code fence as a true fallback when no tool wrote files", async () => {
+    const executed = await runByokWorker([
+      // Only turn: no tool calls, just a fenced file in prose. The fallback applies.
+      {
+        finish: "stop",
+        message: { content: "Here is the file:\n```fallback.txt\nfallback-content\n```\n" }
+      }
+    ]);
+
+    const paths = executed.changedFiles.map((file) => file.path);
+    expect(paths).toContain("fallback.txt");
+    expect(executed.status).toBe("ready");
+  });
+});

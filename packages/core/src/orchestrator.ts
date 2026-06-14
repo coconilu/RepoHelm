@@ -319,20 +319,26 @@ export class SubAgentOrchestrator {
       if (worktree) {
         const beforeChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
         const projectDir = basename(worktree.worktreePath);
-        const systemPrompt =
+        const worktreeIntro =
           `${basePrompt}\n\n` +
           `You are implementing changes inside an isolated git worktree which IS the project root: "${worktree.worktreePath}". ` +
-          `Output EVERY file you create or modify as a fenced code block whose info string is the file path relative to the project root, e.g.:\n` +
-          "```index.html\n<full file contents>\n```\n" +
-          `Provide complete file contents (not diffs). Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".`;
+          `Keep paths relative to the project root — use "index.html", not "${projectDir}/index.html".`;
 
         if (modelKit.type === "byok") {
-          // Tool-capable models can write files directly via the file-system tools
-          // and verify them via the allowlist-gated command tool.
+          // Tool-capable models MUST make file changes by calling the file-system
+          // tools (write_file / edit_file) and verify via the allowlist-gated
+          // run_command tool. Telling them to emit code blocks instead — and then
+          // scraping those blocks out of prose — is the brittle path issue #3
+          // removes. Code blocks in prose are NOT saved for these workers.
+          const toolPrompt =
+            `${worktreeIntro}\n\n` +
+            `Make EVERY file change by calling the write_file tool (full file contents, not diffs) or edit_file tool (surgical edits). ` +
+            `Do NOT paste file contents as fenced code blocks in your reply — prose code blocks are not saved. ` +
+            `Use run_command to run tests/build/lint and react to failures before finishing.`;
           const isAllowed = this.resolveCommandGate();
           const loop = await this.runWorkerWithFsTools(
             modelKit,
-            systemPrompt,
+            toolPrompt,
             userContent,
             worktree.worktreePath,
             worker.name,
@@ -342,10 +348,17 @@ export class SubAgentOrchestrator {
           loop.written.forEach((file) => writtenFiles.add(file));
           workerEvents.push(...loop.events);
         } else {
-          // CLI / other backends: run in the worktree and capture their answer.
+          // CLI / print-mode backends cannot call our tools, so they signal file
+          // changes by emitting path-tagged fenced code blocks (materialized below)
+          // or by editing the worktree directly (caught by the snapshot diff).
+          const codeBlockPrompt =
+            `${worktreeIntro}\n\n` +
+            `Output EVERY file you create or modify as a fenced code block whose info string is the file path relative to the project root, e.g.:\n` +
+            "```index.html\n<full file contents>\n```\n" +
+            `Provide complete file contents (not diffs).`;
           const backend = await this.createBackendFromModelKit(modelKit);
           const result = await backend.run({
-            systemPrompt,
+            systemPrompt: codeBlockPrompt,
             messages: [{ role: "user", content: userContent }],
             tools: [],
             worktrees: [worktree],
@@ -355,13 +368,17 @@ export class SubAgentOrchestrator {
           workerEvents.push(...result.events);
         }
 
-        // Backend-agnostic safety net: materialize any files described in the answer
-        // into the worktree (covers print-mode CLIs and models that emit code blocks).
-        const fsHandlers = buildFsToolHandlers(worktree.worktreePath);
-        for (const file of extractFilesFromContent(content, projectDir)) {
-          await fsHandlers.handle(FS_WRITE_TOOL, { path: file.path, content: file.content });
+        // True fallback (issue #3): only scrape files out of the worker's prose when
+        // it produced NOTHING through tools/direct edits. Tool-capable workers write
+        // via write_file/edit_file, so their prose is not parsed — that prose-path
+        // guessing was brittle and masked "the model didn't use its tools".
+        if (writtenFiles.size === 0) {
+          const fsHandlers = buildFsToolHandlers(worktree.worktreePath);
+          for (const file of extractFilesFromContent(content, projectDir)) {
+            await fsHandlers.handle(FS_WRITE_TOOL, { path: file.path, content: file.content });
+          }
+          fsHandlers.written.forEach((file) => writtenFiles.add(file));
         }
-        fsHandlers.written.forEach((file) => writtenFiles.add(file));
         const afterChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
         for (const file of changedPathsSince(beforeChanges, afterChanges)) {
           writtenFiles.add(file);
