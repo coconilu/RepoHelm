@@ -1,5 +1,11 @@
 # 模型接入升级方案(本机 CLI + BYOK)
 
+> **状态:已实现。** 本文档是「执行模式」设置面板(本机 CLI / BYOK 两个子模式)的原始设计方案,
+> 落点见 `packages/core/src/cli.ts`(`LocalCliRegistry`)、`service.ts`(`listLocalClis`/`getEngine`/`updateEngine`)、
+> server `/api/clis` + `/api/engine`、web 设置里的执行模式面板。
+> 本方案聚焦**引擎配置与持久化**;模型下拉「从真实来源拉取」由姊妹文档
+> [`../MODEL_FETCHING.md`](../MODEL_FETCHING.md) 承接(BYOK REST `/models` 实时拉取 + CLI provider 映射)。
+
 参考 open-design 的「执行模式」设置面板,把 RepoHelm 设置里的「大模型接入」tab 升级为
 **本机 CLI / BYOK** 两个子模式,支持:扫描本机 CLI、显示版本、按 CLI 选择模型、连接测试、
 重新扫描;以及 BYOK(自带 API Key)的 provider 配置与持久化。

@@ -3,6 +3,9 @@
 > 目标:把设置里「执行模式」的模型下拉,从当前硬编码的内置回退值,升级为**从真实来源拉取**。
 > 覆盖两条链路:**BYOK**(直连提供商 REST `/models`)与**本机 CLI**(命令/配置文件)。
 >
+> 前置背景:「执行模式」面板(本机 CLI / BYOK 两个子模式)的引擎配置与持久化设计见姊妹文档
+> [`docs/model-config-plan.md`](docs/model-config-plan.md);本文档承接其遗留的「模型写死」问题。
+>
 > **状态:已实现(2026-06-07)。** 落点见 `packages/core/src/providers.ts`(ProviderRegistry +
 > 6 类 provider parse + 缓存)、`service.ts` 的 `listProviders/listProviderModels`(SQLite 缓存 TTL 6h)、
 > server `GET /api/providers` + `POST /api/providers/:id/models`、web BYOK 面板的实时模型下拉 + 刷新。
