@@ -486,6 +486,11 @@ export class SubAgentOrchestrator {
   ): Promise<void> {
     for (const path of changedPaths) {
       const abs = join(worktreePath, path);
+      // Unstage first: the change snapshot counts `git diff --cached`, so an
+      // attempt that `git add`ed a file leaves a staged residue (`AD <path>`)
+      // that a worktree-only restore can't clear. Reset the index entry to HEAD
+      // (drops it for a new file) before touching the working tree.
+      await execFileAsync("git", ["reset", "-q", "HEAD", "--", path], { cwd: worktreePath }).catch(() => {});
       if (baseline.has(path)) {
         const content = baseline.get(path)!;
         if (content === null) {

@@ -294,6 +294,7 @@ describe("Plan-then-execute flow", () => {
       [
         "#!/usr/bin/env node",
         "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { execFileSync } from 'node:child_process';",
         "import { dirname, join } from 'node:path';",
         "const prompt = process.argv.slice(2).join('\\n');",
         "if (process.env.REPOHELM_TEST_PLAN_JSON && prompt.includes('Produce an execution plan')) {",
@@ -318,6 +319,13 @@ describe("Plan-then-execute flow", () => {
         "  const abs = join(process.cwd(), writePath);",
         "  mkdirSync(dirname(abs), { recursive: true });",
         "  writeFileSync(abs, process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT || 'written = true\\n');",
+        "}",
+        // Optionally `git add` the writes, to simulate a worker that stages its
+        // changes before failing (so the residue lives in the index, not just the
+        // working tree).
+        "const gitAddWhen = process.env.REPOHELM_TEST_WORKER_GIT_ADD_WHEN;",
+        "if (gitAddWhen && prompt.includes(gitAddWhen)) {",
+        "  try { execFileSync('git', ['add', '-A'], { cwd: process.cwd() }); } catch {}",
         "}",
         // Exit non-zero AFTER any writes, to simulate a worker that dirties the
         // worktree and then fails (CLI backend treats this as an execution error).
@@ -1222,7 +1230,8 @@ describe("Plan-then-execute flow", () => {
     "REPOHELM_TEST_WORKER_WRITE_WHEN",
     "REPOHELM_TEST_WORKER_WRITE_CONTENT",
     "REPOHELM_TEST_WORKER_WRITES_JSON",
-    "REPOHELM_TEST_WORKER_FAIL_WHEN"
+    "REPOHELM_TEST_WORKER_FAIL_WHEN",
+    "REPOHELM_TEST_WORKER_GIT_ADD_WHEN"
   ];
   function snapshotEnv(keys: string[]): () => void {
     const saved: Record<string, string | undefined> = {};
@@ -1453,6 +1462,66 @@ describe("Plan-then-execute flow", () => {
         workspaceId: workspace.id,
         title: "Residue rollback",
         requirement: "Step 1: a first attempt writes residue then fails; a later attempt must rescue cleanly.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((f) => f.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/good.ts");
+      expect(paths).not.toContain("src/bad.ts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rolls back a failed attempt's residue even when it was git-added (staged)", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Staged residue must not be delivered",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder writes bad.ts, `git add`s it, then exits non-zero. The staged residue
+      // (index entry `A bad.ts`) must be unstaged AND removed during rollback.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Coder", path: "src/bad.ts", content: "export const bad = true;\n" },
+        { contains: "Reviewer", path: "src/good.ts", content: "export const good = true;\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_GIT_ADD_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_FAIL_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "done";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Staged residue rollback",
+        requirement: "Step 1: a first attempt stages residue then fails; a later attempt must rescue cleanly.",
         affectedProjectIds: [project.id]
       });
 
