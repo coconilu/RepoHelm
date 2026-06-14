@@ -77,6 +77,7 @@ For tests/e2e: `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns ca
 - TypeScript: ES2022 target, ESNext modules, Bundler resolution, strict. ESM throughout — **import local modules with the `.js` extension** (`./service.js`), matching existing code.
 - Commit style: imperative, concise, no scope prefix (`Add feature X`, `Fix bug Y`).
 - Tests are colocated (`*.test.ts`) and run with vitest (core/server) or Playwright (`e2e/`).
+- **Docs anti-drift:** when a change alters commands, monorepo structure, the engine/model config, the knowledge model, or the agent execution flow, update the docs in the same PR. Commands/structure → both `CLAUDE.md` and `AGENTS.md`; new/changed capability → `MILESTONES.md` (+ `README.md` capability list); architecture direction → `docs/architecture.md`; keep `docs/README.md` (docs index) current when adding/moving/removing a doc.
 
 ### Sub-agent model selection
 When dispatching sub-agents (via `Agent` tool), choose model by task type:
