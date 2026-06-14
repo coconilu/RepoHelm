@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { RepoHelmService } from "./service.js";
 import {
@@ -294,59 +294,74 @@ export class SubAgentOrchestrator {
     while (true) {
       attempt++;
       const agent = ctx.agentPool.find((a) => a.id === effectiveStep.agentId);
+      const agentLabel = agent?.name ?? effectiveStep.agentName;
+
+      // Snapshot the worktree BEFORE this attempt so we can both detect the
+      // attempt's real disk changes (even when a CLI errors out before our own
+      // accounting runs) and roll them back if the attempt fails and recovery
+      // continues. A missing agent runs no worker, so there is nothing to snapshot.
+      const worktree = agent
+        ? this.resolveWorktreeForStep(ctx.quest, effectiveStep.targetProjectId || ctx.quest.affectedProjectIds[0])
+        : undefined;
+      const baselineSig = worktree?.worktreePath
+        ? await readWorktreeChangeSnapshot(worktree.worktreePath)
+        : undefined;
+      const baselineContent = worktree?.worktreePath && baselineSig
+        ? await this.captureWorktreeContents(worktree.worktreePath, baselineSig)
+        : undefined;
+
+      let result: { content: string; error?: string; writtenFiles?: string[]; events?: BackendEvent[] };
+      let stepError: string | undefined;
       if (!agent) {
-        // Structural failure on the initial assignment (reassign always targets a
-        // validated in-pool agent), so `recovery` is empty here — keep the legacy
-        // bare summary, not an "error:"-prefixed worker failure.
-        return {
-          ok: false,
-          aborted: false,
-          content: "",
-          agentId: effectiveStep.agentId,
-          agentName: effectiveStep.agentName,
-          summary: `agent ${effectiveStep.agentId} not found in pool`,
-          events
-        };
+        // P2: a missing agent (stale/hallucinated plan id) is no longer a dead end
+        // — it flows through the same recovery decision so the lead can reassign to
+        // a valid worker, degrading to skip only when none fits.
+        result = { content: "", writtenFiles: [] };
+        stepError = `agent ${effectiveStep.agentId} not found in pool`;
+      } else {
+        result = await this.invokeWorkerAgent(agent, {
+          step: effectiveStep,
+          dependencies: ctx.dependencies,
+          quest: ctx.quest,
+          targetProjectId: effectiveStep.targetProjectId || ctx.quest.affectedProjectIds[0]
+        });
+        if (result.events) events.push(...result.events);
+        const material = !result.error
+          ? validateMaterialOutput(effectiveStep, result.writtenFiles ?? [])
+          : { ok: false, required: false };
+        stepError = result.error || (!material.ok ? material.reason : undefined);
       }
-
-      const targetProjectId = effectiveStep.targetProjectId || ctx.quest.affectedProjectIds[0];
-      const result = await this.invokeWorkerAgent(agent, {
-        step: effectiveStep,
-        dependencies: ctx.dependencies,
-        quest: ctx.quest,
-        targetProjectId
-      });
-      if (result.events) events.push(...result.events);
-
-      const writtenFiles = result.writtenFiles ?? [];
-      const material = !result.error
-        ? validateMaterialOutput(effectiveStep, writtenFiles)
-        : { ok: false, required: false };
-      const stepError = result.error || (!material.ok ? material.reason : undefined);
 
       if (!stepError) {
         return {
           ok: true,
           aborted: false,
           content: result.content,
-          agentId: agent.id,
-          agentName: agent.name,
-          summary: this.recoverySummary(true, result.content, undefined, writtenFiles, recovery),
+          agentId: agent!.id,
+          agentName: agent!.name,
+          summary: this.recoverySummary(true, result.content, undefined, result.writtenFiles ?? [], recovery),
           events
         };
       }
 
-      // Failure. Enforce the deterministic cap BEFORE consulting the lead, so the
-      // lead can never drive an unbounded retry loop.
+      // The attempt's true disk footprint (covers files a CLI wrote before exiting
+      // non-zero, which our normal writtenFiles accounting misses).
+      const attemptChanged = worktree?.worktreePath && baselineSig
+        ? changedPathsSince(baselineSig, await readWorktreeChangeSnapshot(worktree.worktreePath))
+        : result.writtenFiles ?? [];
+
+      // Enforce the deterministic cap BEFORE consulting the lead, so the lead can
+      // never drive an unbounded retry loop. Residue on a terminally-failed step is
+      // left in place: the quest is blocked (hasFailures), so it is never delivered.
       if (attempt >= MAX_STEP_ATTEMPTS) {
-        recovery.push(`attempt ${attempt} (${agent.name}) failed (max attempts reached): ${truncate(stepError, 160)}`);
+        recovery.push(`attempt ${attempt} (${agentLabel}) failed (max attempts reached): ${truncate(stepError, 160)}`);
         return {
           ok: false,
           aborted: false,
           content: result.content,
-          agentId: agent.id,
-          agentName: agent.name,
-          summary: this.recoverySummary(false, result.content, stepError, writtenFiles, recovery),
+          agentId: agent?.id ?? effectiveStep.agentId,
+          agentName: agentLabel,
+          summary: this.recoverySummary(false, result.content, stepError, attemptChanged, recovery),
           events
         };
       }
@@ -354,10 +369,10 @@ export class SubAgentOrchestrator {
       const decision = await this.decideRecovery({
         quest: ctx.quest,
         step: effectiveStep,
-        agentName: agent.name,
+        agentName: agentLabel,
         error: stepError,
         workerOutput: result.content,
-        writtenFiles,
+        writtenFiles: attemptChanged,
         attempt,
         agentPool: ctx.agentPool,
         entryAgent: ctx.entryAgent
@@ -365,33 +380,41 @@ export class SubAgentOrchestrator {
       const reasonNote = decision.reason ? `: ${decision.reason}` : "";
 
       if (decision.action === "skip") {
-        recovery.push(`attempt ${attempt} (${agent.name}) failed; lead chose skip${reasonNote}`);
+        recovery.push(`attempt ${attempt} (${agentLabel}) failed; lead chose skip${reasonNote}`);
         return {
           ok: false,
           aborted: false,
           content: result.content,
-          agentId: agent.id,
-          agentName: agent.name,
-          summary: this.recoverySummary(false, result.content, stepError, writtenFiles, recovery),
+          agentId: agent?.id ?? effectiveStep.agentId,
+          agentName: agentLabel,
+          summary: this.recoverySummary(false, result.content, stepError, attemptChanged, recovery),
           events
         };
       }
       if (decision.action === "abort") {
-        recovery.push(`attempt ${attempt} (${agent.name}) failed; lead aborted the plan${reasonNote}`);
+        recovery.push(`attempt ${attempt} (${agentLabel}) failed; lead aborted the plan${reasonNote}`);
         return {
           ok: false,
           aborted: true,
           content: result.content,
-          agentId: agent.id,
-          agentName: agent.name,
-          summary: this.recoverySummary(false, result.content, stepError, writtenFiles, recovery),
+          agentId: agent?.id ?? effectiveStep.agentId,
+          agentName: agentLabel,
+          summary: this.recoverySummary(false, result.content, stepError, attemptChanged, recovery),
           events
         };
       }
+
+      // P1: recovery continues (retry / reassign / revise). Discard this failed
+      // attempt's worktree changes first, so a later successful attempt cannot
+      // smuggle the failed residue into delivery.
+      if (worktree?.worktreePath && attemptChanged.length > 0) {
+        await this.rollbackFailedAttempt(worktree.worktreePath, attemptChanged, baselineContent ?? new Map());
+      }
+
       if (decision.action === "reassign" && decision.reassignTo) {
         const target = ctx.agentPool.find((a) => a.id === decision.reassignTo);
         if (target) {
-          recovery.push(`attempt ${attempt} (${agent.name}) failed; lead reassigned to ${target.name}`);
+          recovery.push(`attempt ${attempt} (${agentLabel}) failed; lead reassigned to ${target.name}`);
           effectiveStep = {
             ...effectiveStep,
             agentId: target.id,
@@ -405,7 +428,7 @@ export class SubAgentOrchestrator {
       }
       if (decision.action === "revise") {
         const revised = decision.revisedDescription || effectiveStep.description;
-        recovery.push(`attempt ${attempt} (${agent.name}) failed; lead revised the task`);
+        recovery.push(`attempt ${attempt} (${agentLabel}) failed; lead revised the task`);
         effectiveStep = {
           ...effectiveStep,
           description: decision.feedback ? this.appendLeadFeedback(revised, decision.feedback) : revised
@@ -414,12 +437,69 @@ export class SubAgentOrchestrator {
       }
 
       // Default / "retry": re-run the same step, optionally with appended guidance.
-      recovery.push(`attempt ${attempt} (${agent.name}) failed; lead chose retry${reasonNote}`);
+      recovery.push(`attempt ${attempt} (${agentLabel}) failed; lead chose retry${reasonNote}`);
       if (decision.feedback) {
         effectiveStep = {
           ...effectiveStep,
           description: this.appendLeadFeedback(effectiveStep.description, decision.feedback)
         };
+      }
+    }
+  }
+
+  /** Resolve the created worktree a step should run in (target project, else any). */
+  private resolveWorktreeForStep(quest: Quest, targetProjectId: string | undefined): WorktreeState | undefined {
+    return targetProjectId
+      ? quest.worktrees.find(
+          (item) => item.projectId === targetProjectId && item.status === "created" && item.worktreePath
+        )
+      : quest.worktrees.find((item) => item.status === "created" && item.worktreePath);
+  }
+
+  /** Capture the current content (or null when absent) of a set of worktree paths. */
+  private async captureWorktreeContents(
+    worktreePath: string,
+    sig: Map<string, string>
+  ): Promise<Map<string, Buffer | null>> {
+    const out = new Map<string, Buffer | null>();
+    for (const path of sig.keys()) {
+      try {
+        out.set(path, await readFile(join(worktreePath, path)));
+      } catch {
+        out.set(path, null);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Discard a failed attempt's file changes. `baseline` carries the pre-attempt
+   * content of paths that were ALREADY modified before this attempt, so we restore
+   * (not destroy) an upstream step's uncommitted work to the same file. Paths
+   * absent from the baseline were clean (== HEAD) or newly created, so we restore
+   * them from HEAD or, if untracked, delete them.
+   */
+  private async rollbackFailedAttempt(
+    worktreePath: string,
+    changedPaths: string[],
+    baseline: Map<string, Buffer | null>
+  ): Promise<void> {
+    for (const path of changedPaths) {
+      const abs = join(worktreePath, path);
+      if (baseline.has(path)) {
+        const content = baseline.get(path)!;
+        if (content === null) {
+          await rm(abs, { force: true });
+        } else {
+          await mkdir(dirname(abs), { recursive: true });
+          await writeFile(abs, content);
+        }
+        continue;
+      }
+      try {
+        await execFileAsync("git", ["checkout", "HEAD", "--", path], { cwd: worktreePath });
+      } catch {
+        await rm(abs, { force: true });
       }
     }
   }
@@ -522,11 +602,7 @@ export class SubAgentOrchestrator {
       // Find the worktree for the target project, or fall back only when the
       // plan did not specify a target. A stale target must not silently run in
       // another repo's worktree.
-      const worktree = input.targetProjectId
-        ? input.quest.worktrees.find(
-            (item) => item.projectId === input.targetProjectId && item.status === "created" && item.worktreePath
-          )
-        : input.quest.worktrees.find((item) => item.status === "created" && item.worktreePath);
+      const worktree = this.resolveWorktreeForStep(input.quest, input.targetProjectId);
 
       if (input.targetProjectId && !worktree) {
         return {

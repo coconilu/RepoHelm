@@ -319,6 +319,13 @@ describe("Plan-then-execute flow", () => {
         "  mkdirSync(dirname(abs), { recursive: true });",
         "  writeFileSync(abs, process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT || 'written = true\\n');",
         "}",
+        // Exit non-zero AFTER any writes, to simulate a worker that dirties the
+        // worktree and then fails (CLI backend treats this as an execution error).
+        "const failWhen = process.env.REPOHELM_TEST_WORKER_FAIL_WHEN;",
+        "if (failWhen && prompt.includes(failWhen)) {",
+        "  console.error('simulated worker failure');",
+        "  process.exit(1);",
+        "}",
         "console.log(process.env.REPOHELM_TEST_WORKER_OUTPUT || 'Worker inspected the project but wrote nothing.');"
       ].join("\n"),
       "utf8"
@@ -1059,7 +1066,11 @@ describe("Plan-then-execute flow", () => {
 
       expect(executed.status).toBe("blocked");
       expect(executed.changedFiles).toHaveLength(0);
-      expect(executed.agentSummary).toContain("1. Missing Agent (fail): agent missing-agent not found in pool");
+      // P2: missing agent now flows through the lead decision; with no scripted
+      // decision the lead degrades to skip, so the step still fails and downstream
+      // is skipped — same end state, recovery trail folded into the summary.
+      expect(executed.agentSummary).toContain("1. Missing Agent (fail)");
+      expect(executed.agentSummary).toContain("agent missing-agent not found in pool");
       expect(executed.agentSummary).toContain("2. Coder (fail): skipped: dependency failed (step_1)");
     } finally {
       if (oldCommand === undefined) {
@@ -1209,7 +1220,9 @@ describe("Plan-then-execute flow", () => {
     "REPOHELM_TEST_LEAD_DECISION_JSON",
     "REPOHELM_TEST_WORKER_WRITE_PATH",
     "REPOHELM_TEST_WORKER_WRITE_WHEN",
-    "REPOHELM_TEST_WORKER_WRITE_CONTENT"
+    "REPOHELM_TEST_WORKER_WRITE_CONTENT",
+    "REPOHELM_TEST_WORKER_WRITES_JSON",
+    "REPOHELM_TEST_WORKER_FAIL_WHEN"
   ];
   function snapshotEnv(keys: string[]): () => void {
     const saved: Record<string, string | undefined> = {};
@@ -1276,7 +1289,7 @@ describe("Plan-then-execute flow", () => {
       const quest = await service.createQuest({
         workspaceId: workspace.id,
         title: "Reassign feature step",
-        requirement: "Coder fails, lead reassigns to reviewer.",
+        requirement: "Step 1: run the implementation; the first worker fails so the lead reassigns.",
         affectedProjectIds: [project.id]
       });
 
@@ -1332,7 +1345,7 @@ describe("Plan-then-execute flow", () => {
       const quest = await service.createQuest({
         workspaceId: workspace.id,
         title: "Revise feature step",
-        requirement: "Coder fails, lead revises the task and retries.",
+        requirement: "Step 1: run the implementation; the first attempt fails so the lead revises and retries.",
         affectedProjectIds: [project.id]
       });
 
@@ -1380,7 +1393,7 @@ describe("Plan-then-execute flow", () => {
       const quest = await service.createQuest({
         workspaceId: workspace.id,
         title: "Retry cap guardrail",
-        requirement: "Lead keeps retrying; the deterministic cap must stop it.",
+        requirement: "Step 1: run the implementation; the worker keeps failing and the lead keeps retrying.",
         affectedProjectIds: [project.id]
       });
 
@@ -1391,6 +1404,118 @@ describe("Plan-then-execute flow", () => {
       expect(executed.status).toBe("blocked");
       expect(executed.changedFiles).toHaveLength(0);
       expect(executed.agentSummary).toContain("max attempts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rolls back a failed attempt's residue so it is not delivered by a later success", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Residue must not be delivered",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder writes bad.ts then exits non-zero (CLI error). Reviewer writes good.ts
+      // and succeeds. The failed coder residue (bad.ts) must be rolled back.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Coder", path: "src/bad.ts", content: "export const bad = true;\n" },
+        { contains: "Reviewer", path: "src/good.ts", content: "export const good = true;\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_FAIL_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "done";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Residue rollback",
+        requirement: "Step 1: a first attempt writes residue then fails; a later attempt must rescue cleanly.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((f) => f.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/good.ts");
+      expect(paths).not.toContain("src/bad.ts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets the lead reassign a missing-agent step to a valid worker", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Recover from a hallucinated agent id",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "ghost-agent",
+            agentName: "Ghost Agent",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Rescued.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/rescued.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "Coder";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const rescued = true;\n";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "coder"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Missing agent reassign",
+        requirement: "Step 1: the plan references a missing agent; the lead reassigns to a valid worker.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/rescued.ts");
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
     } finally {
       restore();
     }
