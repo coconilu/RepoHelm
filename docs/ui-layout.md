@@ -1,7 +1,11 @@
 # RepoHelm UI Layout Proposal
 
-状态：草案  
-最后更新：2026-06-05
+状态：已实现（历史设计稿，对应里程碑 M1.5）  
+最后更新：2026-06-05 ｜ 复核：2026-06-14
+
+> 这是当初三栏 Quest 工作台重构（M1.5）的设计提案。其中的整体布局——左侧 workspace 树 + requests + 知识中心入口、中间 Agent Chat、右侧 Inspector tabs——与当前 `apps/web/src/App.tsx` 仍然一致；Inspector 已在 Spec/Overview/Files/Diff/Logs 之外扩展出「能力 / 安全 / 产品」页。
+>
+> **注意 §8「本轮实现范围 / 不做」描述的是 M1.5 那一轮重构的范围**，其中列为「不做」的 Commit/PR 真实交付、外部 Agent CLI 真执行等，后续已分别在 M4/M5 实现，详见 `MILESTONES.md`。
 
 ## 1. 目标
 

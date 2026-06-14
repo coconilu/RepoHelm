@@ -1,6 +1,6 @@
 # RepoHelm Milestones
 
-最后更新：2026-06-05
+最后更新：2026-06-14
 
 本文档记录 RepoHelm 当前里程碑状态：哪些已经完成和验收，哪些正在推进，哪些明确还没做。
 
@@ -193,9 +193,10 @@
 
 暂不做：
 
-- 向量数据库。
 - 团队共享知识库。
 - 自动从网络导入知识。
+
+> 后续演进：知识库已升级为 repo-bound Repo Wiki（每个 Project 6 篇结构化 wiki 页 + chunk embeddings 向量检索），详见下方 **M9**。
 
 ## M4：真实 Agent Backend
 
@@ -342,11 +343,35 @@
 - 把 Quest workspace 变成传统项目管理工具。
 - 真正的桌面壳、standalone binary、团队同步和扩展市场仍作为后续产品化方向。
 
+## M9：编排深化、worker 执行闭环与知识库升级
+
+状态：Done
+
+目标：
+
+把 Agent 执行从「单个 mock backend 跑一步」推进到「可审批的多 agent 编排 + 可观测、可自纠的 worker 执行 + repo 级知识库」。
+
+已完成：
+
+- **动态编排状态机（issue #4）**：编排升级为「确定性状态机 + lead agent 动态决策」。planner 先生成可审批的 orchestration plan（用户 approve/reject 后才执行）；执行阶段按依赖顺序逐步委派，lead agent 在每步后动态决定 retry / reassign / revise，状态机对单步设硬上限（`MAX_STEP_ATTEMPTS`），保证一定终止。简单 Quest 走 `assessComplexity` 快路径生成单步计划，不调用 LLM。
+- **Task contract**：planner 为每个计划步骤生成并校验 task contract，注入 worker prompt，并在 plan 审批视图展示；`plan.md` round-trip 持久化，兼容无 contract 的旧步骤。
+- **Worker 反馈闭环（issue #3 系列）**：worker 进入 run / observe / fix 闭环，配套受限工具集——allowlist 门控的 `run_command`（按 argv 命令模板校验，而非仅二进制名，防命令注入）、上下文锚定的外科手术 `edit_file`、worktree 受限代码搜索；worker 执行事件传播到 Quest 时间线；削弱了 tool-capable worker 的散文 file-path 回退。
+- **结构化 CLI 事件（issue #5）**：新增流式 CLI 输出 parser/runner，把外部 CLI 输出解析为结构化事件并接入时间线；解析 Codex `exec --json` 事件；命令输出截断保留头尾，避免丢失尾部失败信息。
+- **命令模板授权（PR #9）**：worker 的每条 `run_command` 都对安全策略做审计，按命令模板而非二进制名门控。
+- **Repo Wiki 知识库**：知识库升级为 repo-bound Repo Wiki。每个 Project 拥有 6 篇结构化 wiki 页（overview/architecture/modules/key-flows/conventions/decisions，Markdown 为唯一真相）+ chunk embeddings。支持 bootstrap（全量索引）、incremental（diff `lastIndexedSha..HEAD` 增量重写受影响页）、search（embed query → 余弦 top-k，无 embedding ModelKit 时关键词回退）。`WikiStore` 在 `wiki_pages`/`wiki_embeddings`（同一 SQLite，WAL）持久化页面与向量。
+- **引擎模型接入（BYOK + 本机 CLI）**：设置「执行模式」支持本机 CLI（探测版本、按 CLI 选模型、连通性测试、重新扫描）与 BYOK（OpenAI-compatible provider 配置 + REST `/models` 实时拉取，SQLite 缓存）。ModelKit 统一解析 baseUrl/model/apiKey 供 LLM 调用。详见 `MODEL_FETCHING.md` 与 `docs/model-config-plan.md`。
+
+暂不做：
+
+- 用户手动取消正在运行的外部 worker 进程。
+- 编排计划的跨 Quest 复用与模板化。
+- 团队共享知识库与远程向量服务。
+
 ## 当前最近焦点
 
-下一阶段优先级建议：
+M0–M9 已全部实现并验收。后续方向（不阻塞当前 MVP）：
 
-1. M4：先接入一个真实 Agent Backend，建议从 Codex CLI 或 OpenCode 开始。
-2. M5：补齐 worktree 清理和交付流程。
-3. M6：Capability Agent 和能力 manifest。
-4. M7：安全执行和权限模型。
+1. 真正的桌面壳与 standalone binary。
+2. 团队 workspace 同步与协作权限模型。
+3. 扩展能力市场与第三方 MCP 治理。
+4. 编排计划模板化、worker 进程可取消等执行链路打磨。
