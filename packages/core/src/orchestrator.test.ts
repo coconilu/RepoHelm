@@ -327,6 +327,14 @@ describe("Plan-then-execute flow", () => {
         "if (gitAddWhen && prompt.includes(gitAddWhen)) {",
         "  try { execFileSync('git', ['add', '-A'], { cwd: process.cwd() }); } catch {}",
         "}",
+        // Optionally `git mv` a tracked file, to simulate a worker that performs a
+        // staged rename before failing (residue lives as `R old -> new` in the index).
+        "const gitMv = process.env.REPOHELM_TEST_WORKER_GIT_MV;",
+        "const gitMvWhen = process.env.REPOHELM_TEST_WORKER_GIT_MV_WHEN;",
+        "if (gitMv && (!gitMvWhen || prompt.includes(gitMvWhen))) {",
+        "  const [from, to] = gitMv.split(':');",
+        "  try { execFileSync('git', ['mv', from, to], { cwd: process.cwd() }); } catch {}",
+        "}",
         // Exit non-zero AFTER any writes, to simulate a worker that dirties the
         // worktree and then fails (CLI backend treats this as an execution error).
         "const failWhen = process.env.REPOHELM_TEST_WORKER_FAIL_WHEN;",
@@ -1231,7 +1239,9 @@ describe("Plan-then-execute flow", () => {
     "REPOHELM_TEST_WORKER_WRITE_CONTENT",
     "REPOHELM_TEST_WORKER_WRITES_JSON",
     "REPOHELM_TEST_WORKER_FAIL_WHEN",
-    "REPOHELM_TEST_WORKER_GIT_ADD_WHEN"
+    "REPOHELM_TEST_WORKER_GIT_ADD_WHEN",
+    "REPOHELM_TEST_WORKER_GIT_MV",
+    "REPOHELM_TEST_WORKER_GIT_MV_WHEN"
   ];
   function snapshotEnv(keys: string[]): () => void {
     const saved: Record<string, string | undefined> = {};
@@ -1532,6 +1542,78 @@ describe("Plan-then-execute flow", () => {
       expect(executed.status).toBe("ready");
       expect(paths).toContain("src/good.ts");
       expect(paths).not.toContain("src/bad.ts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rolls back a failed attempt's staged rename (restores the source path)", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      // Commit a tracked file the failed attempt will rename, so the worktree
+      // inherits it (bootstrap registers rootDir itself as the project repo).
+      await writeFile(join(rootDir, "old.txt"), "tracked content\n", "utf8");
+      await execFileAsync("git", ["add", "old.txt"], { cwd: rootDir });
+      await execFileAsync(
+        "git",
+        ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "Add old.txt"],
+        { cwd: rootDir }
+      );
+
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Rename residue must not be delivered",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder `git mv`s old.txt -> new.txt (staged rename), then fails. Both the
+      // destination AND the source's deletion must be rolled back.
+      process.env.REPOHELM_TEST_WORKER_GIT_MV = "old.txt:new.txt";
+      process.env.REPOHELM_TEST_WORKER_GIT_MV_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_FAIL_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Reviewer", path: "src/good.ts", content: "export const good = true;\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "done";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Rename residue rollback",
+        requirement: "Step 1: a first attempt stages a rename then fails; a later attempt must rescue cleanly.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((f) => f.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/good.ts");
+      // Neither the rename destination nor the source's deletion may survive.
+      expect(paths).not.toContain("new.txt");
+      expect(paths).not.toContain("old.txt");
     } finally {
       restore();
     }

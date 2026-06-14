@@ -964,8 +964,10 @@ async function addGitSnapshotPaths(
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const path = mode === "status" ? pathFromGitStatusLine(trimmed) : cleanGitPath(trimmed);
-    if (path) paths.add(path);
+    const linePaths = mode === "status" ? pathsFromGitStatusLine(trimmed) : [cleanGitPath(trimmed)];
+    for (const path of linePaths) {
+      if (path) paths.add(path);
+    }
   }
 }
 
@@ -989,12 +991,21 @@ async function fileSignature(worktreePath: string, path: string): Promise<string
   }
 }
 
-function pathFromGitStatusLine(line: string): string {
+/**
+ * Paths touched by a porcelain status line. A rename/copy line is
+ * `R  old -> new`; we return BOTH sides — rolling back only the destination
+ * would leave the source's staged deletion (`D old`) as undelivered residue.
+ */
+function pathsFromGitStatusLine(line: string): string[] {
   const porcelainPath = line.slice(3);
-  const renamedPath = porcelainPath.includes(" -> ")
-    ? porcelainPath.split(" -> ").pop() ?? porcelainPath
-    : porcelainPath;
-  return cleanGitPath(renamedPath);
+  if (porcelainPath.includes(" -> ")) {
+    return porcelainPath
+      .split(" -> ")
+      .map((part) => cleanGitPath(part))
+      .filter((part) => part.length > 0);
+  }
+  const cleaned = cleanGitPath(porcelainPath);
+  return cleaned ? [cleaned] : [];
 }
 
 function cleanGitPath(path: string): string {
