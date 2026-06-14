@@ -300,6 +300,10 @@ describe("Plan-then-execute flow", () => {
         "  console.log(process.env.REPOHELM_TEST_PLAN_JSON);",
         "  process.exit(0);",
         "}",
+        "if (prompt.includes('Decide the recovery action')) {",
+        "  console.log(process.env.REPOHELM_TEST_LEAD_DECISION_JSON || 'lead: no structured decision');",
+        "  process.exit(0);",
+        "}",
         "const writeRules = JSON.parse(process.env.REPOHELM_TEST_WORKER_WRITES_JSON || '[]');",
         "for (const rule of writeRules) {",
         "  if (!rule.contains || prompt.includes(rule.contains)) {",
@@ -1194,6 +1198,201 @@ describe("Plan-then-execute flow", () => {
       } else {
         process.env.REPOHELM_TEST_WORKER_WRITES_JSON = oldWrites;
       }
+    }
+  });
+
+  // ── issue #4: lead-agent dynamic recovery (reassign / revise / retry caps) ──
+  const RECOVERY_ENV_KEYS = [
+    "REPOHELM_GENERIC_CLI_COMMAND",
+    "REPOHELM_TEST_WORKER_OUTPUT",
+    "REPOHELM_TEST_PLAN_JSON",
+    "REPOHELM_TEST_LEAD_DECISION_JSON",
+    "REPOHELM_TEST_WORKER_WRITE_PATH",
+    "REPOHELM_TEST_WORKER_WRITE_WHEN",
+    "REPOHELM_TEST_WORKER_WRITE_CONTENT"
+  ];
+  function snapshotEnv(keys: string[]): () => void {
+    const saved: Record<string, string | undefined> = {};
+    for (const key of keys) saved[key] = process.env[key];
+    return () => {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key]!;
+      }
+    };
+  }
+
+  async function addReviewerAgent(service: RepoHelmService) {
+    await service.createSubAgent({
+      id: "reviewer",
+      name: "Reviewer",
+      role: "Reviews and rescues work",
+      capabilities: ["coding", "review"],
+      modelKitId: "test-cli-kit",
+      mode: "worker",
+      permissions: { allowedTools: [], deniedTools: [] }
+    });
+  }
+
+  it("reassigns a failed step to another agent when the lead decides reassign", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Reassign on failure",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder writes nothing (its prompt never contains "Reviewer"); the reviewer
+      // does, so only the reassigned attempt produces the material file.
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Working on it.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/feature.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "Reviewer";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const feature = true;\n";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer",
+        reason: "Coder produced no file"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Reassign feature step",
+        requirement: "Coder fails, lead reassigns to reviewer.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/feature.ts");
+      // The single step ends "ok" (recovered) and names the reassigned agent.
+      expect(executed.agentSummary).toContain("1. Reviewer (ok)");
+      expect(executed.agentSummary).toContain("reassigned");
+    } finally {
+      restore();
+    }
+  });
+
+  it("revises and retries a failed step when the lead decides revise", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Revise on failure",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // The worker only writes once its prompt carries the revised instruction.
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Working on it.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/revised.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "REVISED_USE_WRITE_TOOL";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const revised = true;\n";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "revise",
+        revisedDescription: "Implement the feature file REVISED_USE_WRITE_TOOL"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Revise feature step",
+        requirement: "Coder fails, lead revises the task and retries.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/revised.ts");
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("stops retrying after the attempt cap even when the lead keeps choosing retry", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Retry forever guarded by cap",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Worker never writes anything → every attempt fails material validation.
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Still thinking, no file yet.";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({ action: "retry" });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Retry cap guardrail",
+        requirement: "Lead keeps retrying; the deterministic cap must stop it.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      // Deterministic cap wins over the lead's endless retry → blocked, no files.
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles).toHaveLength(0);
+      expect(executed.agentSummary).toContain("max attempts");
+    } finally {
+      restore();
     }
   });
 });
