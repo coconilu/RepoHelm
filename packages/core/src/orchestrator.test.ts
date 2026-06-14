@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1338,6 +1338,199 @@ describe("CLI backend timeline propagation", () => {
       const toolCall = events.find((event) => event.type === "agent.tool_call");
       expect(toolCall).toBeDefined();
       expect(toolCall!.detail).toContain("pnpm test");
+    } finally {
+      if (oldCommand === undefined) delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
+      else process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
+      delete process.env.REPOHELM_TEST_PLAN_JSON;
+    }
+  });
+});
+
+// Issue #2: the agent feedback-correction loop. A BYOK worker must be able to run
+// a command, observe a FAILING result (stdout/stderr/exit code fed back as a tool
+// result), then edit and re-run until it passes — all inside the bounded loop.
+describe("worker run/observe/fix feedback loop", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function gitRepoService() {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-feedback-loop-"));
+    await execFileAsync("git", ["init", "-b", "main"], { cwd: rootDir });
+    await writeFile(join(rootDir, "README.md"), "# Fixture\n", "utf8");
+    await execFileAsync("git", ["add", "README.md"], { cwd: rootDir });
+    await execFileAsync(
+      "git",
+      ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "init"],
+      { cwd: rootDir }
+    );
+    return { rootDir, service: new RepoHelmService(new SqliteStateStore(rootDir), rootDir) };
+  }
+
+  // A CLI command used ONLY by the planner (supervisor). The worker is BYOK and
+  // never touches this — its turns are scripted through the mocked fetch instead.
+  async function plannerCli(rootDir: string): Promise<string> {
+    const commandPath = join(rootDir, "planner-cli.mjs");
+    await writeFile(
+      commandPath,
+      [
+        "#!/usr/bin/env node",
+        "const prompt = process.argv.slice(2).join('\\n');",
+        "if (process.env.REPOHELM_TEST_PLAN_JSON && prompt.includes('Produce an execution plan')) {",
+        "  console.log(process.env.REPOHELM_TEST_PLAN_JSON); process.exit(0);",
+        "}",
+        "console.log('planner fallback');"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(commandPath, 0o755);
+    return commandPath;
+  }
+
+  function chatResponse(message: Record<string, unknown>, finishReason: string): Response {
+    return new Response(JSON.stringify({ choices: [{ finish_reason: finishReason, message }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  it("runs a failing command, feeds the failure back, then fixes and re-runs to pass", async () => {
+    const { rootDir, service } = await gitRepoService();
+    const commandPath = await plannerCli(rootDir);
+    const oldCommand = process.env.REPOHELM_GENERIC_CLI_COMMAND;
+    process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+
+    // Scripted worker turns. The check command `cat sentinel.txt` fails until the
+    // worker writes the file, mirroring "run tests -> see failure -> fix -> rerun".
+    const chatBodies: Array<{ messages: Array<{ role: string; content?: string }> }> = [];
+    const turns: Array<{ message: Record<string, unknown>; finish: string }> = [
+      // Turn 1: just run the check — it will fail because sentinel.txt is absent.
+      {
+        finish: "tool_calls",
+        message: {
+          content: "",
+          tool_calls: [
+            { id: "c1", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "cat sentinel.txt" }) } }
+          ]
+        }
+      },
+      // Turn 2: having seen the failure, write the file and re-run the check.
+      {
+        finish: "tool_calls",
+        message: {
+          content: "",
+          tool_calls: [
+            { id: "c2", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "sentinel.txt", content: "ok\n" }) } },
+            { id: "c3", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "cat sentinel.txt" }) } }
+          ]
+        }
+      },
+      // Turn 3: the check passed; conclude with no further tool calls.
+      { finish: "stop", message: { content: "sentinel.txt now exists and the check passes. Done." } }
+    ];
+    let chatCalls = 0;
+    const fetchMock = vi.fn(async (url: unknown, init: unknown) => {
+      const target = String(url);
+      if (target.includes("/chat/completions")) {
+        chatBodies.push(JSON.parse((init as RequestInit).body as string));
+        const turn = turns[chatCalls] ?? { finish: "stop", message: { content: "done" } };
+        chatCalls += 1;
+        return chatResponse(turn.message, turn.finish);
+      }
+      // Any non-chat traffic (embeddings, etc.) gets a benign empty payload so it
+      // never consumes a scripted worker turn.
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await service.bootstrap();
+      // Allow only the exact check command the worker runs.
+      await service.updateSecurityPolicy({ commandTemplates: ["cat sentinel.txt"] });
+
+      await service.createModelKit({
+        id: "planner-cli-kit",
+        name: "Planner CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createModelKit({
+        id: "worker-byok-kit",
+        name: "Worker BYOK",
+        type: "byok",
+        providerId: "openai",
+        model: "gpt-test",
+        config: { provider: "openai", baseUrl: "https://api.example.com/v1", model: "gpt-test", apiKey: "sk-test" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "planner-cli-kit",
+        mode: "entry",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Writes code",
+        capabilities: ["coding"],
+        modelKitId: "worker-byok-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Feedback loop plan",
+        steps: [
+          {
+            id: "step_1",
+            description: "Make the sentinel check pass",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "sentinel.txt present",
+            targetProjectId: project.id,
+            contract: { doneCriteria: "sentinel.txt exists" }
+          }
+        ]
+      });
+
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Feedback loop",
+        requirement: "Worker should run a check, see it fail, fix it, and re-run until it passes.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      // The loop recovered: the step succeeded and the fix materialized.
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((file) => file.path)).toContain("sentinel.txt");
+      expect(executed.agentSummary).toContain("Coder (ok)");
+
+      // The loop iterated past the failure: three worker turns (fail -> fix -> done).
+      expect(chatCalls).toBe(3);
+
+      // Criterion 2: the FAILING command's exit code and stderr flowed back into the
+      // messages the model saw on its second turn.
+      const secondTurnMessages = chatBodies[1]!.messages;
+      const toolResult = secondTurnMessages.find((m) => m.role === "tool");
+      expect(toolResult).toBeDefined();
+      expect(toolResult!.content).toContain("\"exitCode\":1");
+      expect(toolResult!.content).toContain("No such file");
     } finally {
       if (oldCommand === undefined) delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
       else process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;
