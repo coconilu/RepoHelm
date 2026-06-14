@@ -368,20 +368,24 @@ export class SubAgentOrchestrator {
           workerEvents.push(...result.events);
         }
 
+        // Count direct edits to the worktree (CLI backends, or commands that wrote
+        // files) BEFORE deciding on the prose fallback, so "produced nothing" reflects
+        // tool writes AND direct edits — not just write_file/edit_file calls.
+        const afterChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
+        for (const file of changedPathsSince(beforeChanges, afterChanges)) {
+          writtenFiles.add(file);
+        }
+
         // True fallback (issue #3): only scrape files out of the worker's prose when
-        // it produced NOTHING through tools/direct edits. Tool-capable workers write
-        // via write_file/edit_file, so their prose is not parsed — that prose-path
-        // guessing was brittle and masked "the model didn't use its tools".
+        // it produced NOTHING through tools or direct edits. Tool-capable workers
+        // write via write_file/edit_file, so their prose is not parsed — that
+        // prose-path guessing was brittle and masked "the model didn't use its tools".
         if (writtenFiles.size === 0) {
           const fsHandlers = buildFsToolHandlers(worktree.worktreePath);
           for (const file of extractFilesFromContent(content, projectDir)) {
             await fsHandlers.handle(FS_WRITE_TOOL, { path: file.path, content: file.content });
           }
           fsHandlers.written.forEach((file) => writtenFiles.add(file));
-        }
-        const afterChanges = await readWorktreeChangeSnapshot(worktree.worktreePath);
-        for (const file of changedPathsSince(beforeChanges, afterChanges)) {
-          writtenFiles.add(file);
         }
 
         if (!content) {
