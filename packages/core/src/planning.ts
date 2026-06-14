@@ -71,18 +71,34 @@ Rules:
 - If no agents are suitable, produce a plan with a single step assigned to the most capable agent.
 - Each step MUST include a "contract" with "boundaries" and "doneCriteria" so the worker knows its limits and what "done" looks like. "sourcesGuidance" is optional free text (do not reference a knowledge base).`;
 
+/** Minimal project metadata the planner needs to target a specific worktree by ID. */
+export interface PlanProjectRef {
+  id: string;
+  name: string;
+}
+
 export interface PlanGeneratorInput {
   entryAgent: SubAgent;
   quest: Quest;
   agentPool: SubAgent[];
   backend: SubAgentBackend;
+  /**
+   * The quest's affected projects (id + name). Surfaced to the planner so each step's
+   * `targetProjectId` can name a real project — without this the planner only sees opaque
+   * requirement text and multi-project plans collapse onto `affectedProjectIds[0]`.
+   */
+  projects?: PlanProjectRef[];
 }
 
 export async function generateOrchestrationPlan(input: PlanGeneratorInput): Promise<OrchestrationPlan> {
-  const { entryAgent, quest, agentPool, backend } = input;
+  const { entryAgent, quest, agentPool, backend, projects } = input;
 
   const agentList = agentPool
     .map((a) => `- ${a.id}: ${a.name} — ${a.role} (${a.capabilities?.join(", ") || "general"})`)
+    .join("\n");
+
+  const projectList = (projects ?? [])
+    .map((p) => `- ${p.id}: ${p.name}`)
     .join("\n");
 
   const systemPrompt = entryAgent.promptTemplate
@@ -92,6 +108,10 @@ export async function generateOrchestrationPlan(input: PlanGeneratorInput): Prom
   const userContent = [
     `## Available Agent Pool`,
     agentList || "(no agents available)",
+    ``,
+    `## Affected Projects`,
+    projectList || "(none — use the single affected project)",
+    `Set each step's "targetProjectId" to one of the project IDs listed above.`,
     ``,
     `## Quest Requirement`,
     `**Title**: ${quest.title}`,

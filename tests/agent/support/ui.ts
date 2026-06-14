@@ -38,6 +38,31 @@ export async function linkRepositoryViaUi(page: Page, workspaceName: string, rep
   await page.getByRole("button", { name: "关闭 workspace 配置" }).click();
 }
 
+/**
+ * Link multiple repositories to a workspace in one config session. Unlike
+ * linkRepositoryViaUi (which relies on the single default selection), this explicitly
+ * picks each repo from the combobox, so order and count are deterministic.
+ */
+export async function linkRepositoriesViaUi(page: Page, workspaceName: string, repoNames: string[]) {
+  await page.getByRole("button", { name: `配置 ${workspaceName}` }).click();
+  const dialog = page.getByRole("dialog", { name: workspaceName });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("tab", { name: "关联仓库" }).click();
+
+  for (const repoName of repoNames) {
+    const combobox = dialog.getByRole("combobox", { name: "选择要关联的仓库" });
+    await expect(combobox).toBeEnabled();
+    await combobox.click();
+    await page.getByRole("option", { name: new RegExp(repoName) }).click();
+    await dialog.getByRole("button", { name: "关联并 checkout worktree" }).click();
+    const row = dialog.locator(".worktree-row").filter({ hasText: repoName });
+    await expect(row).toBeVisible({ timeout: 20_000 });
+    await expect(row.locator(".health-pill.ok")).toBeVisible();
+  }
+
+  await page.getByRole("button", { name: "关闭 workspace 配置" }).click();
+}
+
 export async function runQuestViaUi(page: Page, input: {
   workspaceName: string;
   questTitle: string;

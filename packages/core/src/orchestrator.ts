@@ -116,11 +116,21 @@ export class SubAgentOrchestrator {
     );
     const agentPool = await this.listDelegatableAgents(entryAgent.id);
 
+    // Resolve the affected projects so the planner can target a specific worktree by ID
+    // (see PlanGeneratorInput.projects). Without this, multi-project plans cannot assign
+    // different steps to different repos.
+    const state = await this.service.getState();
+    const projects = quest.affectedProjectIds
+      .map((id) => state.projects.find((p) => p.id === id))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p))
+      .map((p) => ({ id: p.id, name: p.name }));
+
     return generateOrchestrationPlan({
       entryAgent,
       quest,
       agentPool,
-      backend: entryBackend
+      backend: entryBackend,
+      projects
     });
   }
 

@@ -1,0 +1,9 @@
+{
+  "name": "repohelm-golden-web-repo",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node -e \"import('./src/storefront.js').then((m) => console.log(m.renderCatalog().length))\""
+  }
+}

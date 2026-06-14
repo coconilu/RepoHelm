@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/agent/scenarios",
+  // Each agent scenario has its own deterministic backend + state root, so they run
+  // under separate configs. This config owns only the basic flow.
+  testMatch: "golden-basic-flow.spec.ts",
   timeout: 180_000,
   expect: {
     timeout: 15_000
