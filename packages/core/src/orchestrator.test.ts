@@ -294,10 +294,15 @@ describe("Plan-then-execute flow", () => {
       [
         "#!/usr/bin/env node",
         "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { execFileSync } from 'node:child_process';",
         "import { dirname, join } from 'node:path';",
         "const prompt = process.argv.slice(2).join('\\n');",
         "if (process.env.REPOHELM_TEST_PLAN_JSON && prompt.includes('Produce an execution plan')) {",
         "  console.log(process.env.REPOHELM_TEST_PLAN_JSON);",
+        "  process.exit(0);",
+        "}",
+        "if (prompt.includes('Decide the recovery action')) {",
+        "  console.log(process.env.REPOHELM_TEST_LEAD_DECISION_JSON || 'lead: no structured decision');",
         "  process.exit(0);",
         "}",
         "const writeRules = JSON.parse(process.env.REPOHELM_TEST_WORKER_WRITES_JSON || '[]');",
@@ -314,6 +319,28 @@ describe("Plan-then-execute flow", () => {
         "  const abs = join(process.cwd(), writePath);",
         "  mkdirSync(dirname(abs), { recursive: true });",
         "  writeFileSync(abs, process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT || 'written = true\\n');",
+        "}",
+        // Optionally `git add` the writes, to simulate a worker that stages its
+        // changes before failing (so the residue lives in the index, not just the
+        // working tree).
+        "const gitAddWhen = process.env.REPOHELM_TEST_WORKER_GIT_ADD_WHEN;",
+        "if (gitAddWhen && prompt.includes(gitAddWhen)) {",
+        "  try { execFileSync('git', ['add', '-A'], { cwd: process.cwd() }); } catch {}",
+        "}",
+        // Optionally `git mv` a tracked file, to simulate a worker that performs a
+        // staged rename before failing (residue lives as `R old -> new` in the index).
+        "const gitMv = process.env.REPOHELM_TEST_WORKER_GIT_MV;",
+        "const gitMvWhen = process.env.REPOHELM_TEST_WORKER_GIT_MV_WHEN;",
+        "if (gitMv && (!gitMvWhen || prompt.includes(gitMvWhen))) {",
+        "  const [from, to] = gitMv.split(':');",
+        "  try { execFileSync('git', ['mv', from, to], { cwd: process.cwd() }); } catch {}",
+        "}",
+        // Exit non-zero AFTER any writes, to simulate a worker that dirties the
+        // worktree and then fails (CLI backend treats this as an execution error).
+        "const failWhen = process.env.REPOHELM_TEST_WORKER_FAIL_WHEN;",
+        "if (failWhen && prompt.includes(failWhen)) {",
+        "  console.error('simulated worker failure');",
+        "  process.exit(1);",
         "}",
         "console.log(process.env.REPOHELM_TEST_WORKER_OUTPUT || 'Worker inspected the project but wrote nothing.');"
       ].join("\n"),
@@ -1055,7 +1082,11 @@ describe("Plan-then-execute flow", () => {
 
       expect(executed.status).toBe("blocked");
       expect(executed.changedFiles).toHaveLength(0);
-      expect(executed.agentSummary).toContain("1. Missing Agent (fail): agent missing-agent not found in pool");
+      // P2: missing agent now flows through the lead decision; with no scripted
+      // decision the lead degrades to skip, so the step still fails and downstream
+      // is skipped — same end state, recovery trail folded into the summary.
+      expect(executed.agentSummary).toContain("1. Missing Agent (fail)");
+      expect(executed.agentSummary).toContain("agent missing-agent not found in pool");
       expect(executed.agentSummary).toContain("2. Coder (fail): skipped: dependency failed (step_1)");
     } finally {
       if (oldCommand === undefined) {
@@ -1194,6 +1225,450 @@ describe("Plan-then-execute flow", () => {
       } else {
         process.env.REPOHELM_TEST_WORKER_WRITES_JSON = oldWrites;
       }
+    }
+  });
+
+  // ── issue #4: lead-agent dynamic recovery (reassign / revise / retry caps) ──
+  const RECOVERY_ENV_KEYS = [
+    "REPOHELM_GENERIC_CLI_COMMAND",
+    "REPOHELM_TEST_WORKER_OUTPUT",
+    "REPOHELM_TEST_PLAN_JSON",
+    "REPOHELM_TEST_LEAD_DECISION_JSON",
+    "REPOHELM_TEST_WORKER_WRITE_PATH",
+    "REPOHELM_TEST_WORKER_WRITE_WHEN",
+    "REPOHELM_TEST_WORKER_WRITE_CONTENT",
+    "REPOHELM_TEST_WORKER_WRITES_JSON",
+    "REPOHELM_TEST_WORKER_FAIL_WHEN",
+    "REPOHELM_TEST_WORKER_GIT_ADD_WHEN",
+    "REPOHELM_TEST_WORKER_GIT_MV",
+    "REPOHELM_TEST_WORKER_GIT_MV_WHEN"
+  ];
+  function snapshotEnv(keys: string[]): () => void {
+    const saved: Record<string, string | undefined> = {};
+    for (const key of keys) saved[key] = process.env[key];
+    return () => {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key]!;
+      }
+    };
+  }
+
+  async function addReviewerAgent(service: RepoHelmService) {
+    await service.createSubAgent({
+      id: "reviewer",
+      name: "Reviewer",
+      role: "Reviews and rescues work",
+      capabilities: ["coding", "review"],
+      modelKitId: "test-cli-kit",
+      mode: "worker",
+      permissions: { allowedTools: [], deniedTools: [] }
+    });
+  }
+
+  it("reassigns a failed step to another agent when the lead decides reassign", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Reassign on failure",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder writes nothing (its prompt never contains "Reviewer"); the reviewer
+      // does, so only the reassigned attempt produces the material file.
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Working on it.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/feature.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "Reviewer";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const feature = true;\n";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer",
+        reason: "Coder produced no file"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Reassign feature step",
+        requirement: "Step 1: run the implementation; the first worker fails so the lead reassigns.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/feature.ts");
+      // The single step ends "ok" (recovered) and names the reassigned agent.
+      expect(executed.agentSummary).toContain("1. Reviewer (ok)");
+      expect(executed.agentSummary).toContain("reassigned");
+    } finally {
+      restore();
+    }
+  });
+
+  it("revises and retries a failed step when the lead decides revise", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Revise on failure",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // The worker only writes once its prompt carries the revised instruction.
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Working on it.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/revised.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "REVISED_USE_WRITE_TOOL";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const revised = true;\n";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "revise",
+        revisedDescription: "Implement the feature file REVISED_USE_WRITE_TOOL"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Revise feature step",
+        requirement: "Step 1: run the implementation; the first attempt fails so the lead revises and retries.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/revised.ts");
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("stops retrying after the attempt cap even when the lead keeps choosing retry", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Retry forever guarded by cap",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Worker never writes anything → every attempt fails material validation.
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Still thinking, no file yet.";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({ action: "retry" });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Retry cap guardrail",
+        requirement: "Step 1: run the implementation; the worker keeps failing and the lead keeps retrying.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      // Deterministic cap wins over the lead's endless retry → blocked, no files.
+      expect(executed.status).toBe("blocked");
+      expect(executed.changedFiles).toHaveLength(0);
+      expect(executed.agentSummary).toContain("max attempts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rolls back a failed attempt's residue so it is not delivered by a later success", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Residue must not be delivered",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder writes bad.ts then exits non-zero (CLI error). Reviewer writes good.ts
+      // and succeeds. The failed coder residue (bad.ts) must be rolled back.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Coder", path: "src/bad.ts", content: "export const bad = true;\n" },
+        { contains: "Reviewer", path: "src/good.ts", content: "export const good = true;\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_FAIL_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "done";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Residue rollback",
+        requirement: "Step 1: a first attempt writes residue then fails; a later attempt must rescue cleanly.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((f) => f.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/good.ts");
+      expect(paths).not.toContain("src/bad.ts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rolls back a failed attempt's residue even when it was git-added (staged)", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Staged residue must not be delivered",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder writes bad.ts, `git add`s it, then exits non-zero. The staged residue
+      // (index entry `A bad.ts`) must be unstaged AND removed during rollback.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Coder", path: "src/bad.ts", content: "export const bad = true;\n" },
+        { contains: "Reviewer", path: "src/good.ts", content: "export const good = true;\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_GIT_ADD_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_FAIL_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "done";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Staged residue rollback",
+        requirement: "Step 1: a first attempt stages residue then fails; a later attempt must rescue cleanly.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((f) => f.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/good.ts");
+      expect(paths).not.toContain("src/bad.ts");
+    } finally {
+      restore();
+    }
+  });
+
+  it("rolls back a failed attempt's staged rename (restores the source path)", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      // Commit a tracked file the failed attempt will rename, so the worktree
+      // inherits it (bootstrap registers rootDir itself as the project repo).
+      await writeFile(join(rootDir, "old.txt"), "tracked content\n", "utf8");
+      await execFileAsync("git", ["add", "old.txt"], { cwd: rootDir });
+      await execFileAsync(
+        "git",
+        ["-c", "user.name=RepoHelm", "-c", "user.email=repohelm@example.com", "commit", "-m", "Add old.txt"],
+        { cwd: rootDir }
+      );
+
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+      await addReviewerAgent(service);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Rename residue must not be delivered",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "coder",
+            agentName: "Coder",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      // Coder `git mv`s old.txt -> new.txt (staged rename), then fails. Both the
+      // destination AND the source's deletion must be rolled back.
+      process.env.REPOHELM_TEST_WORKER_GIT_MV = "old.txt:new.txt";
+      process.env.REPOHELM_TEST_WORKER_GIT_MV_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_FAIL_WHEN = "named \"Coder\"";
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "Reviewer", path: "src/good.ts", content: "export const good = true;\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "done";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "reviewer"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Rename residue rollback",
+        requirement: "Step 1: a first attempt stages a rename then fails; a later attempt must rescue cleanly.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      const paths = executed.changedFiles.map((f) => f.path);
+      expect(executed.status).toBe("ready");
+      expect(paths).toContain("src/good.ts");
+      // Neither the rename destination nor the source's deletion may survive.
+      expect(paths).not.toContain("new.txt");
+      expect(paths).not.toContain("old.txt");
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets the lead reassign a missing-agent step to a valid worker", async () => {
+    const restore = snapshotEnv(RECOVERY_ENV_KEYS);
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    try {
+      await service.bootstrap();
+      await configureCliAgents(service, commandPath);
+
+      process.env.REPOHELM_TEST_PLAN_JSON = JSON.stringify({
+        summary: "Recover from a hallucinated agent id",
+        steps: [
+          {
+            id: "step_1",
+            description: "Implement the feature file",
+            agentId: "ghost-agent",
+            agentName: "Ghost Agent",
+            dependencies: [],
+            expectedOutput: "Code changes",
+            targetProjectId: "project_repohelm",
+            contract: { doneCriteria: "Source code file written" }
+          }
+        ]
+      });
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Rescued.";
+      process.env.REPOHELM_TEST_WORKER_WRITE_PATH = "src/rescued.ts";
+      process.env.REPOHELM_TEST_WORKER_WRITE_WHEN = "Coder";
+      process.env.REPOHELM_TEST_WORKER_WRITE_CONTENT = "export const rescued = true;\n";
+      process.env.REPOHELM_TEST_LEAD_DECISION_JSON = JSON.stringify({
+        action: "reassign",
+        reassignTo: "coder"
+      });
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Missing agent reassign",
+        requirement: "Step 1: the plan references a missing agent; the lead reassigns to a valid worker.",
+        affectedProjectIds: [project.id]
+      });
+
+      await service.runQuest(quest.id);
+      const executed = await service.approvePlan(quest.id);
+
+      expect(executed.status).toBe("ready");
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/rescued.ts");
+      expect(executed.agentSummary).toContain("1. Coder (ok)");
+    } finally {
+      restore();
     }
   });
 });
