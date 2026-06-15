@@ -122,6 +122,39 @@ describe("buildWebToolHandlers", () => {
     }
   });
 
+  it("blocks the unspecified address and its mapped/compatible zero forms (fail closed)", async () => {
+    for (const host of ["[::]", "[::ffff:0.0.0.0]", "[::ffff:0:0]", "[::0.0.0.0]", "0.0.0.0"]) {
+      let called = false;
+      const web = buildWebToolHandlers({
+        enabled: true,
+        fetchImpl: async () => {
+          called = true;
+          return okResponse("LEAKED");
+        }
+      });
+      const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: `http://${host}:8080/` }));
+      expect(result.ok, host).toBe(false);
+      expect(called, host).toBe(false);
+    }
+  });
+
+  it("blocks 0.0.0.0 / :: even when allowLoopback is set (fail closed)", async () => {
+    for (const host of ["0.0.0.0", "[::]"]) {
+      let called = false;
+      const web = buildWebToolHandlers({
+        enabled: true,
+        allowLoopback: true,
+        fetchImpl: async () => {
+          called = true;
+          return okResponse("LEAKED");
+        }
+      });
+      const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: `http://${host}:8080/` }));
+      expect(result.ok, host).toBe(false);
+      expect(called, host).toBe(false);
+    }
+  });
+
   it("blocks the localhost hostname", async () => {
     const web = buildWebToolHandlers({ enabled: true, fetchImpl: async () => okResponse("x") });
     const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://localhost:8080/" }));

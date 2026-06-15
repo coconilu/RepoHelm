@@ -56,7 +56,8 @@ function classifyIp(ip: string): HostClass {
     const firstFiveZero = h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0;
     if (firstFiveZero && (h[5] === 0xffff || h[5] === 0)) {
       if (h[6] === 0 && h[7] === 1) return "loopback"; // ::1
-      if (h[6] === 0 && h[7] === 0) return "public"; // :: (unspecified) — treat as non-internal literal
+      // Everything else in ::/96 (incl. :: unspecified and ::ffff:0.0.0.0) maps to
+      // an embedded IPv4 — classify it, so 0.0.0.0 fails closed rather than "public".
       const v4 = `${h[6]! >> 8}.${h[6]! & 0xff}.${h[7]! >> 8}.${h[7]! & 0xff}`;
       return classifyV4(v4);
     }
@@ -71,7 +72,8 @@ function classifyV4(ip: string): HostClass {
   const parts = ip.split(".").map(Number);
   const [a, b] = parts;
   if (a === undefined || b === undefined) return "public";
-  if (a === 127 || (a === 0 && b === 0)) return "loopback";
+  if (a === 127) return "loopback";
+  if (a === 0) return "private"; // 0.0.0.0/8 ("this host") — fail closed
   if (a === 10) return "private";
   if (a === 172 && b >= 16 && b <= 31) return "private";
   if (a === 192 && b === 168) return "private";
