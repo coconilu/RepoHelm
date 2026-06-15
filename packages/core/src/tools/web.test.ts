@@ -201,6 +201,30 @@ describe("buildWebToolHandlers", () => {
     expect(String(result.error ?? "")).toMatch(/blocked|internal|private/i);
   });
 
+  it("pins the connection to the validated IP, closing the rebinding window", async () => {
+    const http = await import("node:http");
+    let seenHost = "";
+    const server = http.createServer((req, res) => {
+      seenHost = req.headers.host ?? "";
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("pinned-ok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const port = (server.address() as import("node:net").AddressInfo).port;
+    try {
+      // "pinned.test" does not resolve via real DNS; only the validated IP from
+      // resolveHost lets the request connect — proving the connection is pinned
+      // to the address we checked, not a second (rebindable) resolution.
+      const web = buildWebToolHandlers({ enabled: true, allowLoopback: true, resolveHost: async () => ["127.0.0.1"] });
+      const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: `http://pinned.test:${port}/` }));
+      expect(result.ok).toBe(true);
+      expect(result.content).toContain("pinned-ok");
+      expect(seenHost).toBe(`pinned.test:${port}`);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("reports a non-configured web_search instead of pretending", async () => {
     const web = buildWebToolHandlers({ enabled: true });
 

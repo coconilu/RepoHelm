@@ -185,22 +185,33 @@ async function readCapped(response: Response, maxBytes: number): Promise<{ conte
   return { content, truncated };
 }
 
+type FetchLike = (input: URL, init: RequestInit & { dispatcher?: unknown }) => Promise<Response>;
+
+// Default transport: undici's own fetch, so an undici Agent passed as `dispatcher`
+// (used to pin DNS) is honored. Node's global fetch uses a separate internal
+// undici and would ignore a foreign dispatcher.
+const defaultFetch: FetchLike = async (input, init) => {
+  const { fetch: undiciFetch } = await import("undici");
+  return undiciFetch(input as never, init as never) as unknown as Response;
+};
+
 export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandler {
   const enabled = options.enabled ?? false;
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const fetchImpl: FetchLike = (options.fetchImpl as FetchLike | undefined) ?? defaultFetch;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const allowLoopback = options.allowLoopback ?? false;
 
-  // Decide whether a host may be fetched. Returns a block reason or null.
-  async function blockReason(hostname: string): Promise<string | null> {
+  // Validate a host and, for resolved hostnames, return the checked IPs so the
+  // connection can be pinned to them (closing the DNS-rebinding window).
+  async function checkHost(hostname: string): Promise<{ blocked: string | null; ips: string[] }> {
     const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
     if (host === "localhost" || host === "ip6-localhost" || host.endsWith(".localhost")) {
-      return allowLoopback ? null : "blocked: loopback host (localhost)";
+      return { blocked: allowLoopback ? null : "blocked: loopback host (localhost)", ips: [] };
     }
     if (host.endsWith(".local") || host.endsWith(".internal")) {
-      return "blocked: internal host";
+      return { blocked: "blocked: internal host", ips: [] };
     }
     const verdict = (klass: HostClass): string | null => {
       if (klass === "private") return "blocked: internal/private address";
@@ -208,21 +219,37 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
       return null;
     };
     if (isIP(host)) {
-      return verdict(classifyIp(host));
+      // Literal address: fetch connects straight to it, no DNS, nothing to pin.
+      return { blocked: verdict(classifyIp(host)), ips: [] };
     }
     if (options.resolveHost) {
       let addrs: string[] = [];
       try {
         addrs = await options.resolveHost(host);
       } catch {
-        return "blocked: host did not resolve";
+        return { blocked: "blocked: host did not resolve", ips: [] };
       }
+      if (addrs.length === 0) return { blocked: "blocked: host did not resolve", ips: [] };
       for (const addr of addrs) {
         const reason = verdict(classifyIp(addr));
-        if (reason) return `${reason} (${host} → ${addr})`;
+        if (reason) return { blocked: `${reason} (${host} → ${addr})`, ips: [] };
       }
+      return { blocked: null, ips: addrs };
     }
-    return null;
+    return { blocked: null, ips: [] };
+  }
+
+  // undici lookup that returns ONLY the pre-validated IPs, so the socket connects
+  // to the address we checked (not a fresh, rebindable DNS result). SNI/Host stay
+  // the original hostname, so TLS and virtual hosting keep working.
+  function pinnedLookup(ips: string[]) {
+    const mapped = ips.map((ip) => ({ address: ip, family: isIP(ip) === 6 ? 6 : 4 }));
+    return (_hostname: string, opts: unknown, cb: (...args: unknown[]) => void): void => {
+      const callback = (typeof opts === "function" ? opts : cb) as (...args: unknown[]) => void;
+      const all = typeof opts === "object" && opts !== null && (opts as { all?: boolean }).all;
+      if (all) callback(null, mapped);
+      else callback(null, mapped[0]!.address, mapped[0]!.family);
+    };
   }
 
   async function fetchUrl(rawUrl: string): Promise<string> {
@@ -240,16 +267,25 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const dispatchers: Array<{ close: () => Promise<void> }> = [];
     try {
       // Follow redirects manually so each hop's host is re-validated — a public
       // URL must not be able to redirect the worker to an internal address.
       let current = url;
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-        const blocked = await blockReason(current.hostname);
+        const { blocked, ips } = await checkHost(current.hostname);
         if (blocked) {
           return JSON.stringify({ ok: false, url: current.toString(), error: blocked });
         }
-        const response = await fetchImpl(current, { signal: controller.signal, redirect: "manual" });
+        const init: RequestInit & { dispatcher?: unknown } = { signal: controller.signal, redirect: "manual" };
+        if (ips.length > 0) {
+          // Pin the connection to a validated IP (DNS-rebinding guard).
+          const { Agent } = await import("undici");
+          const agent = new Agent({ connect: { lookup: pinnedLookup(ips) as never } });
+          dispatchers.push(agent);
+          init.dispatcher = agent;
+        }
+        const response = await fetchImpl(current, init);
         const location = response.headers.get("location");
         if (response.status >= 300 && response.status < 400 && location) {
           current = new URL(location, current);
@@ -271,6 +307,9 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
       return JSON.stringify({ ok: false, url: url.toString(), error: message });
     } finally {
       clearTimeout(timer);
+      for (const d of dispatchers) {
+        await d.close().catch(() => undefined);
+      }
     }
   }
 
