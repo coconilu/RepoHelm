@@ -258,6 +258,35 @@ describe("buildWebToolHandlers", () => {
     }
   });
 
+  it("cancels the redirect response body before following the next hop", async () => {
+    let cancelled = false;
+    const hangingBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode("A")); // never closes
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    let call = 0;
+    const web = buildWebToolHandlers({
+      enabled: true,
+      fetchImpl: async () => {
+        call += 1;
+        if (call === 1) {
+          return new Response(hangingBody, { status: 302, headers: { location: "http://93.184.216.34/ok" } });
+        }
+        return okResponse("done");
+      }
+    });
+
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://93.184.216.34/start" }));
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("done");
+    expect(cancelled).toBe(true); // the unconsumed redirect body was released
+  });
+
   it("reports a non-configured web_search instead of pretending", async () => {
     const web = buildWebToolHandlers({ enabled: true });
 

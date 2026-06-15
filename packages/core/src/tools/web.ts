@@ -290,6 +290,10 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
         const response = await fetchImpl(current, init);
         const location = response.headers.get("location");
         if (response.status >= 300 && response.status < 400 && location) {
+          // Release the redirect response body — an unconsumed body keeps the
+          // connection (and its undici Agent) alive, letting a hostile 3xx hang
+          // web_fetch past its own timeout.
+          await response.body?.cancel().catch(() => undefined);
           current = new URL(location, current);
           continue;
         }
