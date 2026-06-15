@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -75,6 +75,43 @@ describe("buildProcessToolHandlers", () => {
     expect(list.ok).toBe(true);
     expect(list.processes.some((p: { handle: string }) => p.handle === started.handle)).toBe(true);
     await procs.dispose();
+  });
+
+  it("kills the whole process tree on dispose, not just the top-level shell", async () => {
+    const root = await worktree();
+    const pidFile = join(root, "child.pid");
+    const procs = buildProcessToolHandlers(root, { isAllowed: allowAll });
+
+    // The shell backgrounds a long-lived grandchild and records its pid, then
+    // stays alive. A top-level-only kill would orphan the grandchild.
+    const started = JSON.parse(
+      await procs.handle(PROCESS_START_TOOL, { command: `sleep 30 & echo $! > ${pidFile}; sleep 30` })
+    );
+    expect(started.ok).toBe(true);
+
+    let childPid = 0;
+    for (let i = 0; i < 100; i++) {
+      const raw = await readFile(pidFile, "utf8").catch(() => "");
+      childPid = Number(raw.trim());
+      if (childPid > 0) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(childPid).toBeGreaterThan(0);
+
+    await procs.dispose();
+
+    // After dispose the backgrounded grandchild must be gone (ESRCH on signal 0).
+    let alive = true;
+    for (let i = 0; i < 100; i++) {
+      try {
+        process.kill(childPid, 0);
+        await new Promise((r) => setTimeout(r, 20));
+      } catch {
+        alive = false;
+        break;
+      }
+    }
+    expect(alive).toBe(false);
   });
 
   it("returns an error reading an unknown handle", async () => {

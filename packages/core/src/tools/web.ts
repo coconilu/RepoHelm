@@ -68,6 +68,40 @@ export interface WebToolHandler {
 const DEFAULT_MAX_BYTES = 100_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
 
+/**
+ * Read a response body up to `maxBytes`, then stop and cancel the stream so a
+ * huge response is never fully downloaded into memory. `maxBytes` is a real
+ * resource ceiling, not just a slice of an already-buffered body. Falls back to
+ * a buffered read (still sliced) when the body isn't a readable stream.
+ */
+async function readCapped(response: Response, maxBytes: number): Promise<{ content: string; truncated: boolean }> {
+  const body = response.body;
+  if (!body || typeof body.getReader !== "function") {
+    const text = await response.text();
+    return { content: text.slice(0, maxBytes), truncated: text.length > maxBytes };
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let content = "";
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      content += decoder.decode(value, { stream: true });
+      if (content.length >= maxBytes) {
+        truncated = true;
+        content = content.slice(0, maxBytes);
+        await reader.cancel();
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return { content, truncated };
+}
+
 export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandler {
   const enabled = options.enabled ?? false;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -91,15 +125,14 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(url, { signal: controller.signal, redirect: "follow" });
-      const body = await response.text();
-      const truncated = body.length > maxBytes;
+      const { content, truncated } = await readCapped(response, maxBytes);
       return JSON.stringify({
         ok: response.ok,
         url: url.toString(),
         status: response.status,
         contentType: response.headers.get("content-type") ?? undefined,
         truncated,
-        content: truncated ? body.slice(0, maxBytes) : body
+        content
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

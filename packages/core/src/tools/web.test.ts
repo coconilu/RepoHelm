@@ -42,6 +42,37 @@ describe("buildWebToolHandlers", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("aborts the response body once maxBytes is reached instead of draining it", async () => {
+    let cancelled = false;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > 50) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode("AAAAA")); // 5 bytes per chunk
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    const web = buildWebToolHandlers({
+      enabled: true,
+      maxBytes: 7,
+      fetchImpl: async () => new Response(body, { status: 200, headers: { "content-type": "text/plain" } })
+    });
+
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "https://example.com" }));
+
+    expect(result.ok).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(result.content.length).toBeLessThanOrEqual(10);
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(50);
+  });
+
   it("rejects non-http(s) URLs even when enabled", async () => {
     const web = buildWebToolHandlers({ enabled: true, fetchImpl: async () => okResponse("x") });
 

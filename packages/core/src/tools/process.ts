@@ -91,6 +91,28 @@ interface ProcEntry {
 
 const DEFAULT_MAX_OUTPUT = 32_000;
 
+/**
+ * Signal the child's entire process group (the shell started it as a group
+ * leader via `detached`), so descendants are terminated too. Falls back to
+ * signalling just the child if the group kill is unavailable.
+ */
+function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  try {
+    if (pid) {
+      process.kill(-pid, signal); // negative pid → process group
+      return;
+    }
+  } catch {
+    // group gone or unsupported; fall through to a direct kill
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // best-effort
+  }
+}
+
 export function buildProcessToolHandlers(root: string, options: ProcessToolOptions = {}): ProcessToolHandler {
   const isAllowed = options.isAllowed ?? (() => false);
   const maxOutput = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT;
@@ -100,7 +122,10 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
   function start(command: string): ProcEntry {
     const child = spawn("sh", ["-lc", command], {
       cwd: root,
-      env: { ...process.env, NO_COLOR: "1", GIT_TERMINAL_PROMPT: "0" }
+      env: { ...process.env, NO_COLOR: "1", GIT_TERMINAL_PROMPT: "0" },
+      // New process group so we can signal the whole tree (the shell plus any
+      // children it spawns — dev servers, watchers), not just the top-level sh.
+      detached: true
     });
     const entry: ProcEntry = { command, child, stdout: "", stderr: "", running: true, exitCode: null };
     const cap = (current: string, chunk: Buffer): string =>
@@ -161,7 +186,7 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
         const handle = String(args.handle ?? "");
         const entry = procs.get(handle);
         if (!entry) return JSON.stringify({ ok: false, error: `unknown process handle: ${handle}` });
-        if (entry.running) entry.child.kill("SIGTERM");
+        if (entry.running) killTree(entry.child, "SIGTERM");
         return JSON.stringify({ ok: true, handle, stopped: true });
       }
 
@@ -181,11 +206,7 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
     async dispose() {
       for (const entry of procs.values()) {
         if (entry.running) {
-          try {
-            entry.child.kill("SIGKILL");
-          } catch {
-            // best-effort cleanup
-          }
+          killTree(entry.child, "SIGKILL");
         }
       }
     }
