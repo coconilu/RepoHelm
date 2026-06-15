@@ -41,6 +41,8 @@ A valid golden flow must exercise the same path a user would naturally take:
 - Reports must include IDs, paths, assertions, screenshots, and git diff evidence.
 - Unexpected extra files are failures unless the scenario explicitly allows them.
 
-## Current Scenario
+## Current Scenarios
 
-The first scenario is `golden-basic-flow`: create a workspace, add a simple repository, link it, execute a quest that updates quest risk metadata, and verify the resulting diff and artifact.
+- `golden-basic-flow`: create a workspace, add a simple repository, link it, execute a quest that updates quest risk metadata, and verify the resulting diff and artifact. Run via `pnpm test:agent`.
+- `golden-complex-flow`: a multi-repo, dependency-ordered quest across two repositories; verifies the plan encodes a real dependency and both worktrees get real diffs. Run via `pnpm test:agent:complex`.
+- `golden-toolset-flow`: a single-repo quest whose worker runs through the **real BYOK tool-calling loop** and exercises the built-in tool set (issue #22 A–E). The entry/supervisor keeps the deterministic CLI planning backend; the worker's BYOK ModelKit points at a fake OpenAI-compatible server (`tests/agent/fixtures/golden-toolset-llm-server.cjs`) that scripts tool calls — `write_todos` (E), `search_files` regex+glob (A), `read_file` of a PNG (D), `web_fetch` of a local docs endpoint (B), and `start_process`/`read_process` (C) — then writes `src/generated-summary.md` echoing the real tool outputs. The scenario asserts on that summary so each tool's behavior is verified end-to-end. Web access is enabled via `REPOHELM_ENABLE_WEB=1`. Run via `pnpm test:agent:toolset`.
