@@ -56,10 +56,12 @@ export async function seedQaAgents() {
 
 /**
  * Seed agents for the toolset-flow scenario: the entry/supervisor keeps the
- * deterministic CLI planning backend, but the worker uses a BYOK ModelKit whose
- * baseUrl points at the local fake LLM server — so step execution goes through
- * the REAL tool-calling loop (runWorkerWithFsTools) and exercises the built-in
- * tools (issue #22 A–E).
+ * deterministic CLI planning backend, but TWO distinct worker agents use BYOK
+ * ModelKits whose baseUrl points at the local fake LLM server — so step execution
+ * goes through the REAL tool-calling loop (runWorkerWithFsTools) and exercises the
+ * built-in tools (issue #22 A–E). The plan assigns step_1 to the researcher and
+ * step_2 (dependent) to the implementer, demonstrating plan-based orchestration
+ * across two repos and two agents.
  */
 export async function seedQaToolsetAgents(byokBaseUrl: string) {
   const entryKit = await postJson<{ id: string }>("/api/model-kits", {
@@ -78,22 +80,36 @@ export async function seedQaToolsetAgents(byokBaseUrl: string) {
   });
   const entry = await postJson<{ id: string }>("/api/sub-agents", {
     name: "QA Supervisor",
-    role: "Entry supervisor used by the toolset flow to produce a single-step execution plan.",
+    role: "Entry supervisor used by the toolset flow to produce a two-step, dependency-ordered execution plan.",
     capabilities: ["planning"],
     modelKitId: entryKit.id,
     mode: "entry",
     permissions: { allowedTools: ["delegate"], deniedTools: [] }
   });
-  const worker = await postJson<{ id: string }>("/api/sub-agents", {
-    name: "QA Coder",
-    role: "Worker agent that exercises the built-in tool set via the BYOK tool-calling loop.",
-    capabilities: ["coding", "planning"],
+  const researcher = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Researcher",
+    role: "Worker agent that researches the API contract via search_files, read_file and web_fetch.",
+    capabilities: ["research", "coding"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  const implementer = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Implementer",
+    role: "Worker agent that implements the storefront summary via write_todos, start_process and search_files.",
+    capabilities: ["coding"],
     modelKitId: workerKit.id,
     mode: "worker",
     permissions: { allowedTools: [], deniedTools: [] }
   });
   await postJson("/api/sub-agents/set-entry", { id: entry.id });
-  return { entryKitId: entryKit.id, workerKitId: workerKit.id, entryAgentId: entry.id, workerAgentId: worker.id };
+  return {
+    entryKitId: entryKit.id,
+    workerKitId: workerKit.id,
+    entryAgentId: entry.id,
+    researcherAgentId: researcher.id,
+    implementerAgentId: implementer.id
+  };
 }
 
 export async function getState(): Promise<RepoHelmState> {
