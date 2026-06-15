@@ -6,7 +6,7 @@ import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
 import { embedWithModelKit, callLlmWithModelKit, streamLlmWithModelKit, type LlmMessage } from "./llm.js";
-import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
+import { SubAgentOrchestrator, isDelegatableWorker, type OrchestratorQuestResult } from "./orchestrator.js";
 import { selectExecutionMode, type ExecutionMode } from "./planning.js";
 import { buildKnowledgeToolHandlers, knowledgeToolSpecs } from "./tools/knowledge.js";
 import { buildHabitsToolHandlers, habitsToolSpecs } from "./tools/habits.js";
@@ -1653,8 +1653,8 @@ export class RepoHelmService {
       throw new Error("Quest not found");
     }
     const entryModelKit = await this.getModelKit(entryAgent.modelKitId);
-    const delegatableAgentCount = (await this.listSubAgents()).filter(
-      (agent) => agent.id !== entryAgent.id
+    const delegatableAgentCount = (await this.listSubAgents()).filter((agent) =>
+      isDelegatableWorker(agent, entryAgent.id)
     ).length;
     const mode = selectExecutionMode({
       quest: modeQuest,

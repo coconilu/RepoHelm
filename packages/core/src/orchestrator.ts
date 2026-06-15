@@ -41,6 +41,17 @@ const execFileAsync = promisify(execFile);
 const MAX_TOOL_LOOP_ITERATIONS = 8;
 
 /**
+ * Whether `agent` can receive delegated subtasks (plan steps or runtime delegate
+ * calls) from the entry agent. Excludes the entry itself and the built-in system
+ * agents (`mode: "system"` — kb / habits / failure-experience), which are driven
+ * via `invokeSystemAgent`, not the orchestration worker pool. Legacy agents with
+ * no `mode` set are treated as workers (backward compatible).
+ */
+export function isDelegatableWorker(agent: SubAgent, entryAgentId: string): boolean {
+  return agent.id !== entryAgentId && agent.mode !== "entry" && agent.mode !== "system";
+}
+
+/**
  * Deterministic hard cap on how many times a single plan step may run (initial
  * attempt + lead-driven retries/reassigns/revisions). The orchestrator enforces
  * this regardless of what the lead chooses, so a step always terminates.
@@ -337,19 +348,29 @@ export class SubAgentOrchestrator {
         quest,
         targetProjectId
       });
-      const ok = !res.error;
       const writtenFiles = res.writtenFiles ?? [];
+      // Apply the SAME material-output check as the plan path (runStepWithRecovery):
+      // a delegation whose task implies file changes but produced none is a failure,
+      // even if a sibling delegation wrote files (which would otherwise mark the
+      // whole quest deliverable). Pure research/text tasks are not "required" and
+      // stay ok with no files.
+      const material = !res.error
+        ? validateMaterialOutput(step, writtenFiles)
+        : { ok: false, required: false };
+      const failReason = res.error ?? (!material.ok ? material.reason : undefined);
+      const ok = !failReason;
       delegations.push({
         agentId: worker.id,
         agentName: worker.name,
         ok,
         summary: ok
           ? `${truncate(res.content, 400)}${writtenFiles.length ? `\n写入文件: ${writtenFiles.join(", ")}` : ""}`
-          : `error: ${res.error}${res.content ? `\nWorker output: ${truncate(res.content, 300)}` : ""}`,
+          : `error: ${failReason}${res.content ? `\nWorker output: ${truncate(res.content, 300)}` : ""}`,
         events: res.events
       });
-      // The value handed back to the entry LLM as the delegate tool result.
-      return { content: res.content, writtenFiles, ...(res.error ? { error: res.error } : {}) };
+      // The value handed back to the entry LLM as the delegate tool result, so the
+      // supervisor can react to a failure (re-delegate, pick another worker, …).
+      return { content: res.content, writtenFiles, ...(failReason ? { error: failReason } : {}) };
     };
 
     const handleDelegate = buildDelegateHandler(resolveAgent, invokeWorker, entryAgent.id);
@@ -707,7 +728,7 @@ export class SubAgentOrchestrator {
 
   private async listDelegatableAgents(entryAgentId: string): Promise<SubAgent[]> {
     const all = await this.service.listSubAgents();
-    return all.filter((agent) => agent.id !== entryAgentId);
+    return all.filter((agent) => isDelegatableWorker(agent, entryAgentId));
   }
 
   private async invokeWorkerAgent(

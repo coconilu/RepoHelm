@@ -10,8 +10,10 @@ import { promisify } from "node:util";
 import { writeFile } from "node:fs/promises";
 import { RepoHelmService } from "./service.js";
 import { SqliteStateStore } from "./store.js";
-import { SubAgentOrchestrator } from "./orchestrator.js";
-import type { ModelKit, Quest, WorktreeState } from "./types.js";
+import { SubAgentOrchestrator, isDelegatableWorker } from "./orchestrator.js";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { ModelKit, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1669,6 +1671,193 @@ describe("Plan-then-execute flow", () => {
       expect(executed.agentSummary).toContain("1. Coder (ok)");
     } finally {
       restore();
+    }
+  });
+
+  it("isDelegatableWorker excludes the entry agent and built-in system agents", () => {
+    const mk = (id: string, mode: SubAgent["mode"]) => ({ id, mode } as unknown as SubAgent);
+    expect(isDelegatableWorker(mk("w1", "worker"), "entry")).toBe(true);
+    // Legacy agents predate the `mode` field; treat them as delegatable workers.
+    expect(isDelegatableWorker(mk("legacy", undefined), "entry")).toBe(true);
+    expect(isDelegatableWorker(mk("entry", "entry"), "entry")).toBe(false);
+    expect(isDelegatableWorker(mk("kb-agent", "system"), "entry")).toBe(false);
+    // Excluded when it IS the entry, regardless of its declared mode.
+    expect(isDelegatableWorker(mk("self", "worker"), "self")).toBe(false);
+  });
+
+  it("marks a file-less required delegation failed even when a sibling delegation produced files", async () => {
+    // Reviewer scenario: in delegate mode the supervisor delegates to two workers.
+    // One writes a file (so the quest has material changes), the other is an
+    // implementation task that writes nothing. Without a per-delegation material
+    // check, the file-less delegation slips through and the whole quest is marked
+    // `ready`. It must instead be marked failed so the quest stays `blocked`.
+    const restoreKeys = [
+      "REPOHELM_GENERIC_CLI_COMMAND",
+      "REPOHELM_TEST_WORKER_WRITES_JSON",
+      "REPOHELM_TEST_WORKER_OUTPUT"
+    ];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+
+    // Fake BYOK entry endpoint: delegate to Researcher (writes findings), then to
+    // Coder (implementation task that writes nothing), then summarize.
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsgs = messages.filter((m) => m.role === "tool").length;
+        const idFor = (name: string) => (new RegExp(`^- (\\S+): ${name} `, "m").exec(user) ?? [])[1] || name;
+        let message: Record<string, unknown>;
+        if (toolMsgs === 0) {
+          message = {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "c1",
+                type: "function",
+                function: {
+                  name: "delegate",
+                  arguments: JSON.stringify({
+                    agentId: idFor("Researcher"),
+                    task: "Research the offer contract and write the findings file src/findings.md."
+                  })
+                }
+              }
+            ]
+          };
+        } else if (toolMsgs === 1) {
+          message = {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "c2",
+                type: "function",
+                function: {
+                  name: "delegate",
+                  arguments: JSON.stringify({
+                    agentId: idFor("Coder"),
+                    task: "Implement the offer handler and write the source file src/handler.ts."
+                  })
+                }
+              }
+            ]
+          };
+        } else {
+          message = { role: "assistant", content: "Delegated research and implementation; summarizing." };
+        }
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: message.tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      // Only the researcher's task ("findings") triggers a write; the coder's does not.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "findings", path: "src/findings.md", content: "FOUND\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Looked around but produced no file.";
+
+      await service.createModelKit({
+        id: "delegate-entry-kit",
+        name: "Delegate Entry BYOK",
+        type: "byok",
+        providerId: "fake",
+        model: "fake-model",
+        config: { provider: "fake", baseUrl, model: "fake-model", apiKey: "fake-key" }
+      });
+      await service.createModelKit({
+        id: "delegate-worker-kit",
+        name: "Delegate Worker CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "delegate-entry-kit",
+        mode: "entry",
+        permissions: { allowedTools: ["delegate"], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "researcher",
+        name: "Researcher",
+        role: "Researches and writes findings",
+        capabilities: ["research"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Implements code",
+        capabilities: ["coding"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        // Open-ended, single-project, >200 chars, no ordering keywords → with a BYOK
+        // entry and ≥2 workers this routes to delegate mode.
+        title: "Delegate material guard",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [project.id]
+      });
+
+      // Delegate mode executes synchronously on runQuest (no approval gate).
+      const executed = await service.runQuest(quest.id);
+
+      // A sibling delegation DID write a file (so the quest has material changes)…
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/findings.md");
+      // …yet the file-less implementation delegation is marked failed, blocking delivery.
+      expect(executed.status).toBe("blocked");
+      expect(executed.agentSummary).toContain("Coder (fail)");
+      expect(executed.agentSummary).toContain("Worker completed without required material output");
+
+      const finalState = await service.getState();
+      const events = finalState.events.filter((e) => e.questId === quest.id);
+      expect(events.some((e) => e.type === "step.failed" && e.title === "步骤失败: Coder")).toBe(true);
+      expect(events.some((e) => e.type === "step.completed" && e.title === "步骤完成: Researcher")).toBe(true);
+      expect(events.some((e) => e.type === "orchestrator.failed")).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
     }
   });
 });
