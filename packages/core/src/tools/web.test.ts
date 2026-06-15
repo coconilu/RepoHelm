@@ -82,6 +82,102 @@ describe("buildWebToolHandlers", () => {
     expect(String(result.error ?? "")).toMatch(/http/i);
   });
 
+  it("blocks loopback, link-local and private IP literals by default (SSRF)", async () => {
+    for (const host of ["127.0.0.1", "169.254.169.254", "10.0.0.5", "192.168.1.1", "172.16.0.1", "[::1]"]) {
+      let called = false;
+      const web = buildWebToolHandlers({
+        enabled: true,
+        fetchImpl: async () => {
+          called = true;
+          return okResponse("secret");
+        }
+      });
+      const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: `http://${host}/latest/meta-data` }));
+      expect(result.ok, host).toBe(false);
+      expect(called, host).toBe(false);
+      expect(String(result.error ?? ""), host).toMatch(/blocked|internal|private|loopback|not allowed/i);
+    }
+  });
+
+  it("blocks the localhost hostname", async () => {
+    const web = buildWebToolHandlers({ enabled: true, fetchImpl: async () => okResponse("x") });
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://localhost:8080/" }));
+    expect(result.ok).toBe(false);
+  });
+
+  it("permits loopback only when allowLoopback is set, still blocking the metadata IP", async () => {
+    const web = buildWebToolHandlers({ enabled: true, allowLoopback: true, fetchImpl: async () => okResponse("local-ok") });
+
+    const loop = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://127.0.0.1:4399/docs" }));
+    expect(loop.ok).toBe(true);
+    expect(loop.content).toContain("local-ok");
+
+    const meta = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://169.254.169.254/" }));
+    expect(meta.ok).toBe(false);
+  });
+
+  it("allows a public IP literal", async () => {
+    let called = false;
+    const web = buildWebToolHandlers({
+      enabled: true,
+      fetchImpl: async () => {
+        called = true;
+        return okResponse("public");
+      }
+    });
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://93.184.216.34/" }));
+    expect(result.ok).toBe(true);
+    expect(called).toBe(true);
+  });
+
+  it("blocks a hostname that resolves to a private IP (DNS rebinding guard)", async () => {
+    let called = false;
+    const web = buildWebToolHandlers({
+      enabled: true,
+      resolveHost: async () => ["10.1.2.3"],
+      fetchImpl: async () => {
+        called = true;
+        return okResponse("x");
+      }
+    });
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "https://evil.example.com/" }));
+    expect(result.ok).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it("allows a hostname that resolves to a public IP", async () => {
+    const web = buildWebToolHandlers({
+      enabled: true,
+      resolveHost: async () => ["93.184.216.34"],
+      fetchImpl: async () => okResponse("ok-public")
+    });
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "https://good.example.com/" }));
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("ok-public");
+  });
+
+  it("re-validates redirect targets and blocks a redirect to an internal address", async () => {
+    let calls = 0;
+    const web = buildWebToolHandlers({
+      enabled: true,
+      fetchImpl: async (input) => {
+        calls += 1;
+        const u = String(input);
+        if (u.includes("169.254.169.254")) {
+          // Should never be fetched — the redirect target must be blocked first.
+          return okResponse("LEAKED");
+        }
+        return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest" } });
+      }
+    });
+
+    const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://93.184.216.34/redirect" }));
+
+    expect(result.ok).toBe(false);
+    expect(calls).toBe(1); // only the first (public) hop was fetched
+    expect(String(result.error ?? "")).toMatch(/blocked|internal|private/i);
+  });
+
   it("reports a non-configured web_search instead of pretending", async () => {
     const web = buildWebToolHandlers({ enabled: true });
 

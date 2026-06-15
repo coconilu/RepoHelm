@@ -25,6 +25,10 @@ export interface WorkerToolOptions {
   webFetchImpl?: typeof fetch;
   /** Pluggable web_search backend. */
   webSearchImpl?: (query: string) => Promise<WebSearchResult[]>;
+  /** Allow web_fetch to reach loopback/localhost (local dev services). */
+  allowLoopback?: boolean;
+  /** Resolve hostnames to IPs for the web_fetch SSRF guard (DNS-rebinding). */
+  resolveHost?: (hostname: string) => Promise<string[]>;
 }
 
 export interface WorkerToolset {
@@ -65,7 +69,9 @@ export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}
   const web = buildWebToolHandlers({
     enabled: options.enableWeb,
     fetchImpl: options.webFetchImpl,
-    searchImpl: options.webSearchImpl
+    searchImpl: options.webSearchImpl,
+    allowLoopback: options.allowLoopback,
+    resolveHost: options.resolveHost
   });
 
   // Union of files touched via write_file (fs) and edit_file (edit), so the

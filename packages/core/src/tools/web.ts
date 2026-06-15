@@ -1,7 +1,42 @@
+import { isIP } from "node:net";
 import type { LlmToolSpec } from "../llm.js";
 
 export const WEB_FETCH_TOOL = "web_fetch";
 export const WEB_SEARCH_TOOL = "web_search";
+
+type HostClass = "public" | "loopback" | "private";
+
+/** Classify an IP literal as public, loopback, or otherwise-internal (SSRF). */
+function classifyIp(ip: string): HostClass {
+  const v = isIP(ip);
+  if (v === 4) return classifyV4(ip);
+  if (v === 6) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1") return "loopback";
+    // IPv4-mapped (::ffff:a.b.c.d) → classify the embedded v4.
+    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return classifyV4(mapped[1]!);
+    if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
+      return "private"; // fe80::/10 link-local
+    }
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return "private"; // fc00::/7 unique-local
+    return "public";
+  }
+  return "public";
+}
+
+function classifyV4(ip: string): HostClass {
+  const parts = ip.split(".").map(Number);
+  const [a, b] = parts;
+  if (a === undefined || b === undefined) return "public";
+  if (a === 127 || (a === 0 && b === 0)) return "loopback";
+  if (a === 10) return "private";
+  if (a === 172 && b >= 16 && b <= 31) return "private";
+  if (a === 192 && b === 168) return "private";
+  if (a === 169 && b === 254) return "private"; // link-local incl. cloud metadata 169.254.169.254
+  if (a === 100 && b >= 64 && b <= 127) return "private"; // CGNAT
+  return "public";
+}
 
 export interface WebSearchResult {
   title: string;
@@ -16,6 +51,11 @@ export interface WebToolOptions {
   fetchImpl?: typeof fetch;
   /** Pluggable search backend; absent means web_search is "not configured". */
   searchImpl?: (query: string) => Promise<WebSearchResult[]>;
+  /** Allow loopback/localhost targets (e.g. local dev services). Default false. */
+  allowLoopback?: boolean;
+  /** Resolve a hostname to IPs so DNS names pointing at internal addresses are
+   *  blocked (DNS-rebinding guard). Absent skips DNS resolution. */
+  resolveHost?: (hostname: string) => Promise<string[]>;
   /** Max bytes of body text kept in the tool result. */
   maxBytes?: number;
   /** Per-request timeout. */
@@ -67,6 +107,7 @@ export interface WebToolHandler {
 
 const DEFAULT_MAX_BYTES = 100_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
+const MAX_REDIRECTS = 5;
 
 /**
  * Read a response body up to `maxBytes`, then stop and cancel the stream so a
@@ -108,6 +149,40 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  const allowLoopback = options.allowLoopback ?? false;
+
+  // Decide whether a host may be fetched. Returns a block reason or null.
+  async function blockReason(hostname: string): Promise<string | null> {
+    const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (host === "localhost" || host === "ip6-localhost" || host.endsWith(".localhost")) {
+      return allowLoopback ? null : "blocked: loopback host (localhost)";
+    }
+    if (host.endsWith(".local") || host.endsWith(".internal")) {
+      return "blocked: internal host";
+    }
+    const verdict = (klass: HostClass): string | null => {
+      if (klass === "private") return "blocked: internal/private address";
+      if (klass === "loopback") return allowLoopback ? null : "blocked: loopback address";
+      return null;
+    };
+    if (isIP(host)) {
+      return verdict(classifyIp(host));
+    }
+    if (options.resolveHost) {
+      let addrs: string[] = [];
+      try {
+        addrs = await options.resolveHost(host);
+      } catch {
+        return "blocked: host did not resolve";
+      }
+      for (const addr of addrs) {
+        const reason = verdict(classifyIp(addr));
+        if (reason) return `${reason} (${host} → ${addr})`;
+      }
+    }
+    return null;
+  }
+
   async function fetchUrl(rawUrl: string): Promise<string> {
     let url: URL;
     try {
@@ -124,16 +199,31 @@ export function buildWebToolHandlers(options: WebToolOptions = {}): WebToolHandl
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(url, { signal: controller.signal, redirect: "follow" });
-      const { content, truncated } = await readCapped(response, maxBytes);
-      return JSON.stringify({
-        ok: response.ok,
-        url: url.toString(),
-        status: response.status,
-        contentType: response.headers.get("content-type") ?? undefined,
-        truncated,
-        content
-      });
+      // Follow redirects manually so each hop's host is re-validated — a public
+      // URL must not be able to redirect the worker to an internal address.
+      let current = url;
+      for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        const blocked = await blockReason(current.hostname);
+        if (blocked) {
+          return JSON.stringify({ ok: false, url: current.toString(), error: blocked });
+        }
+        const response = await fetchImpl(current, { signal: controller.signal, redirect: "manual" });
+        const location = response.headers.get("location");
+        if (response.status >= 300 && response.status < 400 && location) {
+          current = new URL(location, current);
+          continue;
+        }
+        const { content, truncated } = await readCapped(response, maxBytes);
+        return JSON.stringify({
+          ok: response.ok,
+          url: current.toString(),
+          status: response.status,
+          contentType: response.headers.get("content-type") ?? undefined,
+          truncated,
+          content
+        });
+      }
+      return JSON.stringify({ ok: false, url: url.toString(), error: "too many redirects" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return JSON.stringify({ ok: false, url: url.toString(), error: message });
