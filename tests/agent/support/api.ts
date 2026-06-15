@@ -7,9 +7,11 @@ export interface RepoHelmState {
     title: string;
     status: string;
     planPath?: string;
+    agentSummary?: string;
     worktrees: Array<{ projectId: string; worktreePath: string; status: string }>;
     changedFiles: Array<{ projectId: string; path: string; status: string; diff: string; worktreePath: string } | string>;
   }>;
+  events: Array<{ id: string; questId: string; type: string; title: string; detail: string; agent: string; createdAt: string }>;
 }
 
 const apiBase = "http://127.0.0.1:4300";
@@ -97,6 +99,62 @@ export async function seedQaToolsetAgents(byokBaseUrl: string) {
   const implementer = await postJson<{ id: string }>("/api/sub-agents", {
     name: "QA Implementer",
     role: "Worker agent that implements the storefront summary via write_todos, start_process and search_files.",
+    capabilities: ["coding"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  await postJson("/api/sub-agents/set-entry", { id: entry.id });
+  return {
+    entryKitId: entryKit.id,
+    workerKitId: workerKit.id,
+    entryAgentId: entry.id,
+    researcherAgentId: researcher.id,
+    implementerAgentId: implementer.id
+  };
+}
+
+/**
+ * Seed agents for the delegation-flow scenario: unlike the toolset flow (which
+ * keeps a deterministic CLI entry + a static plan), here the **entry/supervisor
+ * is itself a BYOK agent** pointing at the fake LLM server. That makes
+ * selectExecutionMode pick the adaptive `delegate` path: the supervisor runs in a
+ * tool-calling loop and decides AT RUNTIME which worker handles each subtask via
+ * the `delegate` tool. Two distinct BYOK workers (researcher, implementer) also
+ * point at the fake server so their real tool-calling loops write files.
+ */
+export async function seedQaDelegationAgents(byokBaseUrl: string) {
+  const byokKit = async (name: string) =>
+    postJson<{ id: string }>("/api/model-kits", {
+      name,
+      type: "byok",
+      providerId: "qa-fake",
+      model: "qa-fake-model",
+      config: { provider: "qa-fake", baseUrl: byokBaseUrl, model: "qa-fake-model", apiKey: "qa-fake-key" }
+    });
+
+  const entryKit = await byokKit("qa-delegation-entry-byok");
+  const workerKit = await byokKit("qa-delegation-worker-byok");
+
+  const entry = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Supervisor",
+    role: "Entry supervisor that delegates subtasks to workers at runtime via the delegate tool.",
+    capabilities: ["planning"],
+    modelKitId: entryKit.id,
+    mode: "entry",
+    permissions: { allowedTools: ["delegate"], deniedTools: [] }
+  });
+  const researcher = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Researcher",
+    role: "Worker agent that researches the contract in the api repo and writes src/findings.md.",
+    capabilities: ["research", "coding"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  const implementer = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Implementer",
+    role: "Worker agent that implements and verifies the storefront summary in the web repo.",
     capabilities: ["coding"],
     modelKitId: workerKit.id,
     mode: "worker",

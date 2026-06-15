@@ -11,6 +11,7 @@ import {
   type LlmToolSpec
 } from "./llm.js";
 import { assessComplexity, generateOrchestrationPlan } from "./planning.js";
+import { buildDelegationPrompt, runDelegationLoop } from "./delegation.js";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
 import {
   buildDelegateHandler,
@@ -78,6 +79,9 @@ export interface OrchestratorQuestResult {
   finalContent: string;
   delegations: Array<{ agentId: string; agentName: string; ok: boolean; summary: string; events?: BackendEvent[] }>;
   iterations: number;
+  /** Events emitted by the entry agent itself (delegate-mode loop): its tool
+   *  calls and messages, surfaced on the timeline ahead of the worker events. */
+  entryEvents?: BackendEvent[];
 }
 
 /**
@@ -269,6 +273,120 @@ export class SubAgentOrchestrator {
       finalContent: `${plan.summary}\n\n---\n\n${finalContent}`,
       delegations,
       iterations: executed.size
+    };
+  }
+
+  /**
+   * Delegate-mode execution: the entry agent runs in a tool-calling loop whose
+   * only tool is `delegate`, deciding AT RUNTIME which worker handles each
+   * subtask (vs the static, pre-approved DAG of executeApprovedPlan). Each
+   * delegate call is routed to the named worker via the existing
+   * invokeWorkerAgent path; the worker's result is threaded back so the entry
+   * can adapt — delegate again, to a different worker, with a new task.
+   *
+   * Requires a BYOK entry ModelKit (the loop is driven by callLlmWithModelKit
+   * tool calls). Returns the same OrchestratorQuestResult shape as the plan path
+   * so persistence is shared.
+   */
+  async executeDelegated(questId: string): Promise<OrchestratorQuestResult> {
+    const entryAgent = await this.service.getEntrySubAgent();
+    if (!entryAgent) {
+      throw new Error("No entry sub-agent configured");
+    }
+    const quest = await this.service.getQuest(questId);
+    if (!quest) {
+      throw new Error(`Quest ${questId} not found`);
+    }
+    const modelKit = await this.requireModelKit(entryAgent);
+    if (modelKit.type !== "byok") {
+      throw new Error(
+        `Delegate mode requires a BYOK entry ModelKit; agent ${entryAgent.id} uses ${modelKit.type}`
+      );
+    }
+
+    const agentPool = await this.listDelegatableAgents(entryAgent.id);
+    const state = await this.service.getState();
+    const projects = quest.affectedProjectIds
+      .map((id) => state.projects.find((p) => p.id === id))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p))
+      .map((p) => ({ id: p.id, name: p.name }));
+    const validProjectIds = new Set(quest.affectedProjectIds);
+
+    const delegations: OrchestratorQuestResult["delegations"] = [];
+    let delegateSeq = 0;
+
+    const resolveAgent = async (agentId: string) => agentPool.find((a) => a.id === agentId);
+
+    const invokeWorker = async (worker: SubAgent, task: string, context: Record<string, unknown>) => {
+      const rawTarget = typeof context.targetProjectId === "string" ? context.targetProjectId : undefined;
+      const targetProjectId =
+        rawTarget && validProjectIds.has(rawTarget) ? rawTarget : quest.affectedProjectIds[0];
+      const step: OrchestrationPlanStep = {
+        id: `delegate_${++delegateSeq}`,
+        description: task,
+        agentId: worker.id,
+        agentName: worker.name,
+        dependencies: [],
+        expectedOutput: "",
+        targetProjectId,
+        contract: minimalContract(task)
+      };
+      const res = await this.invokeWorkerAgent(worker, {
+        step,
+        dependencies: [],
+        quest,
+        targetProjectId
+      });
+      const ok = !res.error;
+      const writtenFiles = res.writtenFiles ?? [];
+      delegations.push({
+        agentId: worker.id,
+        agentName: worker.name,
+        ok,
+        summary: ok
+          ? `${truncate(res.content, 400)}${writtenFiles.length ? `\n写入文件: ${writtenFiles.join(", ")}` : ""}`
+          : `error: ${res.error}${res.content ? `\nWorker output: ${truncate(res.content, 300)}` : ""}`,
+        events: res.events
+      });
+      // The value handed back to the entry LLM as the delegate tool result.
+      return { content: res.content, writtenFiles, ...(res.error ? { error: res.error } : {}) };
+    };
+
+    const handleDelegate = buildDelegateHandler(resolveAgent, invokeWorker, entryAgent.id);
+    const { system, user } = buildDelegationPrompt({
+      entryAgent: { name: entryAgent.name, promptTemplate: entryAgent.promptTemplate },
+      quest: { title: quest.title, requirement: quest.requirement },
+      agentPool,
+      projects
+    });
+
+    const loop = await runDelegationLoop(system, user, {
+      callModel: async (messages, tools) => {
+        const result = await callLlmWithModelKit({ modelKit, messages, tools });
+        return { content: result.content, toolCalls: result.toolCalls };
+      },
+      onDelegate: (input: DelegateInput) => handleDelegate(input),
+      maxIterations: MAX_TOOL_LOOP_ITERATIONS,
+      agentName: entryAgent.name
+    });
+
+    await this.updateSubAgentUsage(entryAgent.id);
+
+    const summaryLines =
+      delegations.length === 0
+        ? "No delegations were made."
+        : delegations
+            .map((d, i) => `${i + 1}. ${d.agentName} (${d.ok ? "ok" : "fail"}): ${d.summary}`)
+            .join("\n");
+    const finalContent = `${loop.finalContent || "(supervisor produced no summary)"}\n\n---\n\n${summaryLines}`;
+
+    return {
+      entryAgentId: entryAgent.id,
+      entryAgentName: entryAgent.name,
+      finalContent,
+      delegations,
+      iterations: loop.iterations,
+      entryEvents: loop.events
     };
   }
 

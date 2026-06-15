@@ -14,6 +14,7 @@
     "test:agent": "pnpm predev && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test -c playwright.agent.config.ts",
     "test:agent:complex": "pnpm predev && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test -c playwright.agent.complex.config.ts",
     "test:agent:toolset": "pnpm predev && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test -c playwright.agent.toolset.config.ts",
+    "test:agent:delegation": "pnpm predev && NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= playwright test -c playwright.agent.delegation.config.ts",
     "test:all": "pnpm typecheck && pnpm test && pnpm test:e2e"
   },
   "devDependencies": {
