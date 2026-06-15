@@ -753,7 +753,13 @@ export class SubAgentOrchestrator {
   ): Promise<{ content: string; written: string[]; events: BackendEvent[] }> {
     const tools = buildWorkerToolset(worktreeRoot, {
       isAllowed,
-      enableWeb: process.env.REPOHELM_ENABLE_WEB === "1"
+      enableWeb: process.env.REPOHELM_ENABLE_WEB === "1",
+      allowLoopback: process.env.REPOHELM_WEB_ALLOW_LOOPBACK === "1",
+      resolveHost: async (hostname: string) => {
+        const { lookup } = await import("node:dns/promises");
+        const records = await lookup(hostname, { all: true });
+        return records.map((r) => r.address);
+      }
     });
     const events: BackendEvent[] = [];
     const messages: LlmMessage[] = [

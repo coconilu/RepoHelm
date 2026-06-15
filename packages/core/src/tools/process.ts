@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { buildChildEnv } from "./env.js";
 import type { LlmToolSpec } from "../llm.js";
 
 export const PROCESS_START_TOOL = "start_process";
@@ -122,7 +123,7 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
   function start(command: string): ProcEntry {
     const child = spawn("sh", ["-lc", command], {
       cwd: root,
-      env: { ...process.env, NO_COLOR: "1", GIT_TERMINAL_PROMPT: "0" },
+      env: buildChildEnv(),
       // New process group so we can signal the whole tree (the shell plus any
       // children it spawns — dev servers, watchers), not just the top-level sh.
       detached: true

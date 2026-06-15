@@ -71,6 +71,8 @@ It composes specialized collaborators, all in `packages/core/src`:
 Real backends are opt-in via env before starting the server:
 `REPOHELM_CODEX_COMMAND`, `REPOHELM_CLAUDE_COMMAND`, `REPOHELM_OPENCODE_COMMAND`, `REPOHELM_OPENAI_BASE_URL` / `_MODEL` / `_API_KEY`, `REPOHELM_ENABLE_GH_PR=1`. External CLIs execute **inside the Quest worktree** and read standardized input JSON from `REPOHELM_AGENT_INPUT`.
 
+Worker built-in tools (BYOK tool-calling loop): `REPOHELM_ENABLE_WEB=1` exposes the `web_fetch`/`web_search` tools (off by default; egress is opt-in). `web_fetch` blocks loopback/link-local/RFC1918 targets (SSRF guard); `REPOHELM_WEB_ALLOW_LOOPBACK=1` permits loopback only (for local dev services / e2e), still blocking other internal ranges. Child processes spawned by `run_command`/`start_process` get a secret-scrubbed env (API keys/tokens stripped).
+
 For tests/e2e: `REPOHELM_FAKE_MODELS=1` (+ `REPOHELM_FAKE_CHAT_JSON`) returns canned model output instead of hitting real LLM endpoints.
 
 ## Conventions

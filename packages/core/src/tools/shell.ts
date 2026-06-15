@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { buildChildEnv } from "./env.js";
 import type { LlmToolSpec } from "../llm.js";
 
 export const SHELL_RUN_TOOL = "run_command";
@@ -75,7 +76,7 @@ function runCommand(command: string, cwd: string, timeoutMs: number, maxOutput: 
   return new Promise<string>((resolve) => {
     const child = spawn("sh", ["-lc", command], {
       cwd,
-      env: { ...process.env, NO_COLOR: "1", GIT_TERMINAL_PROMPT: "0" }
+      env: buildChildEnv()
     });
 
     let stdout = "";
