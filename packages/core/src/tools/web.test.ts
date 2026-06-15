@@ -99,6 +99,29 @@ describe("buildWebToolHandlers", () => {
     }
   });
 
+  it("blocks IPv4-mapped IPv6 literals (hex and dotted forms)", async () => {
+    for (const host of [
+      "[::ffff:127.0.0.1]",
+      "[::ffff:7f00:1]",
+      "[::ffff:169.254.169.254]",
+      "[::ffff:a9fe:a9fe]",
+      "[::ffff:10.0.0.5]",
+      "[::ffff:a00:5]"
+    ]) {
+      let called = false;
+      const web = buildWebToolHandlers({
+        enabled: true,
+        fetchImpl: async () => {
+          called = true;
+          return okResponse("LEAKED");
+        }
+      });
+      const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: `http://${host}:8080/` }));
+      expect(result.ok, host).toBe(false);
+      expect(called, host).toBe(false);
+    }
+  });
+
   it("blocks the localhost hostname", async () => {
     const web = buildWebToolHandlers({ enabled: true, fetchImpl: async () => okResponse("x") });
     const result = JSON.parse(await web.handle(WEB_FETCH_TOOL, { url: "http://localhost:8080/" }));

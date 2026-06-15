@@ -6,20 +6,62 @@ export const WEB_SEARCH_TOOL = "web_search";
 
 type HostClass = "public" | "loopback" | "private";
 
+/**
+ * Expand an IPv6 literal to its 8 16-bit groups, handling `::` compression and a
+ * trailing embedded IPv4 (e.g. `::ffff:127.0.0.1`). Returns null if not parseable.
+ */
+function expandIpv6(addr: string): number[] | null {
+  const ip = addr.toLowerCase().split("%")[0]!; // drop any zone id
+  if (ip.split("::").length > 2) return null;
+  const [head, tail] = ip.split("::");
+  const toGroups = (part: string): number[] => {
+    if (!part) return [];
+    const tokens = part.split(":");
+    const groups: number[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      if (tok.includes(".")) {
+        // Embedded IPv4 → two 16-bit groups.
+        const b = tok.split(".").map(Number);
+        if (b.length !== 4 || b.some((n) => !(n >= 0 && n <= 255))) return [NaN];
+        groups.push(((b[0]! << 8) | b[1]!) & 0xffff, ((b[2]! << 8) | b[3]!) & 0xffff);
+      } else {
+        const n = parseInt(tok, 16);
+        if (Number.isNaN(n) || n < 0 || n > 0xffff) return [NaN];
+        groups.push(n);
+      }
+    }
+    return groups;
+  };
+  const headGroups = toGroups(head ?? "");
+  const tailGroups = tail === undefined ? [] : toGroups(tail);
+  if (headGroups.some(Number.isNaN) || tailGroups.some(Number.isNaN)) return null;
+  const total = headGroups.length + tailGroups.length;
+  if (tail === undefined) {
+    return total === 8 ? headGroups : null; // no "::" → must be full
+  }
+  if (total > 7) return null; // "::" must stand for ≥1 zero group
+  return [...headGroups, ...Array(8 - total).fill(0), ...tailGroups];
+}
+
 /** Classify an IP literal as public, loopback, or otherwise-internal (SSRF). */
 function classifyIp(ip: string): HostClass {
   const v = isIP(ip);
   if (v === 4) return classifyV4(ip);
   if (v === 6) {
-    const lower = ip.toLowerCase();
-    if (lower === "::1") return "loopback";
-    // IPv4-mapped (::ffff:a.b.c.d) → classify the embedded v4.
-    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return classifyV4(mapped[1]!);
-    if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
-      return "private"; // fe80::/10 link-local
+    const h = expandIpv6(ip);
+    if (!h) return "private"; // unpar-seable IPv6 → fail closed
+    // IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96) → classify the
+    // embedded IPv4, so e.g. ::ffff:127.0.0.1 / ::ffff:7f00:1 can't slip through.
+    const firstFiveZero = h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0;
+    if (firstFiveZero && (h[5] === 0xffff || h[5] === 0)) {
+      if (h[6] === 0 && h[7] === 1) return "loopback"; // ::1
+      if (h[6] === 0 && h[7] === 0) return "public"; // :: (unspecified) — treat as non-internal literal
+      const v4 = `${h[6]! >> 8}.${h[6]! & 0xff}.${h[7]! >> 8}.${h[7]! & 0xff}`;
+      return classifyV4(v4);
     }
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return "private"; // fc00::/7 unique-local
+    if ((h[0]! & 0xffc0) === 0xfe80) return "private"; // fe80::/10 link-local
+    if ((h[0]! & 0xfe00) === 0xfc00) return "private"; // fc00::/7 unique-local
     return "public";
   }
   return "public";
