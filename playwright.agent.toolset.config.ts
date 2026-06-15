@@ -43,7 +43,7 @@ export default defineConfig({
       "rm -rf .repohelm/agent-state-toolset && export NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= " +
       "REPOHELM_ROOT=$PWD REPOHELM_STATE_ROOT=$PWD/.repohelm/agent-state-toolset " +
       "REPOHELM_CODEX_COMMAND=$PWD/tests/agent/fixtures/golden-toolset-planning.cjs " +
-      "REPOHELM_ENABLE_WEB=1 " +
+      "REPOHELM_ENABLE_WEB=1 REPOHELM_WEB_ALLOW_LOOPBACK=1 " +
       `REPOHELM_FAKE_MODELS=1 REPOHELM_FAKE_STREAM_TEXT='${FAKE_STREAM_TEXT}' && pnpm dev`,
     url: "http://127.0.0.1:5173",
     reuseExistingServer: false,
