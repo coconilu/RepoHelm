@@ -751,39 +751,47 @@ export class SubAgentOrchestrator {
     agentName: string,
     isAllowed?: (command: string) => boolean | Promise<boolean>
   ): Promise<{ content: string; written: string[]; events: BackendEvent[] }> {
-    const tools = buildWorkerToolset(worktreeRoot, { isAllowed });
+    const tools = buildWorkerToolset(worktreeRoot, {
+      isAllowed,
+      enableWeb: process.env.REPOHELM_ENABLE_WEB === "1"
+    });
     const events: BackendEvent[] = [];
     const messages: LlmMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent }
     ];
     let finalContent = "";
-    for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
-      const result = await callLlmWithModelKit({ modelKit, messages, tools: tools.specs });
-      if (result.content) {
-        finalContent = result.content;
-        events.push({ type: "agent.message", title: "助手消息", detail: truncate(result.content, 500), agent: agentName });
-      }
-      if (!result.toolCalls || result.toolCalls.length === 0) {
-        break;
-      }
-      messages.push({ role: "assistant", content: result.content ?? "", tool_calls: result.toolCalls });
-      for (const call of result.toolCalls) {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(call.function.arguments || "{}");
-        } catch {
-          args = {};
+    try {
+      for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
+        const result = await callLlmWithModelKit({ modelKit, messages, tools: tools.specs });
+        if (result.content) {
+          finalContent = result.content;
+          events.push({ type: "agent.message", title: "助手消息", detail: truncate(result.content, 500), agent: agentName });
         }
-        events.push({
-          type: "agent.tool_call",
-          title: `调用工具: ${call.function.name}`,
-          detail: truncate(call.function.arguments || "", 300),
-          agent: agentName
-        });
-        const output = await tools.handle(call.function.name, args);
-        messages.push({ role: "tool", tool_call_id: call.id, content: output });
+        if (!result.toolCalls || result.toolCalls.length === 0) {
+          break;
+        }
+        messages.push({ role: "assistant", content: result.content ?? "", tool_calls: result.toolCalls });
+        for (const call of result.toolCalls) {
+          let args: Record<string, unknown> = {};
+          try {
+            args = JSON.parse(call.function.arguments || "{}");
+          } catch {
+            args = {};
+          }
+          events.push({
+            type: "agent.tool_call",
+            title: `调用工具: ${call.function.name}`,
+            detail: truncate(call.function.arguments || "", 300),
+            agent: agentName
+          });
+          const output = await tools.handle(call.function.name, args);
+          messages.push({ role: "tool", tool_call_id: call.id, content: output });
+        }
       }
+    } finally {
+      // Kill any background processes the worker left running.
+      await tools.dispose();
     }
     return { content: finalContent, written: [...tools.written], events };
   }

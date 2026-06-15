@@ -36,7 +36,8 @@ export const fsToolSpecs: LlmToolSpec[] = [
     type: "function",
     function: {
       name: FS_READ_TOOL,
-      description: "Read an existing file from the project worktree.",
+      description:
+        "Read an existing file from the project worktree. Text files return their `content`; images and PDFs return `{ encoding: \"base64\", mediaType, data }` for vision-capable models.",
       parameters: {
         type: "object",
         required: ["path"],
@@ -67,6 +68,27 @@ export const fsToolSpecs: LlmToolSpec[] = [
 export interface ExtractedFile {
   path: string;
   content: string;
+}
+
+/**
+ * Extensions read as binary media and returned base64-encoded with their media
+ * type, so a vision-capable ModelKit can consume images/PDFs instead of getting
+ * garbled UTF-8. Text files keep the plain `content` path.
+ */
+const MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+  pdf: "application/pdf"
+};
+
+function mediaTypeFor(path: string): string | undefined {
+  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  return MEDIA_TYPES[ext];
 }
 
 const FENCE_RE = /```([^\n]*)\n([\s\S]*?)```/g;
@@ -198,6 +220,18 @@ export function buildFsToolHandlers(root: string): FsToolHandlers {
         }
         if (name === FS_READ_TOOL) {
           const { abs, rel } = resolveSafe(String(args.path ?? ""));
+          const mediaType = mediaTypeFor(rel);
+          if (mediaType) {
+            const buffer = await readFile(abs);
+            return JSON.stringify({
+              ok: true,
+              path: rel,
+              encoding: "base64",
+              mediaType,
+              bytes: buffer.byteLength,
+              data: buffer.toString("base64")
+            });
+          }
           const content = await readFile(abs, "utf8");
           return JSON.stringify({ ok: true, path: rel, content });
         }

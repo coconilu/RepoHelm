@@ -41,6 +41,10 @@ A valid golden flow must exercise the same path a user would naturally take:
 - Reports must include IDs, paths, assertions, screenshots, and git diff evidence.
 - Unexpected extra files are failures unless the scenario explicitly allows them.
 
-## Current Scenario
+## Current Scenarios
 
-The first scenario is `golden-basic-flow`: create a workspace, add a simple repository, link it, execute a quest that updates quest risk metadata, and verify the resulting diff and artifact.
+- `golden-basic-flow`: create a workspace, add a simple repository, link it, execute a quest that updates quest risk metadata, and verify the resulting diff and artifact. Run via `pnpm test:agent`.
+- `golden-complex-flow`: a multi-repo, dependency-ordered quest across two repositories; verifies the plan encodes a real dependency and both worktrees get real diffs. Run via `pnpm test:agent:complex`.
+- `golden-toolset-flow`: a **two-step, dependency-ordered, two-repo** quest that exercises real plan-based orchestration AND the built-in worker tool set (issue #22 A–E). The entry/supervisor keeps the deterministic CLI planning backend (`golden-toolset-planning.cjs`), which emits a plan delegating step_1 (golden-api-repo) to **QA Researcher** and step_2 (golden-web-repo, depends on step_1) to **QA Implementer** — two distinct worker agents. Both workers run through the **real BYOK tool-calling loop**; their BYOK ModelKit points at a fake OpenAI-compatible server (`golden-toolset-llm-server.cjs`) that scripts a per-repo tool sequence: step_1 uses `search_files` regex+glob (A), `read_file` of a PNG (D), `web_fetch` of a local docs endpoint (B) and `write_todos` (E) → `src/findings.md`; step_2 uses `write_todos` (E), `start_process`/`read_process` (C) and `search_files` (A) → `src/summary.md`. The scenario asserts orchestration structure (2 steps, a dependency, 2 target projects, 2 distinct agents) plus each tool's real output in the two generated files. Web access is enabled via `REPOHELM_ENABLE_WEB=1`. Run via `pnpm test:agent:toolset`.
+
+  > Note: this is plan-based (static DAG) orchestration. Runtime dynamic delegation via the `delegate` tool is a separate, not-yet-wired path (see issue #26).

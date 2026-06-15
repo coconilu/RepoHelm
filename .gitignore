@@ -8,3 +8,4 @@ test-results/
 playwright-report/
 playwright-agent-report/
 playwright-agent-complex-report/
+playwright-agent-toolset-report/

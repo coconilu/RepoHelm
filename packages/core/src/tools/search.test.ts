@@ -63,4 +63,59 @@ describe("buildSearchToolHandler", () => {
     const result = JSON.parse(await handler.handle(SEARCH_TOOL, { query: "loadConfig", maxResults: 1 }));
     expect(result.matches.length).toBe(1);
   });
+
+  it("matches a regular expression when regex is true", async () => {
+    const root = await fixtureRepo();
+    const handler = buildSearchToolHandler(root);
+
+    const result = JSON.parse(await handler.handle(SEARCH_TOOL, { query: "load\\w*fig", regex: true }));
+
+    expect(result.ok).toBe(true);
+    const files = result.matches.map((m: { file: string }) => m.file);
+    expect(files).toContain("src/app.ts");
+    expect(files).toContain("src/config.ts");
+  });
+
+  it("returns an error for an invalid regular expression", async () => {
+    const root = await fixtureRepo();
+    const handler = buildSearchToolHandler(root);
+
+    const result = JSON.parse(await handler.handle(SEARCH_TOOL, { query: "(unclosed", regex: true }));
+
+    expect(result.ok).toBe(false);
+    expect(String(result.error ?? "")).toMatch(/regex|regular expression|invalid/i);
+  });
+
+  it("restricts content search to files matching a glob via filePattern", async () => {
+    const root = await fixtureRepo();
+    const handler = buildSearchToolHandler(root);
+
+    const result = JSON.parse(
+      await handler.handle(SEARCH_TOOL, { query: "loadConfig", filePattern: "**/config.ts" })
+    );
+
+    expect(result.ok).toBe(true);
+    const files = result.matches.map((m: { file: string }) => m.file);
+    expect(files).toEqual(["src/config.ts"]);
+  });
+
+  it("finds files by name (glob) when no query is given", async () => {
+    const root = await fixtureRepo();
+    const handler = buildSearchToolHandler(root);
+
+    const result = JSON.parse(await handler.handle(SEARCH_TOOL, { filePattern: "**/*.ts" }));
+
+    expect(result.ok).toBe(true);
+    expect(result.files).toContain("src/app.ts");
+    expect(result.files).toContain("src/config.ts");
+    expect(result.files.some((f: string) => f.includes("node_modules"))).toBe(false);
+  });
+
+  it("requires either a query or a filePattern", async () => {
+    const root = await fixtureRepo();
+    const handler = buildSearchToolHandler(root);
+
+    const result = JSON.parse(await handler.handle(SEARCH_TOOL, {}));
+    expect(result.ok).toBe(false);
+  });
 });
