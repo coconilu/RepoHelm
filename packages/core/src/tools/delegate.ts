@@ -1,5 +1,4 @@
 import type { LlmToolSpec } from "../llm.js";
-import type { SubAgent } from "../types.js";
 
 export interface DelegateInput {
   agentId: string;
@@ -37,57 +36,3 @@ export const delegateToolSpec: LlmToolSpec = {
     }
   }
 };
-
-export interface WorkerInvoker {
-  (worker: SubAgent, task: string, context: Record<string, unknown>): Promise<unknown>;
-}
-
-export interface ResolveAgent {
-  (agentId: string): Promise<SubAgent | undefined>;
-}
-
-/**
- * Build a handler that, given a DelegateInput, resolves the agent,
- * validates it is not the entry agent, and invokes it.
- * Returns a JSON string to feed back to the entry LLM.
- */
-export function buildDelegateHandler(
-  resolveAgent: ResolveAgent,
-  invokeWorker: WorkerInvoker,
-  entryAgentId: string
-) {
-  return async function handleDelegate(input: DelegateInput): Promise<string> {
-    if (!input.agentId || typeof input.agentId !== "string") {
-      return JSON.stringify({ ok: false, error: "agentId is required" });
-    }
-    if (!input.task || typeof input.task !== "string") {
-      return JSON.stringify({ ok: false, error: "task is required" });
-    }
-    const agent = await resolveAgent(input.agentId);
-    if (!agent) {
-      return JSON.stringify({ ok: false, error: `agent ${input.agentId} not found` });
-    }
-    if (agent.id === entryAgentId) {
-      return JSON.stringify({
-        ok: false,
-        error: `cannot delegate to the entry agent (${agent.id})`
-      });
-    }
-    try {
-      const result = await invokeWorker(agent, input.task, input.context ?? {});
-      return JSON.stringify({
-        ok: true,
-        agentId: agent.id,
-        agentName: agent.name,
-        result
-      });
-    } catch (error) {
-      return JSON.stringify({
-        ok: false,
-        agentId: agent.id,
-        agentName: agent.name,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-}
