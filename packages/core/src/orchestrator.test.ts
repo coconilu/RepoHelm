@@ -2195,6 +2195,19 @@ describe("foldDelegations", () => {
     expect(folded[0]!.summary).toContain("恢复记录");
   });
 
+  it("folds a same-subtask reassignment to a different worker (recovery, agent not in identity)", () => {
+    // coder fails Build X in api (ran, no files); supervisor reassigns the SAME
+    // (target, task) to reviewer, which succeeds. Identity excludes the agent, so
+    // this recovers — mirroring the plan path's reassign-then-recover.
+    const folded = foldDelegations([
+      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", targetProjectId: "api", ok: false, error: "no files" }),
+      attempt({ agentId: "reviewer", agentName: "Reviewer", task: "Build X", targetProjectId: "api", ok: true, writtenFiles: ["src/x.ts"] })
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(true);
+    expect(folded[0]!.agentName).toBe("Reviewer");
+  });
+
   it("does NOT fold identical task text targeting different projects (multi-repo quest)", () => {
     // The supervisor sends "Update README" to two repos; one fails, one succeeds.
     // These are distinct subtasks — the failure must not be masked by the success.
