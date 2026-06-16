@@ -404,9 +404,16 @@ export class SubAgentOrchestrator {
       const task = typeof input?.task === "string" ? input.task : "";
       const context = (input?.context ?? {}) as Record<string, unknown>;
       const rawTarget = typeof context.targetProjectId === "string" ? context.targetProjectId : undefined;
+      // Identity target used for recovery folding (see foldDelegations). An omitted
+      // target normalizes to the default (sole/first affected) project — exactly what
+      // a ran attempt resolves to — so a rejection on the default target (unknown
+      // agent / missing arg with no target passed) folds into a later success there.
+      // A present-but-invalid target keeps its raw value: it can never match a valid
+      // success, so it stays a distinct, unrecoverable subtask (does not edit the
+      // wrong repo, and is not masked by an unrelated success).
+      const declaredTarget = rawTarget ?? quest.affectedProjectIds[0] ?? "";
 
       // Record a failed attempt and return a tool message with a truthful ok:false.
-      // `targetProjectId` is part of subtask identity (see foldDelegations).
       const fail = (
         agentName: string,
         error: string,
@@ -419,23 +426,22 @@ export class SubAgentOrchestrator {
         return JSON.stringify({ ok: false, agentId, agentName, error, ...(content ? { content } : {}) });
       };
 
-      if (!agentId) return fail("?", "agentId is required", rawTarget ?? "");
-      if (!task) return fail(agentId, "task is required", rawTarget ?? "");
+      if (!agentId) return fail("?", "agentId is required", declaredTarget);
+      if (!task) return fail(agentId, "task is required", declaredTarget);
       const worker = agentPool.find((a) => a.id === agentId);
       if (!worker) {
         // agentPool already excludes the entry and system agents, so delegating to
         // any of them surfaces here as "not a delegatable worker".
-        return fail(agentId, `agent ${agentId} not found or not a delegatable worker`, rawTarget ?? "");
+        return fail(agentId, `agent ${agentId} not found or not a delegatable worker`, declaredTarget);
       }
 
-      // "Not passed" → fall back to the sole/first affected project. "Passed but not
-      // an affected project" (model typo / wrong id) must NOT silently fall back to
-      // affectedProjectIds[0] — that would edit the wrong repo — so fail it; the
-      // supervisor can re-delegate with the right id.
+      // A present-but-invalid target must NOT silently fall back to the default
+      // project — that would edit the wrong repo — so fail it (keeping its raw value
+      // as identity); the supervisor can re-delegate with the right id.
       if (rawTarget !== undefined && !validProjectIds.has(rawTarget)) {
-        return fail(worker.name, `invalid targetProjectId "${rawTarget}": not an affected project of this quest`, rawTarget);
+        return fail(worker.name, `invalid targetProjectId "${rawTarget}": not an affected project of this quest`, declaredTarget);
       }
-      const targetProjectId = rawTarget ?? quest.affectedProjectIds[0]!;
+      const targetProjectId = declaredTarget;
 
       const step: OrchestrationPlanStep = {
         id: `delegate_${++delegateSeq}`,
