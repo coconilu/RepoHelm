@@ -1999,10 +1999,12 @@ describe("Plan-then-execute flow", () => {
     }
   });
 
-  it("does not permanently block when the supervisor corrects a rejected delegation", async () => {
-    // The supervisor first delegates with a bad targetProjectId (rejected before any
-    // worker runs), then re-delegates the SAME task with a valid target that writes
-    // the file. The corrected re-delegation clears the rejection — quest not blocked.
+  it("preserves an invalid-target rejection even when a differently-targeted retry succeeds", async () => {
+    // The supervisor delegates with a bad targetProjectId (rejected), then re-delegates
+    // the SAME task against a DIFFERENT (valid) target that writes the file. The bad
+    // target was never handled, so the rejection must NOT be masked by the unrelated
+    // success — the quest stays blocked. (Recovery only folds for the SAME target+task,
+    // covered by the foldDelegations unit tests.)
     const restoreKeys = ["REPOHELM_GENERIC_CLI_COMMAND", "REPOHELM_TEST_WORKER_WRITES_JSON"];
     const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
     const { rootDir, service } = await createGitRepoService();
@@ -2074,8 +2076,11 @@ describe("Plan-then-execute flow", () => {
 
       const executed = await service.runQuest(quest.id);
 
+      // The valid retry's work landed…
       expect(executed.changedFiles.map((f) => f.path)).toContain("src/out.ts");
-      expect(executed.status).toBe("ready"); // rejected typo corrected → not blocked
+      // …yet the bad-target rejection is preserved, so the quest stays blocked.
+      expect(executed.status).toBe("blocked");
+      expect(executed.agentSummary).toContain("invalid targetProjectId");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       for (const k of restoreKeys) {
@@ -2177,7 +2182,6 @@ describe("foldDelegations", () => {
     agentName: "Worker",
     task: "T",
     targetProjectId: "p",
-    ranWorker: true,
     ok: true,
     content: "",
     writtenFiles: [],
@@ -2219,6 +2223,18 @@ describe("foldDelegations", () => {
     expect(folded.some((d) => !d.ok)).toBe(true); // the api-repo failure is preserved
   });
 
+  it("does NOT treat a same-task success in another project as recovering an invalid-target rejection", () => {
+    // Rejected on a bad/declared-wrong target (api-typo), then the SAME task succeeds
+    // against a DIFFERENT project (web). The api intent was never handled — the
+    // rejection must be preserved, not dropped because the task text matched elsewhere.
+    const folded = foldDelegations([
+      attempt({ agentId: "coder", task: "Update README", targetProjectId: "api-typo", ok: false, error: "invalid targetProjectId" }),
+      attempt({ agentId: "coder", task: "Update README", targetProjectId: "web", ok: true, writtenFiles: ["README.md"] })
+    ]);
+    expect(folded).toHaveLength(2);
+    expect(folded.some((d) => !d.ok)).toBe(true); // the invalid-target rejection is preserved
+  });
+
   it("keeps an unrecovered failure as a failed outcome (still blocks)", () => {
     const folded = foldDelegations([attempt({ task: "Build X", ok: false, error: "no files" })]);
     expect(folded).toHaveLength(1);
@@ -2229,20 +2245,20 @@ describe("foldDelegations", () => {
     // A handler-level failure (e.g. unknown agent) for one subtask must remain a
     // failure even though a DIFFERENT subtask succeeded and wrote files.
     const folded = foldDelegations([
-      attempt({ agentId: "ghost", agentName: "ghost", task: "Do A", ranWorker: false, ok: false, error: "agent ghost not found" }),
+      attempt({ agentId: "ghost", agentName: "ghost", task: "Do A", ok: false, error: "agent ghost not found" }),
       attempt({ agentId: "coder", agentName: "Coder", task: "Do B", ok: true, writtenFiles: ["b.ts"] })
     ]);
     expect(folded).toHaveLength(2);
     expect(folded.some((d) => !d.ok)).toBe(true); // not masked
   });
 
-  it("drops a pre-resolution rejection once the SAME task later succeeds (corrected typo)", () => {
-    // Supervisor delegates with an unknown-agent/invalid-target typo (no worker ran),
-    // then re-delegates the same task correctly and it succeeds → the rejection is
-    // recovered, not a permanent block.
+  it("recovers an unknown-agent rejection retried correctly against the SAME target", () => {
+    // Supervisor delegates "Build X" against api to a misspelled agent (rejected),
+    // then retries the SAME (target, task) with a valid agent that succeeds → the
+    // rejection folds into the success (agent is not part of identity).
     const folded = foldDelegations([
-      attempt({ agentId: "codr", agentName: "codr", task: "Build X", ranWorker: false, ok: false, error: "agent codr not found" }),
-      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", ranWorker: true, ok: true, writtenFiles: ["x.ts"] })
+      attempt({ agentId: "codr", agentName: "codr", task: "Build X", targetProjectId: "api", ok: false, error: "agent codr not found" }),
+      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", targetProjectId: "api", ok: true, writtenFiles: ["x.ts"] })
     ]);
     expect(folded).toHaveLength(1);
     expect(folded[0]!.ok).toBe(true);
@@ -2250,7 +2266,7 @@ describe("foldDelegations", () => {
 
   it("keeps an unrecovered pre-resolution rejection as a blocking failure", () => {
     const folded = foldDelegations([
-      attempt({ agentId: "ghost", agentName: "ghost", task: "Build X", ranWorker: false, ok: false, error: "agent ghost not found" })
+      attempt({ agentId: "ghost", agentName: "ghost", task: "Build X", targetProjectId: "api", ok: false, error: "agent ghost not found" })
     ]);
     expect(folded).toHaveLength(1);
     expect(folded[0]!.ok).toBe(false);

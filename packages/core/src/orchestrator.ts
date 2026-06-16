@@ -54,12 +54,9 @@ export interface DelegateAttempt {
   agentName: string;
   task: string;
   /** The project this attempt targeted (resolved fallback for ran attempts; the
-   *  raw value for an attempt rejected on a bad target). Part of subtask identity. */
+   *  raw/declared value for an attempt rejected on a bad target). Part of subtask
+   *  identity, so a rejection only folds away when the SAME (target, task) succeeds. */
   targetProjectId: string;
-  /** True if a worker actually ran (success, worker error, or missing material).
-   *  False for pre-resolution rejections (malformed call / unknown agent / invalid
-   *  target) — those never attempted real work. */
-  ranWorker: boolean;
   ok: boolean;
   error?: string;
   content: string;
@@ -80,28 +77,24 @@ function delegateKey(a: DelegateAttempt): string {
 
 /**
  * Collapse a sequence of delegate attempts into one terminal outcome per logical
- * subtask, so the quest's blocked/ready decision is recovery-aware AND never masks
- * a real failure:
+ * subtask — identified by (target project, task), NOT the executing agent — so the
+ * quest's blocked/ready decision is recovery-aware AND never masks a real failure:
  *
- * - A **pre-resolution rejection** (no worker ran: malformed call, unknown agent,
- *   invalid targetProjectId) is a protocol error. It is "recovered" (dropped) if the
- *   SAME task later succeeds anywhere — so a corrected re-delegation clears the typo —
- *   otherwise it surfaces as a standalone failure (still blocks, still recorded).
- * - An attempt that actually **ran a worker** folds by subtask identity (target
- *   project + task — NOT the executing agent): a later success supersedes an earlier
- *   failure of the same subtask (success is sticky), even when the supervisor
- *   reassigned it to a different worker. An identical task against a DIFFERENT project
- *   stays a distinct subtask whose failure is preserved (multi-repo quests).
+ * - A later success of the SAME (target, task) supersedes an earlier failure of that
+ *   subtask (success is sticky), INCLUDING a reassignment to a different worker, or an
+ *   unknown-agent/missing-arg rejection later retried correctly against the same target.
+ * - A failure whose (target, task) NEVER succeeds is preserved and blocks delivery —
+ *   so an identical task against a DIFFERENT project (multi-repo quest), or a rejection
+ *   on an invalid/declared-wrong target (which can never match a valid success), is a
+ *   distinct unrecovered subtask, not swallowed by some sibling success.
  *
- * Every kept attempt's events are retained for the audit trail.
+ * Every attempt's events are retained for the audit trail.
  */
 export function foldDelegations(attempts: DelegateAttempt[]): OrchestratorQuestResult["delegations"] {
-  const succeededTasks = new Set(attempts.filter((a) => a.ok).map((a) => a.task.trim()));
-  const kept = attempts.filter((a) => !(!a.ranWorker && succeededTasks.has(a.task.trim())));
   const order: string[] = [];
   const finalByKey = new Map<string, DelegateAttempt>();
   const failuresByKey = new Map<string, number>();
-  for (const attempt of kept) {
+  for (const attempt of attempts) {
     const key = delegateKey(attempt);
     const prev = finalByKey.get(key);
     if (!prev) order.push(key);
@@ -112,7 +105,7 @@ export function foldDelegations(attempts: DelegateAttempt[]): OrchestratorQuestR
   }
   return order.map((key) => {
     const final = finalByKey.get(key)!;
-    const events = kept.filter((a) => delegateKey(a) === key).flatMap((a) => a.events);
+    const events = attempts.filter((a) => delegateKey(a) === key).flatMap((a) => a.events);
     const priorFailures = (failuresByKey.get(key) ?? 0) - (final.ok ? 0 : 1);
     const recoveryNote =
       priorFailures > 0
@@ -418,12 +411,11 @@ export class SubAgentOrchestrator {
         agentName: string,
         error: string,
         targetProjectId: string,
-        ranWorker = false,
         content = "",
         writtenFiles: string[] = [],
         events: BackendEvent[] = []
       ): string => {
-        attempts.push({ agentId: agentId || "?", agentName, task, targetProjectId, ranWorker, ok: false, error, content, writtenFiles, events });
+        attempts.push({ agentId: agentId || "?", agentName, task, targetProjectId, ok: false, error, content, writtenFiles, events });
         return JSON.stringify({ ok: false, agentId, agentName, error, ...(content ? { content } : {}) });
       };
 
@@ -463,14 +455,13 @@ export class SubAgentOrchestrator {
       const material = !res.error ? validateMaterialOutput(step, writtenFiles) : { ok: false, required: false };
       const failReason = res.error ?? (!material.ok ? material.reason : undefined);
       if (failReason) {
-        return fail(worker.name, failReason, targetProjectId, true, res.content, writtenFiles, res.events ?? []);
+        return fail(worker.name, failReason, targetProjectId, res.content, writtenFiles, res.events ?? []);
       }
       attempts.push({
         agentId: worker.id,
         agentName: worker.name,
         task,
         targetProjectId,
-        ranWorker: true,
         ok: true,
         content: res.content,
         writtenFiles,
