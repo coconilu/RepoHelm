@@ -330,8 +330,17 @@ export class SubAgentOrchestrator {
 
     const invokeWorker = async (worker: SubAgent, task: string, context: Record<string, unknown>) => {
       const rawTarget = typeof context.targetProjectId === "string" ? context.targetProjectId : undefined;
-      const targetProjectId =
-        rawTarget && validProjectIds.has(rawTarget) ? rawTarget : quest.affectedProjectIds[0];
+      // Distinguish "no target passed" (fall back to the sole/first affected project)
+      // from "passed but not an affected project" (a model typo / wrong id). The
+      // latter must NOT silently fall back to affectedProjectIds[0] — that would let
+      // a delegation edit the wrong repo — so we fail it, mirroring invokeWorkerAgent's
+      // stale-target guard. The error goes back to the supervisor so it can re-delegate.
+      if (rawTarget !== undefined && !validProjectIds.has(rawTarget)) {
+        const error = `invalid targetProjectId "${rawTarget}": not an affected project of this quest`;
+        delegations.push({ agentId: worker.id, agentName: worker.name, ok: false, summary: `error: ${error}` });
+        return { content: "", error };
+      }
+      const targetProjectId = rawTarget ?? quest.affectedProjectIds[0];
       const step: OrchestrationPlanStep = {
         id: `delegate_${++delegateSeq}`,
         description: task,

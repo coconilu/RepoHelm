@@ -1860,6 +1860,144 @@ describe("Plan-then-execute flow", () => {
       }
     }
   });
+
+  it("fails a delegation with an invalid targetProjectId instead of silently running in the first repo", async () => {
+    // Reviewer scenario: the supervisor passes a targetProjectId that is NOT an
+    // affected project (model typo / wrong id). It must NOT silently fall back to
+    // affectedProjectIds[0] and edit the wrong repo — the delegation should fail.
+    const restoreKeys = ["REPOHELM_GENERIC_CLI_COMMAND", "REPOHELM_TEST_WORKER_WRITES_JSON", "REPOHELM_TEST_WORKER_OUTPUT"];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+
+    // Fake BYOK entry endpoint: one delegate call carrying a bogus targetProjectId.
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsgs = messages.filter((m) => m.role === "tool").length;
+        const coderId = (/^- (\S+): Coder /m.exec(user) ?? [])[1] || "coder";
+        const message =
+          toolMsgs === 0
+            ? {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                  {
+                    id: "c1",
+                    type: "function",
+                    function: {
+                      name: "delegate",
+                      arguments: JSON.stringify({
+                        agentId: coderId,
+                        task: "Implement and write the findings file src/findings.md.",
+                        context: { targetProjectId: "does-not-exist" }
+                      })
+                    }
+                  }
+                ]
+              }
+            : { role: "assistant", content: "Done." };
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: (message as { tool_calls?: unknown }).tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      // If the worker DID run (old fallback behavior), this rule would write the file.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "findings", path: "src/findings.md", content: "WRONG REPO\n" }
+      ]);
+
+      await service.createModelKit({
+        id: "delegate-entry-kit",
+        name: "Delegate Entry BYOK",
+        type: "byok",
+        providerId: "fake",
+        model: "fake-model",
+        config: { provider: "fake", baseUrl, model: "fake-model", apiKey: "fake-key" }
+      });
+      await service.createModelKit({
+        id: "delegate-worker-kit",
+        name: "Delegate Worker CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "delegate-entry-kit",
+        mode: "entry",
+        permissions: { allowedTools: ["delegate"], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Implements code",
+        capabilities: ["coding"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "reviewer",
+        name: "Reviewer",
+        role: "Second worker so the pool has ≥2 delegatable workers",
+        capabilities: ["review"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Delegate invalid target",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [project.id]
+      });
+
+      const executed = await service.runQuest(quest.id);
+
+      // The worker must NOT have run in the (only / first) repo: no file was written.
+      expect(executed.changedFiles.map((f) => f.path)).not.toContain("src/findings.md");
+      expect(executed.status).toBe("blocked");
+      expect(executed.agentSummary).toContain("invalid targetProjectId");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
 });
 
 describe("worker contract injection", () => {
