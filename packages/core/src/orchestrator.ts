@@ -11,13 +11,9 @@ import {
   type LlmToolSpec
 } from "./llm.js";
 import { assessComplexity, generateOrchestrationPlan } from "./planning.js";
+import { buildDelegationPrompt, runDelegationLoop } from "./delegation.js";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
-import {
-  buildDelegateHandler,
-  DELEGATE_TOOL_NAME,
-  delegateToolSpec,
-  type DelegateInput
-} from "./tools/delegate.js";
+import { type DelegateInput } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL } from "./tools/fs.js";
 import { buildWorkerToolset } from "./tools/worker-tools.js";
 import { runStreamingCli } from "./cli-stream.js";
@@ -38,6 +34,89 @@ import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SubAgen
 const execFileAsync = promisify(execFile);
 
 const MAX_TOOL_LOOP_ITERATIONS = 8;
+
+/**
+ * Whether `agent` can receive delegated subtasks (plan steps or runtime delegate
+ * calls) from the entry agent. Excludes the entry itself and the built-in system
+ * agents (`mode: "system"` — kb / habits / failure-experience), which are driven
+ * via `invokeSystemAgent`, not the orchestration worker pool. Legacy agents with
+ * no `mode` set are treated as workers (backward compatible).
+ */
+export function isDelegatableWorker(agent: SubAgent, entryAgentId: string): boolean {
+  return agent.id !== entryAgentId && agent.mode !== "entry" && agent.mode !== "system";
+}
+
+/** One delegate-tool call's outcome in delegate mode (success OR any failure:
+ *  malformed call, unknown/non-worker agent, invalid target, worker error, or
+ *  missing required material output). The full sequence is the audit trail. */
+export interface DelegateAttempt {
+  agentId: string;
+  agentName: string;
+  task: string;
+  /** The project this attempt targeted (resolved fallback for ran attempts; the
+   *  raw/declared value for an attempt rejected on a bad target). Part of subtask
+   *  identity, so a rejection only folds away when the SAME (target, task) succeeds. */
+  targetProjectId: string;
+  ok: boolean;
+  error?: string;
+  content: string;
+  writtenFiles: string[];
+  events: BackendEvent[];
+}
+
+/** Identity of a logical subtask: the (target project, task) pair. Same pair ⇒ the
+ *  same work, so a retry folds — INCLUDING a reassignment to a different worker (the
+ *  executing agent is deliberately NOT part of identity, mirroring the plan path's
+ *  reassign-then-recover). A different project (even with identical task text, as in
+ *  a multi-repo quest delegating "Update README" to two repos) is a DISTINCT subtask
+ *  and must not be folded. The key is a JSON tuple — plain ASCII, no control-char
+ *  separators (a stray NUL would turn the source file binary). */
+function delegateKey(a: DelegateAttempt): string {
+  return JSON.stringify([a.targetProjectId, a.task.trim()]);
+}
+
+/**
+ * Collapse a sequence of delegate attempts into one terminal outcome per logical
+ * subtask — identified by (target project, task), NOT the executing agent — so the
+ * quest's blocked/ready decision is recovery-aware AND never masks a real failure:
+ *
+ * - A later success of the SAME (target, task) supersedes an earlier failure of that
+ *   subtask (success is sticky), INCLUDING a reassignment to a different worker, or an
+ *   unknown-agent/missing-arg rejection later retried correctly against the same target.
+ * - A failure whose (target, task) NEVER succeeds is preserved and blocks delivery —
+ *   so an identical task against a DIFFERENT project (multi-repo quest), or a rejection
+ *   on an invalid/declared-wrong target (which can never match a valid success), is a
+ *   distinct unrecovered subtask, not swallowed by some sibling success.
+ *
+ * Every attempt's events are retained for the audit trail.
+ */
+export function foldDelegations(attempts: DelegateAttempt[]): OrchestratorQuestResult["delegations"] {
+  const order: string[] = [];
+  const finalByKey = new Map<string, DelegateAttempt>();
+  const failuresByKey = new Map<string, number>();
+  for (const attempt of attempts) {
+    const key = delegateKey(attempt);
+    const prev = finalByKey.get(key);
+    if (!prev) order.push(key);
+    // Upgrade a failure to a later success, or replace a failure with a newer
+    // failure — but never downgrade a recorded success back to a failure.
+    if (!prev || attempt.ok || !prev.ok) finalByKey.set(key, attempt);
+    if (!attempt.ok) failuresByKey.set(key, (failuresByKey.get(key) ?? 0) + 1);
+  }
+  return order.map((key) => {
+    const final = finalByKey.get(key)!;
+    const events = attempts.filter((a) => delegateKey(a) === key).flatMap((a) => a.events);
+    const priorFailures = (failuresByKey.get(key) ?? 0) - (final.ok ? 0 : 1);
+    const recoveryNote =
+      priorFailures > 0
+        ? `\n恢复记录: 该子任务先经历 ${priorFailures} 次失败后${final.ok ? "成功" : "仍失败"}`
+        : "";
+    const summary = final.ok
+      ? `${truncate(final.content, 400)}${final.writtenFiles.length ? `\n写入文件: ${final.writtenFiles.join(", ")}` : ""}${recoveryNote}`
+      : `error: ${final.error}${final.content ? `\nWorker output: ${truncate(final.content, 300)}` : ""}${recoveryNote}`;
+    return { agentId: final.agentId, agentName: final.agentName, ok: final.ok, summary, events };
+  });
+}
 
 /**
  * Deterministic hard cap on how many times a single plan step may run (initial
@@ -78,6 +157,9 @@ export interface OrchestratorQuestResult {
   finalContent: string;
   delegations: Array<{ agentId: string; agentName: string; ok: boolean; summary: string; events?: BackendEvent[] }>;
   iterations: number;
+  /** Events emitted by the entry agent itself (delegate-mode loop): its tool
+   *  calls and messages, surfaced on the timeline ahead of the worker events. */
+  entryEvents?: BackendEvent[];
 }
 
 /**
@@ -269,6 +351,168 @@ export class SubAgentOrchestrator {
       finalContent: `${plan.summary}\n\n---\n\n${finalContent}`,
       delegations,
       iterations: executed.size
+    };
+  }
+
+  /**
+   * Delegate-mode execution: the entry agent runs in a tool-calling loop whose
+   * only tool is `delegate`, deciding AT RUNTIME which worker handles each
+   * subtask (vs the static, pre-approved DAG of executeApprovedPlan). Each
+   * delegate call is routed to the named worker via the existing
+   * invokeWorkerAgent path; the worker's result is threaded back so the entry
+   * can adapt — delegate again, to a different worker, with a new task.
+   *
+   * Requires a BYOK entry ModelKit (the loop is driven by callLlmWithModelKit
+   * tool calls). Returns the same OrchestratorQuestResult shape as the plan path
+   * so persistence is shared.
+   */
+  async executeDelegated(questId: string): Promise<OrchestratorQuestResult> {
+    const entryAgent = await this.service.getEntrySubAgent();
+    if (!entryAgent) {
+      throw new Error("No entry sub-agent configured");
+    }
+    const quest = await this.service.getQuest(questId);
+    if (!quest) {
+      throw new Error(`Quest ${questId} not found`);
+    }
+    const modelKit = await this.requireModelKit(entryAgent);
+    if (modelKit.type !== "byok") {
+      throw new Error(
+        `Delegate mode requires a BYOK entry ModelKit; agent ${entryAgent.id} uses ${modelKit.type}`
+      );
+    }
+
+    const agentPool = await this.listDelegatableAgents(entryAgent.id);
+    const state = await this.service.getState();
+    const projects = quest.affectedProjectIds
+      .map((id) => state.projects.find((p) => p.id === id))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p))
+      .map((p) => ({ id: p.id, name: p.name }));
+    const validProjectIds = new Set(quest.affectedProjectIds);
+
+    // Every delegate call's outcome (success OR any kind of failure). The delegate
+    // routing is inlined here rather than via buildDelegateHandler so the tool
+    // message's OUTER `ok` is truthful (a semantic failure is ok:false, not an
+    // ok:true envelope hiding result.error) and EVERY failure — including the
+    // pre-worker validations (malformed call / unknown agent / invalid target) —
+    // lands in this trail instead of being silently dropped.
+    const attempts: DelegateAttempt[] = [];
+    let delegateSeq = 0;
+
+    const onDelegate = async (input: DelegateInput): Promise<string> => {
+      const agentId = typeof input?.agentId === "string" ? input.agentId : "";
+      const task = typeof input?.task === "string" ? input.task : "";
+      const context = (input?.context ?? {}) as Record<string, unknown>;
+      const rawTarget = typeof context.targetProjectId === "string" ? context.targetProjectId : undefined;
+      // Identity target used for recovery folding (see foldDelegations). An omitted
+      // target normalizes to the default (sole/first affected) project — exactly what
+      // a ran attempt resolves to — so a rejection on the default target (unknown
+      // agent / missing arg with no target passed) folds into a later success there.
+      // A present-but-invalid target keeps its raw value: it can never match a valid
+      // success, so it stays a distinct, unrecoverable subtask (does not edit the
+      // wrong repo, and is not masked by an unrelated success).
+      const declaredTarget = rawTarget ?? quest.affectedProjectIds[0] ?? "";
+
+      // Record a failed attempt and return a tool message with a truthful ok:false.
+      const fail = (
+        agentName: string,
+        error: string,
+        targetProjectId: string,
+        content = "",
+        writtenFiles: string[] = [],
+        events: BackendEvent[] = []
+      ): string => {
+        attempts.push({ agentId: agentId || "?", agentName, task, targetProjectId, ok: false, error, content, writtenFiles, events });
+        return JSON.stringify({ ok: false, agentId, agentName, error, ...(content ? { content } : {}) });
+      };
+
+      if (!agentId) return fail("?", "agentId is required", declaredTarget);
+      if (!task) return fail(agentId, "task is required", declaredTarget);
+      const worker = agentPool.find((a) => a.id === agentId);
+      if (!worker) {
+        // agentPool already excludes the entry and system agents, so delegating to
+        // any of them surfaces here as "not a delegatable worker".
+        return fail(agentId, `agent ${agentId} not found or not a delegatable worker`, declaredTarget);
+      }
+
+      // A present-but-invalid target must NOT silently fall back to the default
+      // project — that would edit the wrong repo — so fail it (keeping its raw value
+      // as identity); the supervisor can re-delegate with the right id.
+      if (rawTarget !== undefined && !validProjectIds.has(rawTarget)) {
+        return fail(worker.name, `invalid targetProjectId "${rawTarget}": not an affected project of this quest`, declaredTarget);
+      }
+      const targetProjectId = declaredTarget;
+
+      const step: OrchestrationPlanStep = {
+        id: `delegate_${++delegateSeq}`,
+        description: task,
+        agentId: worker.id,
+        agentName: worker.name,
+        dependencies: [],
+        expectedOutput: "",
+        targetProjectId,
+        contract: minimalContract(task)
+      };
+      const res = await this.invokeWorkerAgent(worker, { step, dependencies: [], quest, targetProjectId });
+      const writtenFiles = res.writtenFiles ?? [];
+      // Same material-output guard as the plan path (runStepWithRecovery): a task
+      // that implies file changes but produced none is a failure; pure research /
+      // text tasks are not "required" and stay ok with no files.
+      const material = !res.error ? validateMaterialOutput(step, writtenFiles) : { ok: false, required: false };
+      const failReason = res.error ?? (!material.ok ? material.reason : undefined);
+      if (failReason) {
+        return fail(worker.name, failReason, targetProjectId, res.content, writtenFiles, res.events ?? []);
+      }
+      attempts.push({
+        agentId: worker.id,
+        agentName: worker.name,
+        task,
+        targetProjectId,
+        ok: true,
+        content: res.content,
+        writtenFiles,
+        events: res.events ?? []
+      });
+      return JSON.stringify({ ok: true, agentId: worker.id, agentName: worker.name, result: { content: res.content, writtenFiles } });
+    };
+
+    const { system, user } = buildDelegationPrompt({
+      entryAgent: { name: entryAgent.name, promptTemplate: entryAgent.promptTemplate },
+      quest: { title: quest.title, requirement: quest.requirement },
+      agentPool,
+      projects
+    });
+
+    const loop = await runDelegationLoop(system, user, {
+      callModel: async (messages, tools) => {
+        const result = await callLlmWithModelKit({ modelKit, messages, tools });
+        return { content: result.content, toolCalls: result.toolCalls };
+      },
+      onDelegate,
+      maxIterations: MAX_TOOL_LOOP_ITERATIONS,
+      agentName: entryAgent.name
+    });
+
+    await this.updateSubAgentUsage(entryAgent.id);
+
+    // Collapse retries into one terminal outcome per subtask (recovery-aware), so a
+    // failure the supervisor later recovered does not permanently block the quest.
+    const delegations = foldDelegations(attempts);
+    const summaryLines =
+      delegations.length === 0
+        ? "No delegations were made."
+        : delegations
+            .map((d, i) => `${i + 1}. ${d.agentName} (${d.ok ? "ok" : "fail"}): ${d.summary}`)
+            .join("\n");
+    const finalContent = `${loop.finalContent || "(supervisor produced no summary)"}\n\n---\n\n${summaryLines}`;
+
+    return {
+      entryAgentId: entryAgent.id,
+      entryAgentName: entryAgent.name,
+      finalContent,
+      delegations,
+      iterations: delegations.length,
+      entryEvents: loop.events
     };
   }
 
@@ -589,7 +833,7 @@ export class SubAgentOrchestrator {
 
   private async listDelegatableAgents(entryAgentId: string): Promise<SubAgent[]> {
     const all = await this.service.listSubAgents();
-    return all.filter((agent) => agent.id !== entryAgentId);
+    return all.filter((agent) => isDelegatableWorker(agent, entryAgentId));
   }
 
   private async invokeWorkerAgent(

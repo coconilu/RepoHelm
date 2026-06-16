@@ -36,6 +36,42 @@ export function assessComplexity(quest: Quest): QuestComplexity {
   };
 }
 
+/** How a quest is executed: a static, approvable DAG vs an adaptive runtime loop. */
+export type ExecutionMode = "plan" | "delegate";
+
+export interface ExecutionModeInput {
+  quest: Quest;
+  /** Number of sub-agents the entry can delegate to (excludes the entry itself). */
+  delegatableAgentCount: number;
+  /** The entry agent's ModelKit type, or undefined if it can't be resolved. */
+  entryModelKitType: "byok" | "cli" | undefined;
+}
+
+/**
+ * Auto-select the execution mode for a quest (no user-facing flag).
+ *
+ * `delegate` puts the entry agent in a tool-calling loop where it decides at
+ * runtime which worker to hand each subtask to. That loop only runs through our
+ * BYOK tool-calling path and only makes sense when there's a real choice of
+ * workers and the work is genuinely open-ended. Everything else stays on the
+ * existing static, approvable plan path. The heuristic is deterministic so the
+ * mode is predictable and testable.
+ */
+export function selectExecutionMode(input: ExecutionModeInput): ExecutionMode {
+  // The delegate loop is driven by callLlmWithModelKit (BYOK tool calls); a CLI
+  // entry can't emit our `delegate` tool calls, so it must use the plan path.
+  if (input.entryModelKitType !== "byok") return "plan";
+  // "Dynamically choose who does what" is meaningless without ≥2 candidates.
+  if (input.delegatableAgentCount < 2) return "plan";
+  const complexity = assessComplexity(input.quest);
+  // Trivial work: a single-step static plan is enough.
+  if (complexity.isSimple) return "plan";
+  // The requirement already spells out ordered steps — honour that as an
+  // auditable static DAG rather than re-deciding it at runtime.
+  if (complexity.hasExplicitSteps) return "plan";
+  return "delegate";
+}
+
 const PLAN_SYSTEM_PROMPT = `You are the RepoHelm orchestration planner. Given a quest requirement and a pool of available agents, produce a structured execution plan.
 
 IMPORTANT: Output ONLY a JSON object (no markdown, no code fences, no explanation before or after). The entire response must be valid JSON:

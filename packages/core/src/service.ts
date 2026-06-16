@@ -6,7 +6,8 @@ import { LocalCliRegistry } from "./cli.js";
 import { GitWorktreeManager } from "./git.js";
 import { KnowledgeFileStore } from "./knowledge.js";
 import { embedWithModelKit, callLlmWithModelKit, streamLlmWithModelKit, type LlmMessage } from "./llm.js";
-import { SubAgentOrchestrator, type OrchestratorQuestResult } from "./orchestrator.js";
+import { SubAgentOrchestrator, isDelegatableWorker, type OrchestratorQuestResult } from "./orchestrator.js";
+import { selectExecutionMode, type ExecutionMode } from "./planning.js";
 import { buildKnowledgeToolHandlers, knowledgeToolSpecs } from "./tools/knowledge.js";
 import { buildHabitsToolHandlers, habitsToolSpecs } from "./tools/habits.js";
 import { buildFailureToolHandlers, failureToolSpecs } from "./tools/failure.js";
@@ -1642,6 +1643,29 @@ export class RepoHelmService {
     }
 
     const orchestrator = new SubAgentOrchestrator(this);
+
+    // Auto-select the execution mode by complexity (no user-facing flag): a
+    // complex, open-ended, multi-worker quest with a BYOK entry runs the adaptive
+    // delegate loop; everything else stays on the static, approvable plan path.
+    const modeState = await this.getState();
+    const modeQuest = modeState.quests.find((item) => item.id === questId);
+    if (!modeQuest) {
+      throw new Error("Quest not found");
+    }
+    const entryModelKit = await this.getModelKit(entryAgent.modelKitId);
+    const delegatableAgentCount = (await this.listSubAgents()).filter((agent) =>
+      isDelegatableWorker(agent, entryAgent.id)
+    ).length;
+    const mode = selectExecutionMode({
+      quest: modeQuest,
+      delegatableAgentCount,
+      entryModelKitType: entryModelKit?.type
+    });
+
+    if (mode === "delegate") {
+      return this.runQuestDelegated(questId, orchestrator);
+    }
+
     const plan = await orchestrator.generatePlan(questId);
     const planPath = await orchestrator.questWorkspace.writePlan(questId, plan);
 
@@ -1679,6 +1703,29 @@ export class RepoHelmService {
     }
 
     return updatedQuest;
+  }
+
+  /**
+   * Run a quest in delegate mode: there is no static plan to approve, so we
+   * provision worktrees and run the entry agent's adaptive delegation loop
+   * directly, then persist the same way the plan path does. Each delegation is
+   * audited via the persisted events (entry tool calls + per-worker events).
+   */
+  private async runQuestDelegated(
+    questId: string,
+    orchestrator: SubAgentOrchestrator
+  ): Promise<Quest> {
+    await this.provisionQuestWorktrees(questId);
+    const result = await orchestrator.executeDelegated(questId);
+    const changedFiles = await this.collectQuestChangedFiles(questId);
+    const syntheticPlan: OrchestrationPlan = {
+      questId,
+      summary: "动态委派执行(无静态计划,worker 由 supervisor 在运行时选择)",
+      steps: [],
+      notes: "Delegate mode: workers chosen at runtime.",
+      generatedAt: now()
+    };
+    return this.persistOrchestratorResult(questId, syntheticPlan, result, changedFiles, "delegate");
   }
 
   async approvePlan(questId: string): Promise<Quest> {
@@ -1881,7 +1928,8 @@ export class RepoHelmService {
     questId: string,
     plan: OrchestrationPlan,
     result: OrchestratorQuestResult,
-    changedFiles: ChangedFile[] = []
+    changedFiles: ChangedFile[] = [],
+    mode: ExecutionMode = "plan"
   ): Promise<Quest> {
     const state = await this.getState();
     const quest = state.quests.find((item) => item.id === questId);
@@ -1922,14 +1970,26 @@ export class RepoHelmService {
       updatedAt: now()
     };
 
+    const stepCount = mode === "delegate" ? result.iterations : plan.steps.length;
     const events: AgentEvent[] = [
-      this.event(
-        questId,
-        "plan.approved",
-        "编排计划已批准",
-        `开始执行 ${plan.steps.length} 个步骤。`,
-        "User"
-      ),
+      mode === "delegate"
+        ? this.event(
+            questId,
+            "delegate.started",
+            "动态委派执行",
+            `Supervisor ${result.entryAgentName} 在运行时动态委派了 ${stepCount} 个子任务。`,
+            result.entryAgentName
+          )
+        : this.event(
+            questId,
+            "plan.approved",
+            "编排计划已批准",
+            `开始执行 ${stepCount} 个步骤。`,
+            "User"
+          ),
+      // Surface the entry agent's own loop events (delegate tool calls / messages)
+      // before the per-delegation worker events below.
+      ...(result.entryEvents ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent)),
       ...result.delegations.flatMap((d) => [
         // Surface the worker's fine-grained execution events (tool calls,
         // messages, command output) first, then the step's conclusion.

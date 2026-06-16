@@ -51,12 +51,20 @@ It composes specialized collaborators, all in `packages/core/src`:
 - `cli.ts` — `LocalCliRegistry`: detects locally installed coding CLIs (claude-code, codex, opencode, …), lists their models, runs a tiny real connectivity "ping".
 - `providers.ts` — `ProviderRegistry`: OpenAI-compatible provider definitions + live model fetching (see `MODEL_FETCHING.md`).
 - `llm.ts` — OpenAI-compatible chat/tool-call client driven by a **ModelKit** (resolves baseUrl/model/apiKey).
-- `orchestrator.ts` — `SubAgentOrchestrator`: runs an entry sub-agent in a tool-calling loop (`MAX_TOOL_LOOP_ITERATIONS`), delegating to other sub-agents via the `delegate` tool (`tools/delegate.ts`).
-- `planning.ts` — generates the orchestration plan that the user approves/rejects before a Quest runs.
+- `orchestrator.ts` — `SubAgentOrchestrator`: drives the **two execution modes** (see below). `executeApprovedPlan` runs the static plan DAG (each step → `invokeWorkerAgent`); `executeDelegated` runs the entry agent in a `delegate`-tool loop. BYOK workers run `runWorkerWithFsTools` (bounded by `MAX_TOOL_LOOP_ITERATIONS`).
+- `delegation.ts` — the delegate-mode core: `buildDelegationPrompt` + `runDelegationLoop` (pure, injectable loop that routes the entry's `delegate(agentId, task, context)` calls to workers via `tools/delegate.ts`).
+- `planning.ts` — generates the orchestration plan (plan mode) the user approves/rejects; also `selectExecutionMode` (auto mode pick) + `assessComplexity`.
 - `knowledge.ts` / `quest-workspace.ts` — per-quest workspace scaffolding + the per-repo Markdown writer (`writeWikiPage`).
 - `repo-wiki.ts` / `wiki-store.ts` / `vector.ts` — repo-bound knowledge base. Each Project owns 6 structured wiki pages (`overview/architecture/modules/key-flows/conventions/decisions`) under `.repohelm/knowledge/<projectId>/` (Markdown = source of truth) plus chunk embeddings. `RepoWikiManager` supports bootstrap (full index), incremental (diff `lastIndexedSha..HEAD` → LLM rewrites only affected pages), and search (embed query → cosine top-k, keyword fallback when no embedding ModelKit). `WikiStore` persists pages + `float[]` vectors in `wiki_pages`/`wiki_embeddings` SQLite tables (WAL). Indexing needs a BYOK chat ModelKit; vector retrieval needs `engine.embeddingModelKitId`. Service methods: `getProjectKnowledge`/`syncProjectKnowledge`/`setProjectKnowledgeBranch`/`searchProjectKnowledge`.
 - `tools/` — tool implementations consumed by the orchestrator's tool-calling loop. `delegate.ts` is the sub-agent delegation tool; `fs.ts` is the filesystem tool used by mock agents inside worktrees.
 - `types.ts` — single source of truth for all domain types; `index.ts` re-exports everything.
+
+### Quest execution: plan mode vs delegate mode
+A Quest runs one of two ways, **auto-selected by `selectExecutionMode` (`planning.ts`)** — there is no user-facing flag:
+- **plan mode** (static, auditable DAG): `runQuest` → `generatePlan` (entry agent emits a JSON plan, no tools) → user approves → `executeApprovedPlan` runs the DAG; each step's worker is fixed at plan time. This is the default and the path for CLI entries, <2 workers, simple quests, or requirements that already spell out ordered steps.
+- **delegate mode** (adaptive runtime): `runQuest` → `runQuestDelegated` → `executeDelegated` runs the entry agent in a `delegate`-tool loop; the supervisor decides **at runtime** which worker handles each subtask, reacting to each worker's result. No static plan, no approval gate (each delegation is still audited via events + per-worker artifacts). Chosen only when the entry ModelKit is **BYOK** AND there are **≥2 delegatable workers** AND the quest is complex/open-ended (not simple, no explicit ordered steps).
+
+`tools/delegate.ts` is the delegation tool; `runQuestDelegated` reuses `invokeWorkerAgent` per delegate call. QA: `pnpm test:agent:toolset` covers plan mode, `pnpm test:agent:delegation` covers delegate mode.
 
 ### Engine config: two execution modes
 `EngineConfig` (in state) selects how agents run: `mode: "cli"` (use a detected local CLI + its model) vs BYOK providers (`byokProviders`, an active one selected). **ModelKits** bundle provider/model/apiKey for LLM calls. Sub-agents reference ModelKits. This is the integration point for model access — see `MODEL_FETCHING.md` for the provider/model fetch design.

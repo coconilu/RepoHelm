@@ -82,3 +82,26 @@ export async function runQuestViaUi(page: Page, input: {
     timeout: 60_000
   });
 }
+
+/**
+ * Drive a quest that runs in DELEGATE mode. There is no static plan to approve:
+ * sending the request triggers createQuest → runQuest, which executes the entry
+ * agent's adaptive delegation loop synchronously, so the quest goes straight to
+ * "待交付" with no plan-generated / Approve & Execute step.
+ */
+export async function runDelegationQuestViaUi(page: Page, input: {
+  workspaceName: string;
+  questTitle: string;
+  requirement: string;
+}) {
+  const workspaceRow = page.locator(".workspace-node").filter({ hasText: input.workspaceName });
+  await workspaceRow.getByRole("button", { name: `为 ${input.workspaceName} 创建 Request` }).click();
+  await expect(page.getByRole("heading", { name: "把需求交给 Agent" })).toBeVisible();
+  await page.getByRole("textbox", { name: "需求" }).fill(`${input.questTitle}\n${input.requirement}`);
+  await page.getByRole("button", { name: "发送给 Agent" }).click();
+  await expect(page.getByRole("heading", { name: input.questTitle })).toBeVisible({ timeout: 30_000 });
+  // Delegate mode skips plan generation/approval and runs the loop synchronously.
+  await expect(page.locator(".quest-row").filter({ hasText: input.questTitle }).getByText("待交付")).toBeVisible({
+    timeout: 120_000
+  });
+}

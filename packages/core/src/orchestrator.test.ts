@@ -10,8 +10,10 @@ import { promisify } from "node:util";
 import { writeFile } from "node:fs/promises";
 import { RepoHelmService } from "./service.js";
 import { SqliteStateStore } from "./store.js";
-import { SubAgentOrchestrator } from "./orchestrator.js";
-import type { ModelKit, Quest, WorktreeState } from "./types.js";
+import { SubAgentOrchestrator, isDelegatableWorker, foldDelegations, type DelegateAttempt } from "./orchestrator.js";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { ModelKit, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1670,6 +1672,701 @@ describe("Plan-then-execute flow", () => {
     } finally {
       restore();
     }
+  });
+
+  it("isDelegatableWorker excludes the entry agent and built-in system agents", () => {
+    const mk = (id: string, mode: SubAgent["mode"]) => ({ id, mode } as unknown as SubAgent);
+    expect(isDelegatableWorker(mk("w1", "worker"), "entry")).toBe(true);
+    // Legacy agents predate the `mode` field; treat them as delegatable workers.
+    expect(isDelegatableWorker(mk("legacy", undefined), "entry")).toBe(true);
+    expect(isDelegatableWorker(mk("entry", "entry"), "entry")).toBe(false);
+    expect(isDelegatableWorker(mk("kb-agent", "system"), "entry")).toBe(false);
+    // Excluded when it IS the entry, regardless of its declared mode.
+    expect(isDelegatableWorker(mk("self", "worker"), "self")).toBe(false);
+  });
+
+  it("marks a file-less required delegation failed even when a sibling delegation produced files", async () => {
+    // Reviewer scenario: in delegate mode the supervisor delegates to two workers.
+    // One writes a file (so the quest has material changes), the other is an
+    // implementation task that writes nothing. Without a per-delegation material
+    // check, the file-less delegation slips through and the whole quest is marked
+    // `ready`. It must instead be marked failed so the quest stays `blocked`.
+    const restoreKeys = [
+      "REPOHELM_GENERIC_CLI_COMMAND",
+      "REPOHELM_TEST_WORKER_WRITES_JSON",
+      "REPOHELM_TEST_WORKER_OUTPUT"
+    ];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+
+    // Fake BYOK entry endpoint: delegate to Researcher (writes findings), then to
+    // Coder (implementation task that writes nothing), then summarize.
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsgs = messages.filter((m) => m.role === "tool").length;
+        const idFor = (name: string) => (new RegExp(`^- (\\S+): ${name} `, "m").exec(user) ?? [])[1] || name;
+        let message: Record<string, unknown>;
+        if (toolMsgs === 0) {
+          message = {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "c1",
+                type: "function",
+                function: {
+                  name: "delegate",
+                  arguments: JSON.stringify({
+                    agentId: idFor("Researcher"),
+                    task: "Research the offer contract and write the findings file src/findings.md."
+                  })
+                }
+              }
+            ]
+          };
+        } else if (toolMsgs === 1) {
+          message = {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "c2",
+                type: "function",
+                function: {
+                  name: "delegate",
+                  arguments: JSON.stringify({
+                    agentId: idFor("Coder"),
+                    task: "Implement the offer handler and write the source file src/handler.ts."
+                  })
+                }
+              }
+            ]
+          };
+        } else {
+          message = { role: "assistant", content: "Delegated research and implementation; summarizing." };
+        }
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: message.tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      // Only the researcher's task ("findings") triggers a write; the coder's does not.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "findings", path: "src/findings.md", content: "FOUND\n" }
+      ]);
+      process.env.REPOHELM_TEST_WORKER_OUTPUT = "Looked around but produced no file.";
+
+      await service.createModelKit({
+        id: "delegate-entry-kit",
+        name: "Delegate Entry BYOK",
+        type: "byok",
+        providerId: "fake",
+        model: "fake-model",
+        config: { provider: "fake", baseUrl, model: "fake-model", apiKey: "fake-key" }
+      });
+      await service.createModelKit({
+        id: "delegate-worker-kit",
+        name: "Delegate Worker CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "delegate-entry-kit",
+        mode: "entry",
+        permissions: { allowedTools: ["delegate"], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "researcher",
+        name: "Researcher",
+        role: "Researches and writes findings",
+        capabilities: ["research"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Implements code",
+        capabilities: ["coding"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        // Open-ended, single-project, >200 chars, no ordering keywords → with a BYOK
+        // entry and ≥2 workers this routes to delegate mode.
+        title: "Delegate material guard",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [project.id]
+      });
+
+      // Delegate mode executes synchronously on runQuest (no approval gate).
+      const executed = await service.runQuest(quest.id);
+
+      // A sibling delegation DID write a file (so the quest has material changes)…
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/findings.md");
+      // …yet the file-less implementation delegation is marked failed, blocking delivery.
+      expect(executed.status).toBe("blocked");
+      expect(executed.agentSummary).toContain("Coder (fail)");
+      expect(executed.agentSummary).toContain("Worker completed without required material output");
+
+      const finalState = await service.getState();
+      const events = finalState.events.filter((e) => e.questId === quest.id);
+      expect(events.some((e) => e.type === "step.failed" && e.title === "步骤失败: Coder")).toBe(true);
+      expect(events.some((e) => e.type === "step.completed" && e.title === "步骤完成: Researcher")).toBe(true);
+      expect(events.some((e) => e.type === "orchestrator.failed")).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  it("fails a delegation with an invalid targetProjectId instead of silently running in the first repo", async () => {
+    // Reviewer scenario: the supervisor passes a targetProjectId that is NOT an
+    // affected project (model typo / wrong id). It must NOT silently fall back to
+    // affectedProjectIds[0] and edit the wrong repo — the delegation should fail.
+    const restoreKeys = ["REPOHELM_GENERIC_CLI_COMMAND", "REPOHELM_TEST_WORKER_WRITES_JSON", "REPOHELM_TEST_WORKER_OUTPUT"];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+
+    // Fake BYOK entry endpoint: one delegate call carrying a bogus targetProjectId.
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsgs = messages.filter((m) => m.role === "tool").length;
+        const coderId = (/^- (\S+): Coder /m.exec(user) ?? [])[1] || "coder";
+        const message =
+          toolMsgs === 0
+            ? {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                  {
+                    id: "c1",
+                    type: "function",
+                    function: {
+                      name: "delegate",
+                      arguments: JSON.stringify({
+                        agentId: coderId,
+                        task: "Implement and write the findings file src/findings.md.",
+                        context: { targetProjectId: "does-not-exist" }
+                      })
+                    }
+                  }
+                ]
+              }
+            : { role: "assistant", content: "Done." };
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: (message as { tool_calls?: unknown }).tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      // If the worker DID run (old fallback behavior), this rule would write the file.
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "findings", path: "src/findings.md", content: "WRONG REPO\n" }
+      ]);
+
+      await service.createModelKit({
+        id: "delegate-entry-kit",
+        name: "Delegate Entry BYOK",
+        type: "byok",
+        providerId: "fake",
+        model: "fake-model",
+        config: { provider: "fake", baseUrl, model: "fake-model", apiKey: "fake-key" }
+      });
+      await service.createModelKit({
+        id: "delegate-worker-kit",
+        name: "Delegate Worker CLI",
+        type: "cli",
+        backendId: "generic",
+        model: "default",
+        config: { backendId: "generic" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "delegate-entry-kit",
+        mode: "entry",
+        permissions: { allowedTools: ["delegate"], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "coder",
+        name: "Coder",
+        role: "Implements code",
+        capabilities: ["coding"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "reviewer",
+        name: "Reviewer",
+        role: "Second worker so the pool has ≥2 delegatable workers",
+        capabilities: ["review"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Delegate invalid target",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [project.id]
+      });
+
+      const executed = await service.runQuest(quest.id);
+
+      // The worker must NOT have run in the (only / first) repo: no file was written.
+      expect(executed.changedFiles.map((f) => f.path)).not.toContain("src/findings.md");
+      expect(executed.status).toBe("blocked");
+      expect(executed.agentSummary).toContain("invalid targetProjectId");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  it("preserves an invalid-target rejection even when a differently-targeted retry succeeds", async () => {
+    // The supervisor delegates with a bad targetProjectId (rejected), then re-delegates
+    // the SAME task against a DIFFERENT (valid) target that writes the file. The bad
+    // target was never handled, so the rejection must NOT be masked by the unrelated
+    // success — the quest stays blocked. (Recovery only folds for the SAME target+task,
+    // covered by the foldDelegations unit tests.)
+    const restoreKeys = ["REPOHELM_GENERIC_CLI_COMMAND", "REPOHELM_TEST_WORKER_WRITES_JSON"];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    const TASK = "Implement the handler and write the source file src/out.ts.";
+
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsgs = messages.filter((m) => m.role === "tool").length;
+        const coderId = (/^- (\S+): Coder /m.exec(user) ?? [])[1] || "coder";
+        const delegateCall = (ctx: Record<string, unknown>) => ({
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: `c${toolMsgs}`, type: "function", function: { name: "delegate", arguments: JSON.stringify({ agentId: coderId, task: TASK, context: ctx }) } }
+          ]
+        });
+        const message =
+          toolMsgs === 0
+            ? delegateCall({ targetProjectId: "wrong-id" }) // fails
+            : toolMsgs === 1
+              ? delegateCall({}) // retry same task, valid (falls back to the single project)
+              : { role: "assistant", content: "Recovered and completed." };
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: (message as { tool_calls?: unknown }).tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "out.ts", path: "src/out.ts", content: "OK\n" }
+      ]);
+      await service.createModelKit({ id: "ek", name: "E", type: "byok", providerId: "f", model: "m", config: { provider: "f", baseUrl, model: "m", apiKey: "k" } });
+      await service.createModelKit({ id: "wk", name: "W", type: "cli", backendId: "generic", model: "default", config: { backendId: "generic" } });
+      await service.createSubAgent({ id: "supervisor", name: "Supervisor", role: "entry", capabilities: ["planning"], modelKitId: "ek", mode: "entry", permissions: { allowedTools: ["delegate"], deniedTools: [] } });
+      await service.createSubAgent({ id: "coder", name: "Coder", role: "worker", capabilities: ["coding"], modelKitId: "wk", mode: "worker", permissions: { allowedTools: [], deniedTools: [] } });
+      await service.createSubAgent({ id: "reviewer", name: "Reviewer", role: "worker", capabilities: ["review"], modelKitId: "wk", mode: "worker", permissions: { allowedTools: [], deniedTools: [] } });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const quest = await service.createQuest({
+        workspaceId: state.workspaces[0]!.id,
+        title: "Delegate recovery",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [state.projects[0]!.id]
+      });
+
+      const executed = await service.runQuest(quest.id);
+
+      // The valid retry's work landed…
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/out.ts");
+      // …yet the bad-target rejection is preserved, so the quest stays blocked.
+      expect(executed.status).toBe("blocked");
+      expect(executed.agentSummary).toContain("invalid targetProjectId");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  it("recovers an unknown-agent rejection retried with a valid agent and an omitted target", async () => {
+    // Single-project quest, target omitted both times. First delegate uses a misspelled
+    // agentId (rejected); the retry uses the valid agent and succeeds. The omitted
+    // target normalizes to the default project for BOTH, so they share identity and the
+    // rejection folds into the success → quest ready, not stuck blocked.
+    const restoreKeys = ["REPOHELM_GENERIC_CLI_COMMAND", "REPOHELM_TEST_WORKER_WRITES_JSON"];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+    const TASK = "Implement the handler and write the source file src/out.ts.";
+
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsgs = messages.filter((m) => m.role === "tool").length;
+        const coderId = (/^- (\S+): Coder /m.exec(user) ?? [])[1] || "coder";
+        // Both calls omit context.targetProjectId.
+        const delegateTo = (agentId: string) => ({
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: `c${toolMsgs}`, type: "function", function: { name: "delegate", arguments: JSON.stringify({ agentId, task: TASK }) } }
+          ]
+        });
+        const message =
+          toolMsgs === 0
+            ? delegateTo("codr-typo") // unknown agent → rejected
+            : toolMsgs === 1
+              ? delegateTo(coderId) // valid agent, still omitted target → success
+              : { role: "assistant", content: "Recovered with the correct agent." };
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: (message as { tool_calls?: unknown }).tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      process.env.REPOHELM_TEST_WORKER_WRITES_JSON = JSON.stringify([
+        { contains: "out.ts", path: "src/out.ts", content: "OK\n" }
+      ]);
+      await service.createModelKit({ id: "ek", name: "E", type: "byok", providerId: "f", model: "m", config: { provider: "f", baseUrl, model: "m", apiKey: "k" } });
+      await service.createModelKit({ id: "wk", name: "W", type: "cli", backendId: "generic", model: "default", config: { backendId: "generic" } });
+      await service.createSubAgent({ id: "supervisor", name: "Supervisor", role: "entry", capabilities: ["planning"], modelKitId: "ek", mode: "entry", permissions: { allowedTools: ["delegate"], deniedTools: [] } });
+      await service.createSubAgent({ id: "coder", name: "Coder", role: "worker", capabilities: ["coding"], modelKitId: "wk", mode: "worker", permissions: { allowedTools: [], deniedTools: [] } });
+      await service.createSubAgent({ id: "reviewer", name: "Reviewer", role: "worker", capabilities: ["review"], modelKitId: "wk", mode: "worker", permissions: { allowedTools: [], deniedTools: [] } });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const quest = await service.createQuest({
+        workspaceId: state.workspaces[0]!.id,
+        title: "Delegate unknown-agent recovery",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [state.projects[0]!.id]
+      });
+
+      const executed = await service.runQuest(quest.id);
+
+      expect(executed.changedFiles.map((f) => f.path)).toContain("src/out.ts");
+      expect(executed.status).toBe("ready"); // unknown-agent typo recovered on the same (default) target
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  it("hands the supervisor a tool result with outer ok=false on a failed delegation", async () => {
+    // A semantic failure (here: invalid target) must serialize as outer ok:false in
+    // the delegate tool message, not be hidden inside an ok:true envelope.
+    const restoreKeys = ["REPOHELM_GENERIC_CLI_COMMAND"];
+    const saved = Object.fromEntries(restoreKeys.map((k) => [k, process.env[k]]));
+    const { rootDir, service } = await createGitRepoService();
+    const commandPath = await createWorkerCommand(rootDir);
+
+    const server: Server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        let messages: Array<{ role: string; content?: string }> = [];
+        try {
+          messages = JSON.parse(body).messages || [];
+        } catch {
+          messages = [];
+        }
+        const user = messages.find((m) => m.role === "user")?.content || "";
+        const toolMsg = [...messages].reverse().find((m) => m.role === "tool");
+        const coderId = (/^- (\S+): Coder /m.exec(user) ?? [])[1] || "coder";
+        let message: Record<string, unknown>;
+        if (!toolMsg) {
+          message = {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              { id: "c1", type: "function", function: { name: "delegate", arguments: JSON.stringify({ agentId: coderId, task: "Implement and write src/out.ts.", context: { targetProjectId: "nope" } }) } }
+            ]
+          };
+        } else {
+          // Echo what outer `ok` the supervisor actually received from the tool.
+          let outerOk: unknown = "missing";
+          try {
+            outerOk = JSON.parse(toolMsg.content || "{}").ok;
+          } catch {
+            outerOk = "unparseable";
+          }
+          message = { role: "assistant", content: `observed_outer_ok=${outerOk}` };
+        }
+        const payload = {
+          id: "x",
+          object: "chat.completion",
+          choices: [{ index: 0, finish_reason: (message as { tool_calls?: unknown }).tool_calls ? "tool_calls" : "stop", message }],
+          usage: {}
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      await service.bootstrap();
+      process.env.REPOHELM_GENERIC_CLI_COMMAND = commandPath;
+      await service.createModelKit({ id: "ek", name: "E", type: "byok", providerId: "f", model: "m", config: { provider: "f", baseUrl, model: "m", apiKey: "k" } });
+      await service.createModelKit({ id: "wk", name: "W", type: "cli", backendId: "generic", model: "default", config: { backendId: "generic" } });
+      await service.createSubAgent({ id: "supervisor", name: "Supervisor", role: "entry", capabilities: ["planning"], modelKitId: "ek", mode: "entry", permissions: { allowedTools: ["delegate"], deniedTools: [] } });
+      await service.createSubAgent({ id: "coder", name: "Coder", role: "worker", capabilities: ["coding"], modelKitId: "wk", mode: "worker", permissions: { allowedTools: [], deniedTools: [] } });
+      await service.createSubAgent({ id: "reviewer", name: "Reviewer", role: "worker", capabilities: ["review"], modelKitId: "wk", mode: "worker", permissions: { allowedTools: [], deniedTools: [] } });
+      await service.setEntrySubAgent("supervisor");
+
+      const state = await service.getState();
+      const quest = await service.createQuest({
+        workspaceId: state.workspaces[0]!.id,
+        title: "Delegate outer ok",
+        requirement:
+          "Refactor and harden the offer handling throughout the module so behavior stays consistent for " +
+          "downstream consumers, covering the relevant edge cases and keeping the public surface stable while " +
+          "improving internal clarity and resilience across the affected code.",
+        affectedProjectIds: [state.projects[0]!.id]
+      });
+
+      const executed = await service.runQuest(quest.id);
+      expect(executed.agentSummary).toContain("observed_outer_ok=false");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      for (const k of restoreKeys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+});
+
+describe("foldDelegations", () => {
+  const attempt = (over: Partial<DelegateAttempt>): DelegateAttempt => ({
+    agentId: "w",
+    agentName: "Worker",
+    task: "T",
+    targetProjectId: "p",
+    ok: true,
+    content: "",
+    writtenFiles: [],
+    events: [],
+    ...over
+  });
+
+  it("folds a failed-then-succeeded same subtask into a single recovered outcome", () => {
+    const folded = foldDelegations([
+      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", targetProjectId: "api", ok: false, error: "flaky" }),
+      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", targetProjectId: "api", ok: true, writtenFiles: ["src/x.ts"] })
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(true); // recovered → not blocking
+    expect(folded[0]!.summary).toContain("恢复记录");
+  });
+
+  it("folds a same-subtask reassignment to a different worker (recovery, agent not in identity)", () => {
+    // coder fails Build X in api (ran, no files); supervisor reassigns the SAME
+    // (target, task) to reviewer, which succeeds. Identity excludes the agent, so
+    // this recovers — mirroring the plan path's reassign-then-recover.
+    const folded = foldDelegations([
+      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", targetProjectId: "api", ok: false, error: "no files" }),
+      attempt({ agentId: "reviewer", agentName: "Reviewer", task: "Build X", targetProjectId: "api", ok: true, writtenFiles: ["src/x.ts"] })
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(true);
+    expect(folded[0]!.agentName).toBe("Reviewer");
+  });
+
+  it("does NOT fold identical task text targeting different projects (multi-repo quest)", () => {
+    // The supervisor sends "Update README" to two repos; one fails, one succeeds.
+    // These are distinct subtasks — the failure must not be masked by the success.
+    const folded = foldDelegations([
+      attempt({ agentId: "coder", task: "Update README", targetProjectId: "api", ok: false, error: "no files" }),
+      attempt({ agentId: "coder", task: "Update README", targetProjectId: "web", ok: true, writtenFiles: ["README.md"] })
+    ]);
+    expect(folded).toHaveLength(2);
+    expect(folded.some((d) => !d.ok)).toBe(true); // the api-repo failure is preserved
+  });
+
+  it("does NOT treat a same-task success in another project as recovering an invalid-target rejection", () => {
+    // Rejected on a bad/declared-wrong target (api-typo), then the SAME task succeeds
+    // against a DIFFERENT project (web). The api intent was never handled — the
+    // rejection must be preserved, not dropped because the task text matched elsewhere.
+    const folded = foldDelegations([
+      attempt({ agentId: "coder", task: "Update README", targetProjectId: "api-typo", ok: false, error: "invalid targetProjectId" }),
+      attempt({ agentId: "coder", task: "Update README", targetProjectId: "web", ok: true, writtenFiles: ["README.md"] })
+    ]);
+    expect(folded).toHaveLength(2);
+    expect(folded.some((d) => !d.ok)).toBe(true); // the invalid-target rejection is preserved
+  });
+
+  it("keeps an unrecovered failure as a failed outcome (still blocks)", () => {
+    const folded = foldDelegations([attempt({ task: "Build X", ok: false, error: "no files" })]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(false);
+  });
+
+  it("does not let a sibling success mask a distinct failed delegation", () => {
+    // A handler-level failure (e.g. unknown agent) for one subtask must remain a
+    // failure even though a DIFFERENT subtask succeeded and wrote files.
+    const folded = foldDelegations([
+      attempt({ agentId: "ghost", agentName: "ghost", task: "Do A", ok: false, error: "agent ghost not found" }),
+      attempt({ agentId: "coder", agentName: "Coder", task: "Do B", ok: true, writtenFiles: ["b.ts"] })
+    ]);
+    expect(folded).toHaveLength(2);
+    expect(folded.some((d) => !d.ok)).toBe(true); // not masked
+  });
+
+  it("recovers an unknown-agent rejection retried correctly against the SAME target", () => {
+    // Supervisor delegates "Build X" against api to a misspelled agent (rejected),
+    // then retries the SAME (target, task) with a valid agent that succeeds → the
+    // rejection folds into the success (agent is not part of identity).
+    const folded = foldDelegations([
+      attempt({ agentId: "codr", agentName: "codr", task: "Build X", targetProjectId: "api", ok: false, error: "agent codr not found" }),
+      attempt({ agentId: "coder", agentName: "Coder", task: "Build X", targetProjectId: "api", ok: true, writtenFiles: ["x.ts"] })
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(true);
+  });
+
+  it("keeps an unrecovered pre-resolution rejection as a blocking failure", () => {
+    const folded = foldDelegations([
+      attempt({ agentId: "ghost", agentName: "ghost", task: "Build X", targetProjectId: "api", ok: false, error: "agent ghost not found" })
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(false);
+  });
+
+  it("treats a success as sticky even if a later same-task attempt fails", () => {
+    const folded = foldDelegations([
+      attempt({ task: "T", ok: true, writtenFiles: ["t.ts"] }),
+      attempt({ task: "T", ok: false, error: "flaky rerun" })
+    ]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]!.ok).toBe(true);
   });
 });
 
