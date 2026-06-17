@@ -514,6 +514,38 @@ describe("RepoHelmService", () => {
       detail: "Supervisor Quest Entry 生成了 1 个步骤的执行计划。"
     });
   });
+
+  it("runQuest reports a missing quest even when a global entry sub-agent exists", async () => {
+    const { service } = await createGitRepoService();
+    await service.bootstrap();
+
+    await service.createModelKit({
+      id: "global-entry-kit",
+      name: "Global Entry Kit",
+      type: "cli",
+      backendId: "mock",
+      model: "default",
+      config: { backendId: "mock" }
+    });
+    await service.createSubAgent({
+      id: "configured-entry",
+      name: "Configured Entry",
+      role: "Global supervisor",
+      capabilities: ["planning"],
+      modelKitId: "global-entry-kit",
+      mode: "entry"
+    });
+    await service.setEntrySubAgent("configured-entry");
+
+    await expect(service.runQuest("missing-quest")).rejects.toThrow("Quest not found");
+  });
+
+  it("runQuest reports a missing quest before checking entry sub-agent configuration", async () => {
+    const { service } = await createGitRepoService();
+    await service.bootstrap();
+
+    await expect(service.runQuest("missing-quest")).rejects.toThrow("Quest not found");
+  });
 });
 
 describe("ModelKit Management", () => {

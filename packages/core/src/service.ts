@@ -1635,7 +1635,13 @@ export class RepoHelmService {
   }
 
   async runQuest(questId: string): Promise<Quest> {
-    const entryAgent = await this.resolveEntryAgentForQuest(questId);
+    const initialState = await this.getState();
+    const initialQuest = initialState.quests.find((item) => item.id === questId);
+    if (!initialQuest) {
+      throw new Error("Quest not found");
+    }
+
+    const entryAgent = this.resolveEntryAgentFromState(initialState, initialQuest);
     if (!entryAgent) {
       throw new Error(
         "No entry sub-agent configured. Set an entry agent in Settings > Sub-Agents before running quests."
@@ -1896,14 +1902,8 @@ export class RepoHelmService {
     return orchestrator.questWorkspace.readPlan(questId);
   }
 
-  private async resolveEntryAgentForQuest(questId: string): Promise<SubAgent | undefined> {
-    const state = await this.getState();
-    const quest = state.quests.find((item) => item.id === questId);
-    return quest ? this.resolveEntryAgentFromState(state, quest) : undefined;
-  }
-
-  private resolveEntryAgentFromState(state: RepoHelmState, quest: Quest): SubAgent | undefined {
-    if (quest.entrySubAgentId && state.subAgents[quest.entrySubAgentId]) {
+  private resolveEntryAgentFromState(state: RepoHelmState, quest?: Quest): SubAgent | undefined {
+    if (quest?.entrySubAgentId && state.subAgents[quest.entrySubAgentId]) {
       return state.subAgents[quest.entrySubAgentId];
     }
     if (state.entrySubAgentId && state.subAgents[state.entrySubAgentId]) {
