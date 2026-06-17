@@ -1635,7 +1635,13 @@ export class RepoHelmService {
   }
 
   async runQuest(questId: string): Promise<Quest> {
-    const entryAgent = await this.resolveEntryAgentForQuest(questId);
+    const initialState = await this.getState();
+    const initialQuest = initialState.quests.find((item) => item.id === questId);
+    if (!initialQuest) {
+      throw new Error("Quest not found");
+    }
+
+    const entryAgent = this.resolveEntryAgentFromState(initialState, initialQuest);
     if (!entryAgent) {
       throw new Error(
         "No entry sub-agent configured. Set an entry agent in Settings > Sub-Agents before running quests."
@@ -1644,23 +1650,7 @@ export class RepoHelmService {
 
     const orchestrator = new SubAgentOrchestrator(this);
 
-    // Auto-select the execution mode by complexity (no user-facing flag): a
-    // complex, open-ended, multi-worker quest with a BYOK entry runs the adaptive
-    // delegate loop; everything else stays on the static, approvable plan path.
-    const modeState = await this.getState();
-    const modeQuest = modeState.quests.find((item) => item.id === questId);
-    if (!modeQuest) {
-      throw new Error("Quest not found");
-    }
-    const entryModelKit = await this.getModelKit(entryAgent.modelKitId);
-    const delegatableAgentCount = (await this.listSubAgents()).filter((agent) =>
-      isDelegatableWorker(agent, entryAgent.id)
-    ).length;
-    const mode = selectExecutionMode({
-      quest: modeQuest,
-      delegatableAgentCount,
-      entryModelKitType: entryModelKit?.type
-    });
+    const mode = await this.selectExecutionModeForQuest(questId, entryAgent);
 
     if (mode === "delegate") {
       return this.runQuestDelegated(questId, orchestrator);
@@ -1912,9 +1902,7 @@ export class RepoHelmService {
     return orchestrator.questWorkspace.readPlan(questId);
   }
 
-  private async resolveEntryAgentForQuest(questId: string): Promise<SubAgent | undefined> {
-    const state = await this.getState();
-    const quest = state.quests.find((item) => item.id === questId);
+  private resolveEntryAgentFromState(state: RepoHelmState, quest?: Quest): SubAgent | undefined {
     if (quest?.entrySubAgentId && state.subAgents[quest.entrySubAgentId]) {
       return state.subAgents[quest.entrySubAgentId];
     }
@@ -1922,6 +1910,35 @@ export class RepoHelmService {
       return state.subAgents[state.entrySubAgentId];
     }
     return undefined;
+  }
+
+  /**
+   * Auto-select the execution mode by complexity (no user-facing flag): a complex,
+   * open-ended, multi-worker quest with a BYOK entry runs the adaptive delegate
+   * loop; everything else stays on the static, approvable plan path.
+   */
+  private async selectExecutionModeForQuest(
+    questId: string,
+    resolvedEntryAgent?: SubAgent
+  ): Promise<ExecutionMode> {
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    const entryAgent = resolvedEntryAgent ?? this.resolveEntryAgentFromState(state, quest);
+    if (!entryAgent) {
+      return "plan";
+    }
+    const entryModelKit = await this.getModelKit(entryAgent.modelKitId);
+    const delegatableAgentCount = Object.values(state.subAgents).filter((agent) =>
+      isDelegatableWorker(agent, entryAgent.id)
+    ).length;
+    return selectExecutionMode({
+      quest,
+      delegatableAgentCount,
+      entryModelKitType: entryModelKit?.type
+    });
   }
 
   private async persistOrchestratorResult(
@@ -2590,8 +2607,25 @@ export class RepoHelmService {
       yield { type: "event_added", event: await emit("capability.recommended", "能力推荐已生成", `Capability Agent 推荐了 ${caps.length} 个可审计能力。`, "Capability Agent") };
     }
 
+    const executionMode = await this.selectExecutionModeForQuest(questId).catch(() => "plan" as ExecutionMode);
     await pace();
-    yield { type: "event_added", event: await emit("plan.created", "实施计划已生成", "Lead Agent 已将 Quest 推进到规划阶段，等待准备 worktree。", "Lead Agent") };
+    yield {
+      type: "event_added",
+      event:
+        executionMode === "delegate"
+          ? await emit(
+              "delegate.prepared",
+              "动态委派已准备",
+              "Lead Agent 已将 Quest 推进到动态委派准备阶段；按当前配置，Run 后 Supervisor 会动态选择 worker 执行。执行时会按最新配置再次确认模式。",
+              "Lead Agent"
+            )
+          : await emit(
+              "plan.created",
+              "实施计划已生成",
+              "Lead Agent 已将 Quest 推进到规划阶段，等待准备 worktree。",
+              "Lead Agent"
+            )
+    };
 
     let finalQuest!: Quest;
     await this.mutateState(async (s) => {

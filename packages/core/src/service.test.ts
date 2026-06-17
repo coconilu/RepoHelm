@@ -455,6 +455,97 @@ describe("RepoHelmService", () => {
     const persistedQuest = nextState.quests.find((item) => item.id === quest.id);
     expect(persistedQuest?.status).toBe("planning");
   });
+
+  it("runQuest prefers a quest-specific entry sub-agent over the global entry", async () => {
+    const { service } = await createGitRepoService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const project = state.projects[0]!;
+
+    await service.createModelKit({
+      id: "entry-helper-kit",
+      name: "Entry Helper Kit",
+      type: "cli",
+      backendId: "mock",
+      model: "default",
+      config: { backendId: "mock" }
+    });
+    await service.createSubAgent({
+      id: "global-entry",
+      name: "Global Entry",
+      role: "Global supervisor",
+      capabilities: ["planning"],
+      modelKitId: "entry-helper-kit",
+      mode: "entry"
+    });
+    await service.createSubAgent({
+      id: "quest-entry",
+      name: "Quest Entry",
+      role: "Quest supervisor",
+      capabilities: ["planning"],
+      modelKitId: "entry-helper-kit",
+      mode: "entry"
+    });
+    await service.createSubAgent({
+      id: "quest-worker",
+      name: "Quest Worker",
+      role: "Implementation worker",
+      capabilities: ["coding"],
+      modelKitId: "entry-helper-kit",
+      mode: "worker"
+    });
+    await service.setEntrySubAgent("global-entry");
+
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Quest entry override",
+      requirement: "Update a README sentence.",
+      affectedProjectIds: [project.id],
+      entrySubAgentId: "quest-entry"
+    });
+
+    const plannedQuest = await service.runQuest(quest.id);
+
+    const persisted = await service.getState();
+    const events = persisted.events.filter((event) => event.questId === quest.id);
+    expect(plannedQuest.planApproval?.status).toBe("pending");
+    expect(events.find((event) => event.type === "plan.generated")).toMatchObject({
+      agent: "Quest Entry",
+      detail: "Supervisor Quest Entry 生成了 1 个步骤的执行计划。"
+    });
+  });
+
+  it("runQuest reports a missing quest even when a global entry sub-agent exists", async () => {
+    const { service } = await createGitRepoService();
+    await service.bootstrap();
+
+    await service.createModelKit({
+      id: "global-entry-kit",
+      name: "Global Entry Kit",
+      type: "cli",
+      backendId: "mock",
+      model: "default",
+      config: { backendId: "mock" }
+    });
+    await service.createSubAgent({
+      id: "configured-entry",
+      name: "Configured Entry",
+      role: "Global supervisor",
+      capabilities: ["planning"],
+      modelKitId: "global-entry-kit",
+      mode: "entry"
+    });
+    await service.setEntrySubAgent("configured-entry");
+
+    await expect(service.runQuest("missing-quest")).rejects.toThrow("Quest not found");
+  });
+
+  it("runQuest reports a missing quest before checking entry sub-agent configuration", async () => {
+    const { service } = await createGitRepoService();
+    await service.bootstrap();
+
+    await expect(service.runQuest("missing-quest")).rejects.toThrow("Quest not found");
+  });
 });
 
 describe("ModelKit Management", () => {
@@ -777,6 +868,94 @@ describe("createQuest + streamQuestSpec (streaming)", () => {
       expect(analysis).toContain("需求分析");
       expect(finalQuest.status).toBe("planning");
       expect(finalQuest.spec.userGoal).toBe("g");
+      const persisted = await service.getState();
+      const events = persisted.events.filter((e) => e.questId === quest.id);
+      expect(events.some((e) => e.type === "plan.created" && e.title === "实施计划已生成")).toBe(true);
+    } finally {
+      delete process.env.REPOHELM_FAKE_MODELS;
+      delete process.env.REPOHELM_FAKE_STREAM_TEXT;
+    }
+  });
+
+  it("streamQuestSpec labels delegate-mode preparation without static plan wording", async () => {
+    process.env.REPOHELM_FAKE_MODELS = "1";
+    process.env.REPOHELM_FAKE_STREAM_TEXT =
+      '需求分析：这是一个跨仓库动态委派任务。\n```json\n{"background":"b","userGoal":"g","functionalRequirements":["f1"],"nonFunctionalRequirements":["n1"],"affectedSurfaces":["Quest"],"outOfScope":["x"],"acceptanceCriteria":["a1"],"openQuestions":[]}\n```';
+    try {
+      const { service } = await createGitRepoService();
+      const state = await service.bootstrap();
+      const workspace = state.workspaces[0]!;
+      const project = state.projects[0]!;
+
+      await service.createModelKit({
+        id: "delegate-entry-kit",
+        name: "Delegate Entry BYOK",
+        type: "byok",
+        providerId: "fake",
+        model: "fake-model",
+        config: { provider: "fake", baseUrl: "http://127.0.0.1:9", model: "fake-model", apiKey: "fake-key" }
+      });
+      await service.createModelKit({
+        id: "delegate-worker-kit",
+        name: "Delegate Worker CLI",
+        type: "cli",
+        backendId: "mock",
+        model: "default",
+        config: { backendId: "mock" }
+      });
+      await service.createSubAgent({
+        id: "supervisor",
+        name: "Supervisor",
+        role: "Entry supervisor",
+        capabilities: ["planning"],
+        modelKitId: "delegate-entry-kit",
+        mode: "entry",
+        permissions: { allowedTools: ["delegate"], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "researcher",
+        name: "Researcher",
+        role: "Research worker",
+        capabilities: ["research"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.createSubAgent({
+        id: "implementer",
+        name: "Implementer",
+        role: "Implementation worker",
+        capabilities: ["coding"],
+        modelKitId: "delegate-worker-kit",
+        mode: "worker",
+        permissions: { allowedTools: [], deniedTools: [] }
+      });
+      await service.setEntrySubAgent("supervisor");
+
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "delegate prep",
+        requirement:
+          "Investigate and improve the offer handling across the affected repository so the contract, " +
+          "implementation behavior, verification notes, and delivery summary stay consistent for downstream " +
+          "users while preserving the public surface and letting the supervisor decide which specialized " +
+          "workers should handle each part of the open-ended work.",
+        affectedProjectIds: [project.id]
+      });
+
+      for await (const ev of service.streamQuestSpec(quest.id)) {
+        expect(ev.type).not.toBe("error");
+      }
+
+      const persisted = await service.getState();
+      const events = persisted.events.filter((e) => e.questId === quest.id);
+      expect(events.some((e) => e.type === "delegate.prepared" && e.title === "动态委派已准备")).toBe(true);
+      const prepared = events.find((e) => e.type === "delegate.prepared");
+      expect(prepared?.detail).toContain("按当前配置");
+      expect(prepared?.detail).toContain("最新配置再次确认模式");
+      expect(prepared?.detail).not.toContain("不会生成静态编排计划");
+      expect(events.some((e) => e.type === "plan.created")).toBe(false);
+      expect(events.some((e) => e.title === "实施计划已生成")).toBe(false);
     } finally {
       delete process.env.REPOHELM_FAKE_MODELS;
       delete process.env.REPOHELM_FAKE_STREAM_TEXT;
