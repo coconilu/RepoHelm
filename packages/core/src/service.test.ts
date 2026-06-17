@@ -455,6 +455,65 @@ describe("RepoHelmService", () => {
     const persistedQuest = nextState.quests.find((item) => item.id === quest.id);
     expect(persistedQuest?.status).toBe("planning");
   });
+
+  it("runQuest prefers a quest-specific entry sub-agent over the global entry", async () => {
+    const { service } = await createGitRepoService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const project = state.projects[0]!;
+
+    await service.createModelKit({
+      id: "entry-helper-kit",
+      name: "Entry Helper Kit",
+      type: "cli",
+      backendId: "mock",
+      model: "default",
+      config: { backendId: "mock" }
+    });
+    await service.createSubAgent({
+      id: "global-entry",
+      name: "Global Entry",
+      role: "Global supervisor",
+      capabilities: ["planning"],
+      modelKitId: "entry-helper-kit",
+      mode: "entry"
+    });
+    await service.createSubAgent({
+      id: "quest-entry",
+      name: "Quest Entry",
+      role: "Quest supervisor",
+      capabilities: ["planning"],
+      modelKitId: "entry-helper-kit",
+      mode: "entry"
+    });
+    await service.createSubAgent({
+      id: "quest-worker",
+      name: "Quest Worker",
+      role: "Implementation worker",
+      capabilities: ["coding"],
+      modelKitId: "entry-helper-kit",
+      mode: "worker"
+    });
+    await service.setEntrySubAgent("global-entry");
+
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Quest entry override",
+      requirement: "Update a README sentence.",
+      affectedProjectIds: [project.id],
+      entrySubAgentId: "quest-entry"
+    });
+
+    const plannedQuest = await service.runQuest(quest.id);
+
+    const persisted = await service.getState();
+    const events = persisted.events.filter((event) => event.questId === quest.id);
+    expect(plannedQuest.planApproval?.status).toBe("pending");
+    expect(events.find((event) => event.type === "plan.generated")).toMatchObject({
+      agent: "Quest Entry",
+      detail: "Supervisor Quest Entry 生成了 1 个步骤的执行计划。"
+    });
+  });
 });
 
 describe("ModelKit Management", () => {
@@ -859,6 +918,10 @@ describe("createQuest + streamQuestSpec (streaming)", () => {
       const persisted = await service.getState();
       const events = persisted.events.filter((e) => e.questId === quest.id);
       expect(events.some((e) => e.type === "delegate.prepared" && e.title === "动态委派已准备")).toBe(true);
+      const prepared = events.find((e) => e.type === "delegate.prepared");
+      expect(prepared?.detail).toContain("按当前配置");
+      expect(prepared?.detail).toContain("最新配置再次确认模式");
+      expect(prepared?.detail).not.toContain("不会生成静态编排计划");
       expect(events.some((e) => e.type === "plan.created")).toBe(false);
       expect(events.some((e) => e.title === "实施计划已生成")).toBe(false);
     } finally {

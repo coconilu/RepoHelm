@@ -1899,13 +1899,7 @@ export class RepoHelmService {
   private async resolveEntryAgentForQuest(questId: string): Promise<SubAgent | undefined> {
     const state = await this.getState();
     const quest = state.quests.find((item) => item.id === questId);
-    if (quest?.entrySubAgentId && state.subAgents[quest.entrySubAgentId]) {
-      return state.subAgents[quest.entrySubAgentId];
-    }
-    if (state.entrySubAgentId && state.subAgents[state.entrySubAgentId]) {
-      return state.subAgents[state.entrySubAgentId];
-    }
-    return undefined;
+    return quest ? this.resolveEntryAgentFromState(state, quest) : undefined;
   }
 
   private resolveEntryAgentFromState(state: RepoHelmState, quest: Quest): SubAgent | undefined {
@@ -2622,7 +2616,7 @@ export class RepoHelmService {
           ? await emit(
               "delegate.prepared",
               "动态委派已准备",
-              "Lead Agent 已将 Quest 推进到动态委派准备阶段；Run 后 Supervisor 会直接选择 worker 执行，不会生成静态编排计划。",
+              "Lead Agent 已将 Quest 推进到动态委派准备阶段；按当前配置，Run 后 Supervisor 会动态选择 worker 执行。执行时会按最新配置再次确认模式。",
               "Lead Agent"
             )
           : await emit(
