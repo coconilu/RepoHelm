@@ -1265,12 +1265,31 @@ describe("createQuest + streamQuestSpec (streaming)", () => {
     }
 
     const approvals = await service.listCommandApprovals();
-    expect(approvals).toHaveLength(100);
+    expect(approvals).toHaveLength(200);
     expect(approvals[0]?.command).toBe("node scripts/check-204.js");
 
     const state = await service.getState();
     expect(state.commandApprovals).toHaveLength(200);
     expect(state.commandApprovals[0]?.command).toBe("node scripts/check-204.js");
+  });
+
+  it("keeps active approvals reachable when trimming inactive command approval history", async () => {
+    const { service } = await createService();
+    await service.bootstrap();
+
+    await expect(service.authorizeCommand("node scripts/approved.js", "worker run_command")).resolves.toBe(false);
+    const [approval] = await service.listCommandApprovals();
+    expect(approval).toBeDefined();
+    await service.approveCommandApproval(approval!.id, { scope: "session" });
+
+    for (let index = 0; index < 205; index += 1) {
+      await expect(service.authorizeCommand(`node scripts/check-${index}.js`, "worker run_command")).resolves.toBe(false);
+    }
+
+    const approvals = await service.listCommandApprovals();
+    expect(approvals).toHaveLength(200);
+    expect(approvals.some((item) => item.command === "node scripts/approved.js" && item.status === "approved")).toBe(true);
+    await expect(service.authorizeCommand("node scripts/approved.js", "worker run_command")).resolves.toBe(true);
   });
 
   it("authorizeCommand rejects shell composition even when the first token is allowlisted", async () => {

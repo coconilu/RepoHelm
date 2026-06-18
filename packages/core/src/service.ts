@@ -2515,7 +2515,7 @@ export class RepoHelmService {
 
   async listCommandApprovals(): Promise<CommandApproval[]> {
     const state = await this.getState();
-    return state.commandApprovals.slice(0, 100);
+    return state.commandApprovals;
   }
 
   async approveCommandApproval(
@@ -3198,7 +3198,22 @@ export class RepoHelmService {
   }
 
   private trimCommandApprovals(approvals: CommandApproval[]): CommandApproval[] {
-    return approvals.slice(0, MAX_COMMAND_APPROVALS);
+    if (approvals.length <= MAX_COMMAND_APPROVALS) {
+      return approvals;
+    }
+    const approved = approvals.filter((item) => item.status === "approved");
+    const inactive = approvals.filter((item) => item.status !== "approved");
+    const kept =
+      approved.length >= MAX_COMMAND_APPROVALS
+        ? approved.slice(0, MAX_COMMAND_APPROVALS)
+        : [...approved, ...inactive.slice(0, MAX_COMMAND_APPROVALS - approved.length)];
+    const keptIds = new Set(kept.map((item) => item.id));
+    for (const evicted of approvals) {
+      if (!keptIds.has(evicted.id) && evicted.status === "approved" && evicted.scope === "session") {
+        this.sessionCommandApprovals.delete(commandApprovalKey(evicted.subject, evicted.command));
+      }
+    }
+    return kept;
   }
 
   private async updateCapabilityRecommendation(

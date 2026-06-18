@@ -2400,6 +2400,7 @@ function AppSettingsDialog({
   }
 
   const pendingCommandApprovals = commandApprovals.filter((approval) => approval.status === "pending");
+  const activeCommandApprovals = commandApprovals.filter((approval) => approval.status === "approved");
   const recentCommandApprovals = commandApprovals.filter((approval) => approval.status !== "pending").slice(0, 8);
   const recentAuditLog = auditLog.slice(0, 10);
 
@@ -3150,6 +3151,35 @@ function AppSettingsDialog({
                 ))}
               </div>
 
+              <div className="settings-section-heading">
+                <h3>已批准命令</h3>
+                <span>{activeCommandApprovals.length} active</span>
+              </div>
+              {activeCommandApprovals.length === 0 ? <p className="muted">暂无已批准命令。</p> : null}
+              <div className="command-approval-list">
+                {activeCommandApprovals.map((approval) => (
+                  <article className="command-approval-row" key={approval.id}>
+                    <div>
+                      <strong>{approval.scope === "persistent" ? "持久批准" : "本会话批准"}</strong>
+                      <code>{approval.command}</code>
+                      <span className="field-hint">
+                        {approval.decidedAt ? formatDate(approval.decidedAt) : formatDate(approval.updatedAt)}
+                      </span>
+                    </div>
+                    <div className="settings-row-actions">
+                      <button
+                        className="danger-action"
+                        disabled={busy}
+                        onClick={() => decideCommandApproval(approval.id, "deny")}
+                        type="button"
+                      >
+                        撤销
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
               <div className="security-history-grid">
                 <section>
                   <div className="settings-section-heading">
@@ -3165,18 +3195,6 @@ function AppSettingsDialog({
                           <code>{approval.command}</code>
                           <span className="field-hint">{approval.decidedAt ? formatDate(approval.decidedAt) : formatDate(approval.updatedAt)}</span>
                         </div>
-                        {approval.status === "approved" ? (
-                          <div className="settings-row-actions">
-                            <button
-                              className="danger-action"
-                              disabled={busy}
-                              onClick={() => decideCommandApproval(approval.id, "deny")}
-                              type="button"
-                            >
-                              撤销
-                            </button>
-                          </div>
-                        ) : null}
                       </article>
                     ))}
                   </div>
