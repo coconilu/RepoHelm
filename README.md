@@ -1,6 +1,8 @@
 # RepoHelm
 
-RepoHelm 是一个开源的 Quest 工作区原型，用来验证“虚拟 workspace + 多项目 Quest + Spec 驱动 + worktree 隔离 + Agent 编排 + 知识库”的产品方向。
+RepoHelm 是一个开源的 Agentic Quest 工作台：以生产级 harness 提供受控工具与运行环境，以动态委派 agent 在能力和成本之间做运行时分配，以测试先行验收把每次改动变成可验证、可审计的交付。
+
+它用虚拟 workspace、多项目 Quest、Spec 驱动、worktree 隔离、Agent 编排和 repo-bound 知识库，把一个需求转化为一次可审计、可隔离、可验证、可交付的多项目研发任务。
 
 当前版本是 MVP 骨架，不是完整实现。它已经可以：
 
@@ -30,6 +32,12 @@ RepoHelm 是一个开源的 Quest 工作区原型，用来验证“虚拟 worksp
 - 展示 Capability 推荐、来源、权限声明和确认状态。
 - 展示安全执行策略和 audit log。
 - 展示 M4-M8 产品 readiness、模板和 dependency map。
+
+核心路线见：[MILESTONES.md](MILESTONES.md)。
+
+## 开发主干
+
+新增 feature/fix 默认先写清「现状 / 目标 / 验收标准」，再沿着 `harness 工具 -> 动态委派执行 -> 测试先行验证` 的主干交付：能复用的能力先复用，需要执行的命令走权限和审计边界，复杂任务由 entry agent 运行时委派合适 worker，交付前记录最小相关测试或验证命令。
 
 ## 启动
 

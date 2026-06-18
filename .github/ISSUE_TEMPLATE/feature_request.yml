@@ -10,13 +10,23 @@ body:
         感谢你提议新功能。RepoHelm 遵循复用优先原则：在自建新能力前，先调研成熟的开源库、组件库、skills、MCP servers、CLI 或其他现成方案。
 
   - type: textarea
-    id: problem
+    id: current-state
     attributes:
-      label: 问题 / 目标
-      description: 这个 feature 要解决什么用户问题或产品目标？
-      placeholder: 描述工作流、用户场景和期望结果。
+      label: 现状
+      description: 当前工作流、用户场景或系统能力有什么限制？
+      placeholder: 描述当前行为、痛点、失败方式或能力缺口。
     validations:
       required: true
+
+  - type: textarea
+    id: target-state
+    attributes:
+      label: 目标
+      description: 这个 feature 完成后要达到什么用户价值或产品目标？
+      placeholder: 描述期望结果、用户能完成的新动作，以及对三大核心能力的关系。
+    validations:
+      required: true
+
   - type: textarea
     id: scope
     attributes:
