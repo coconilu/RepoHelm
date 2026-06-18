@@ -2074,6 +2074,72 @@ code {
   line-height: 1.4;
 }
 
+.security-select-row,
+.security-policy-form,
+.security-history-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.security-policy-form {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.security-policy-form .project-config-actions {
+  grid-column: 1 / -1;
+}
+
+.command-approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.command-approval-list.compact {
+  gap: 6px;
+}
+
+.command-approval-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 11px;
+}
+
+.command-approval-row.compact {
+  display: block;
+}
+
+.command-approval-row strong,
+.command-approval-row code {
+  display: block;
+  min-width: 0;
+}
+
+.command-approval-row code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  margin: 5px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-approval-row p {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0 0 4px;
+}
+
 .model-config-panel {
   background: var(--surface-2);
   border: 1px solid var(--border);
