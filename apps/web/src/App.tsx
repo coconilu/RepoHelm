@@ -3165,6 +3165,18 @@ function AppSettingsDialog({
                           <code>{approval.command}</code>
                           <span className="field-hint">{approval.decidedAt ? formatDate(approval.decidedAt) : formatDate(approval.updatedAt)}</span>
                         </div>
+                        {approval.status === "approved" ? (
+                          <div className="settings-row-actions">
+                            <button
+                              className="danger-action"
+                              disabled={busy}
+                              onClick={() => decideCommandApproval(approval.id, "deny")}
+                              type="button"
+                            >
+                              撤销
+                            </button>
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>

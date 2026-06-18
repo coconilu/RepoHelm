@@ -116,6 +116,7 @@ function commandApprovalKey(subject: string, command: string): string {
   return `${subject}\u0000${command.trim()}`;
 }
 
+const MAX_COMMAND_APPROVALS = 200;
 const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 // Delay between streamed quest-spec timeline events, for a "thinking" cadence in the UI.
 const SPEC_EVENT_PACE_MS = 350;
@@ -2522,80 +2523,112 @@ export class RepoHelmService {
     input: { scope?: CommandApprovalScope } = {}
   ): Promise<CommandApproval> {
     const scope = input.scope ?? "session";
-    const approved = await this.mutateState(async (state) => {
-      const approval = state.commandApprovals.find((item) => item.id === approvalId);
-      if (!approval) {
-        throw new Error("Command approval not found");
+    let sessionApprovalKey: string | undefined;
+    try {
+      return await this.mutateState(async (state) => {
+        const approval = state.commandApprovals.find((item) => item.id === approvalId);
+        if (!approval) {
+          throw new Error("Command approval not found");
+        }
+        const unsafe = detectShellComposition(approval.command);
+        if (unsafe) {
+          throw new Error(`Command contains shell composition metacharacter "${unsafe}" and cannot be approved before sandbox isolation is available`);
+        }
+        const timestamp = now();
+        const updated: CommandApproval = {
+          ...approval,
+          command: approval.command.trim(),
+          status: "approved",
+          scope,
+          decidedAt: timestamp,
+          updatedAt: timestamp
+        };
+        const commandApprovals = this.trimCommandApprovals([
+          updated,
+          ...state.commandApprovals.filter(
+            (item) =>
+              item.id !== approvalId &&
+              !(item.subject === updated.subject && item.command.trim() === updated.command)
+          )
+        ]);
+        if (scope === "session") {
+          sessionApprovalKey = commandApprovalKey(updated.subject, updated.command);
+          this.sessionCommandApprovals.add(sessionApprovalKey);
+        }
+        return {
+          newState: {
+            ...state,
+            commandApprovals,
+            auditLog: [
+              this.audit(
+                "command",
+                "allowed",
+                updated.command,
+                scope === "persistent"
+                  ? `${updated.subject} 命令已由用户批准，并作为持久命令审批记录。`
+                  : `${updated.subject} 命令已由用户批准，仅在当前服务会话内生效。`
+              ),
+              ...state.auditLog
+            ]
+          },
+          result: updated
+        };
+      });
+    } catch (error) {
+      if (sessionApprovalKey) {
+        this.sessionCommandApprovals.delete(sessionApprovalKey);
       }
-      const unsafe = detectShellComposition(approval.command);
-      if (unsafe) {
-        throw new Error(`Command contains shell composition metacharacter "${unsafe}" and cannot be approved before sandbox isolation is available`);
-      }
-      const timestamp = now();
-      const updated: CommandApproval = {
-        ...approval,
-        command: approval.command.trim(),
-        status: "approved",
-        scope,
-        decidedAt: timestamp,
-        updatedAt: timestamp
-      };
-      const commandApprovals = [updated, ...state.commandApprovals.filter((item) => item.id !== approvalId)];
-      return {
-        newState: {
-          ...state,
-          commandApprovals,
-          auditLog: [
-            this.audit(
-              "command",
-              "allowed",
-              updated.command,
-              scope === "persistent"
-                ? `${updated.subject} 命令已由用户批准，并作为持久命令审批记录。`
-                : `${updated.subject} 命令已由用户批准，仅在当前服务会话内生效。`
-            ),
-            ...state.auditLog
-          ]
-        },
-        result: updated
-      };
-    });
-    if (approved.scope === "session") {
-      this.sessionCommandApprovals.add(commandApprovalKey(approved.subject, approved.command));
+      throw error;
     }
-    return approved;
   }
 
   async denyCommandApproval(approvalId: string): Promise<CommandApproval> {
-    const denied = await this.mutateState(async (state) => {
-      const approval = state.commandApprovals.find((item) => item.id === approvalId);
-      if (!approval) {
-        throw new Error("Command approval not found");
+    let revokedSessionKey: string | undefined;
+    let hadSessionApproval = false;
+    try {
+      return await this.mutateState(async (state) => {
+        const approval = state.commandApprovals.find((item) => item.id === approvalId);
+        if (!approval) {
+          throw new Error("Command approval not found");
+        }
+        const timestamp = now();
+        const updated: CommandApproval = {
+          ...approval,
+          command: approval.command.trim(),
+          status: "denied",
+          scope: undefined,
+          decidedAt: timestamp,
+          updatedAt: timestamp
+        };
+        revokedSessionKey = commandApprovalKey(updated.subject, updated.command);
+        hadSessionApproval = this.sessionCommandApprovals.has(revokedSessionKey);
+        this.sessionCommandApprovals.delete(revokedSessionKey);
+        const commandApprovals = this.trimCommandApprovals([
+          updated,
+          ...state.commandApprovals.filter(
+            (item) =>
+              item.id !== approvalId &&
+              !(item.subject === updated.subject && item.command.trim() === updated.command)
+          )
+        ]);
+        return {
+          newState: {
+            ...state,
+            commandApprovals,
+            auditLog: [
+              this.audit("command", "denied", updated.command, `${updated.subject} 命令已由用户拒绝。`),
+              ...state.auditLog
+            ]
+          },
+          result: updated
+        };
+      });
+    } catch (error) {
+      if (revokedSessionKey && hadSessionApproval) {
+        this.sessionCommandApprovals.add(revokedSessionKey);
       }
-      const timestamp = now();
-      const updated: CommandApproval = {
-        ...approval,
-        command: approval.command.trim(),
-        status: "denied",
-        scope: undefined,
-        decidedAt: timestamp,
-        updatedAt: timestamp
-      };
-      const commandApprovals = [updated, ...state.commandApprovals.filter((item) => item.id !== approvalId)];
-      return {
-        newState: {
-          ...state,
-          commandApprovals,
-          auditLog: [
-            this.audit("command", "denied", updated.command, `${updated.subject} 命令已由用户拒绝。`),
-            ...state.auditLog
-          ]
-        },
-        result: updated
-      };
-    });
-    this.sessionCommandApprovals.delete(commandApprovalKey(denied.subject, denied.command));
-    return denied;
+      throw error;
+    }
   }
 
   /**
@@ -2618,6 +2651,12 @@ export class RepoHelmService {
           item.status === "approved" &&
           item.scope === "persistent"
       );
+      const deniedApproval = state.commandApprovals.find(
+        (item) =>
+          item.subject === subject &&
+          item.command.trim() === trimmed &&
+          item.status === "denied"
+      );
       const sessionApproved = this.sessionCommandApprovals.has(approvalKey);
 
       // A model-generated command runs through `sh -lc`. An allowlisted leading
@@ -2634,6 +2673,9 @@ export class RepoHelmService {
       } else if (unsafe) {
         allowed = false;
         detail = `${subject} 命令包含 shell 组合元字符 "${unsafe}"，已拒绝自动执行。`;
+      } else if (deniedApproval) {
+        allowed = false;
+        detail = `${subject} 命令已由用户拒绝，保持阻止。`;
       } else if (sessionApproved) {
         allowed = true;
         detail = `${subject} 命令命中当前服务会话的人工审批。`;
@@ -3119,19 +3161,28 @@ export class RepoHelmService {
     const existing = approvals.find(
       (item) => item.status === "pending" && item.command.trim() === trimmed && item.subject === subject
     );
-    if (existing) {
-      return approvals.map((item) =>
-        item.id === existing.id
-          ? {
-              ...item,
-              reason,
-              requestCount: item.requestCount + 1,
-              updatedAt: timestamp
-            }
-          : item
-      );
+    const denied = approvals.find(
+      (item) => item.status === "denied" && item.command.trim() === trimmed && item.subject === subject
+    );
+    if (denied) {
+      const updated: CommandApproval = {
+        ...denied,
+        reason,
+        requestCount: denied.requestCount + 1,
+        updatedAt: timestamp
+      };
+      return this.trimCommandApprovals([updated, ...approvals.filter((item) => item.id !== denied.id)]);
     }
-    return [
+    if (existing) {
+      const updated: CommandApproval = {
+        ...existing,
+        reason,
+        requestCount: existing.requestCount + 1,
+        updatedAt: timestamp
+      };
+      return this.trimCommandApprovals([updated, ...approvals.filter((item) => item.id !== existing.id)]);
+    }
+    return this.trimCommandApprovals([
       {
         id: id("cmdapproval"),
         command: trimmed,
@@ -3143,7 +3194,11 @@ export class RepoHelmService {
         updatedAt: timestamp
       },
       ...approvals
-    ];
+    ]);
+  }
+
+  private trimCommandApprovals(approvals: CommandApproval[]): CommandApproval[] {
+    return approvals.slice(0, MAX_COMMAND_APPROVALS);
   }
 
   private async updateCapabilityRecommendation(
