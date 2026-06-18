@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createSandboxRuntime,
   LocalWorktreeSandboxRuntime,
@@ -19,6 +19,20 @@ async function collect(events: AsyncIterable<SandboxEvent>): Promise<SandboxEven
     out.push(event);
   }
   return out;
+}
+
+async function collectWithTimeout(events: AsyncIterable<SandboxEvent>): Promise<SandboxEvent[]> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      collect(events),
+      new Promise<SandboxEvent[]>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("sandbox run did not settle")), 1_000);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 describe("SandboxRuntime", () => {
@@ -65,5 +79,25 @@ describe("SandboxRuntime", () => {
 
     expect(runtime.id).toBe("cubesandbox");
     await expect(runtime.prepare({ worktreePath: await worktree() })).rejects.toThrow(/reserved but not configured/);
+  });
+
+  it("cleans up and completes when a command cannot be spawned", async () => {
+    const root = await worktree();
+    const runtime = new LocalWorktreeSandboxRuntime();
+    const session = await runtime.prepare({ worktreePath: join(root, "missing") });
+    const listeners = new Set<unknown>();
+    const signal = {
+      aborted: false,
+      addEventListener: vi.fn((_type: string, listener: unknown) => listeners.add(listener)),
+      removeEventListener: vi.fn((_type: string, listener: unknown) => listeners.delete(listener))
+    } as unknown as AbortSignal;
+
+    const events = await collectWithTimeout(
+      runtime.run(session, { command: "echo unreachable", timeoutMs: 50, signal })
+    );
+
+    expect(events.some((event) => event.type === "error")).toBe(true);
+    expect(signal.removeEventListener).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(listeners.size).toBe(0);
   });
 });

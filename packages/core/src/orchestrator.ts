@@ -16,6 +16,7 @@ import { QuestWorkspaceManager } from "./quest-workspace.js";
 import { type DelegateInput } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL } from "./tools/fs.js";
 import { buildWorkerToolsetAsync } from "./tools/worker-tools.js";
+import { createMcpToolset, type McpToolset } from "./mcp-runtime.js";
 import { createSandboxRuntime } from "./sandbox.js";
 import { extractTokenUsage, runtimeUsageEvent } from "./runtime-usage.js";
 import { runStreamingCli } from "./cli-stream.js";
@@ -172,6 +173,7 @@ export interface OrchestratorQuestResult {
  */
 export class SubAgentOrchestrator {
   readonly questWorkspace: QuestWorkspaceManager;
+  private sharedMcpToolsetPromise?: Promise<McpToolset | undefined>;
 
   constructor(private service: RepoHelmService, questWorkspaceRoot?: string) {
     this.questWorkspace = new QuestWorkspaceManager(
@@ -213,6 +215,28 @@ export class SubAgentOrchestrator {
     return typeof maybeService.listApprovedMcpServers === "function"
       ? maybeService.listApprovedMcpServers()
       : [];
+  }
+
+  private async sharedMcpToolset(): Promise<McpToolset | undefined> {
+    this.sharedMcpToolsetPromise ??= this.approvedMcpServers().then((servers) =>
+      servers.length > 0 ? createMcpToolset(servers) : undefined
+    );
+    return this.sharedMcpToolsetPromise;
+  }
+
+  private async disposeSharedMcpToolset(): Promise<void> {
+    const promise = this.sharedMcpToolsetPromise;
+    this.sharedMcpToolsetPromise = undefined;
+    const toolset = await promise?.catch(() => undefined);
+    await toolset?.dispose();
+  }
+
+  private async withSharedMcpToolset<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } finally {
+      await this.disposeSharedMcpToolset();
+    }
   }
 
   async generatePlan(questId: string): Promise<OrchestrationPlan> {
@@ -295,6 +319,10 @@ export class SubAgentOrchestrator {
   }
 
   async executeApprovedPlan(questId: string, plan: OrchestrationPlan): Promise<OrchestratorQuestResult> {
+    return this.withSharedMcpToolset(() => this.executeApprovedPlanInner(questId, plan));
+  }
+
+  private async executeApprovedPlanInner(questId: string, plan: OrchestrationPlan): Promise<OrchestratorQuestResult> {
     const entryAgent = await this.service.getEntrySubAgent();
     if (!entryAgent) {
       throw new Error("No entry sub-agent configured");
@@ -407,6 +435,10 @@ export class SubAgentOrchestrator {
    * so persistence is shared.
    */
   async executeDelegated(questId: string): Promise<OrchestratorQuestResult> {
+    return this.withSharedMcpToolset(() => this.executeDelegatedInner(questId));
+  }
+
+  private async executeDelegatedInner(questId: string): Promise<OrchestratorQuestResult> {
     const entryAgent = await this.service.getEntrySubAgent();
     if (!entryAgent) {
       throw new Error("No entry sub-agent configured");
@@ -1059,7 +1091,7 @@ export class SubAgentOrchestrator {
       },
       runtime: createSandboxRuntime(sandboxRuntimeId),
       signal,
-      mcpServers: await this.approvedMcpServers()
+      mcpToolset: await this.sharedMcpToolset()
     });
     const events: BackendEvent[] = [];
     const messages: LlmMessage[] = [

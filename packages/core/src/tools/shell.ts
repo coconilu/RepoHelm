@@ -1,4 +1,4 @@
-import { createSandboxRuntime, type SandboxRuntime } from "../sandbox.js";
+import { createSandboxRuntime, type SandboxRuntime, type SandboxSession } from "../sandbox.js";
 import type { LlmToolSpec } from "../llm.js";
 
 export const SHELL_RUN_TOOL = "run_command";
@@ -85,12 +85,13 @@ async function runCommand(
   runtime: SandboxRuntime,
   signal?: AbortSignal
 ): Promise<string> {
-  const session = await runtime.prepare({ worktreePath: cwd });
   let stdout = "";
   let stderr = "";
+  let session: SandboxSession | undefined;
   const cap = (current: string, data: string): string =>
     current.length >= maxOutput ? current : (current + data).slice(0, maxOutput);
   try {
+    session = await runtime.prepare({ worktreePath: cwd });
     for await (const event of runtime.run(session, { command, timeoutMs, signal })) {
       if (event.type === "stdout") {
         stdout = cap(stdout, event.data);
@@ -115,7 +116,17 @@ async function runCommand(
       }
     }
     return JSON.stringify({ ok: false, command, error: "sandbox command ended without an exit event", stdout, stderr });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      command,
+      error: error instanceof Error ? error.message : String(error),
+      stdout,
+      stderr
+    });
   } finally {
-    await runtime.dispose(session);
+    if (session) {
+      await runtime.dispose(session).catch(() => undefined);
+    }
   }
 }

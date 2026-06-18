@@ -1,6 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { relative, resolve } from "node:path";
+import { killProcessTree } from "./process-tree.js";
 import { buildChildEnv } from "./tools/env.js";
 import type { SandboxRuntimeId } from "./types.js";
 
@@ -55,23 +56,6 @@ export function normalizeSandboxRuntimeId(value: unknown): SandboxRuntimeId {
   return "local-worktree";
 }
 
-function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  const pid = child.pid;
-  try {
-    if (pid) {
-      process.kill(-pid, signal);
-      return;
-    }
-  } catch {
-    // Process group may already be gone; fall back to direct signalling.
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // best effort
-  }
-}
-
 async function assertInside(root: string, path: string): Promise<string> {
   const abs = resolve(root, path);
   const rel = relative(root, abs);
@@ -110,6 +94,8 @@ export class LocalWorktreeSandboxRuntime implements SandboxRuntime {
     let closed = false;
     let timedOut = false;
     let cancelled = false;
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
 
     const push = (event: SandboxEvent) => {
       queue.push(event);
@@ -123,26 +109,33 @@ export class LocalWorktreeSandboxRuntime implements SandboxRuntime {
 
     const onAbort = () => {
       cancelled = true;
-      killTree(child, "SIGTERM");
+      killProcessTree(child, "SIGTERM");
     };
     command.signal?.addEventListener("abort", onAbort, { once: true });
 
-    const timer = command.timeoutMs
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      command.signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (event: SandboxEvent) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      closed = true;
+      push(event);
+    };
+
+    timer = command.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          killTree(child, "SIGKILL");
+          killProcessTree(child, "SIGKILL");
         }, command.timeoutMs)
       : undefined;
 
     child.stdout?.on("data", (chunk: Buffer) => push({ type: "stdout", data: chunk.toString() }));
     child.stderr?.on("data", (chunk: Buffer) => push({ type: "stderr", data: chunk.toString() }));
-    child.on("error", (error) => push({ type: "error", message: error.message }));
-    child.on("close", (code, signal) => {
-      if (timer) clearTimeout(timer);
-      command.signal?.removeEventListener("abort", onAbort);
-      push({ type: "exit", exitCode: code, signal, timedOut, cancelled });
-      closed = true;
-    });
+    child.on("error", (error) => finish({ type: "error", message: error.message }));
+    child.on("close", (code, signal) => finish({ type: "exit", exitCode: code, signal, timedOut, cancelled }));
     child.stdin?.end();
 
     while (!closed || queue.length > 0) {

@@ -1,5 +1,5 @@
 import type { LlmToolSpec } from "../llm.js";
-import { createMcpToolset } from "../mcp-runtime.js";
+import { createMcpToolset, type McpToolset } from "../mcp-runtime.js";
 import type { SandboxRuntime } from "../sandbox.js";
 import type { McpServerDefinition } from "../types.js";
 import { buildEditToolHandler, EDIT_TOOL, editToolSpec } from "./edit.js";
@@ -35,6 +35,8 @@ export interface WorkerToolOptions {
   runtime?: SandboxRuntime;
   signal?: AbortSignal;
   mcpServers?: McpServerDefinition[];
+  /** Reused MCP toolset owned by the caller, typically for one quest run. */
+  mcpToolset?: McpToolset;
 }
 
 export interface WorkerToolset {
@@ -135,10 +137,22 @@ export async function buildWorkerToolsetAsync(
 ): Promise<WorkerToolset> {
   const base = buildWorkerToolset(root, options);
   const mcpServers = options.mcpServers ?? [];
-  if (mcpServers.length === 0) {
+  if (!options.mcpToolset && mcpServers.length === 0) {
     return base;
   }
-  const mcp = await createMcpToolset(mcpServers);
+  let mcp: McpToolset;
+  let ownsMcp = false;
+  try {
+    if (options.mcpToolset) {
+      mcp = options.mcpToolset;
+    } else {
+      mcp = await createMcpToolset(mcpServers);
+      ownsMcp = true;
+    }
+  } catch (error) {
+    await base.dispose();
+    throw error;
+  }
   return {
     specs: [...base.specs, ...mcp.specs],
     get written() {
@@ -151,7 +165,7 @@ export async function buildWorkerToolsetAsync(
       return base.handle(name, args);
     },
     async dispose() {
-      await Promise.all([base.dispose(), mcp.dispose()]);
+      await Promise.all([base.dispose(), ownsMcp ? mcp.dispose() : Promise.resolve()]);
     }
   };
 }

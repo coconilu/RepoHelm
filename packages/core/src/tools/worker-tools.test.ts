@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { McpToolset } from "../mcp-runtime.js";
 import { buildWorkerToolset, buildWorkerToolsetAsync } from "./worker-tools.js";
 
 async function worktree(): Promise<string> {
@@ -52,6 +53,13 @@ process.stdin.on("data", (chunk) => {
 `,
     "utf8"
   );
+  return file;
+}
+
+async function writeFailingMcpServer(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "rh-worker-mcp-fail-"));
+  const file = join(dir, "failing-mcp.mjs");
+  await writeFile(file, "process.exit(1);\n", "utf8");
   return file;
 }
 
@@ -173,5 +181,62 @@ describe("buildWorkerToolset", () => {
     } finally {
       await toolset.dispose();
     }
+  });
+
+  it("reuses a caller-owned MCP toolset without disposing it per worker", async () => {
+    const root = await worktree();
+    const handle = vi.fn().mockResolvedValue("shared-result");
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    const mcpToolset: McpToolset = {
+      specs: [
+        {
+          type: "function",
+          function: {
+            name: "mcp_shared_lookup",
+            description: "Shared lookup",
+            parameters: { type: "object", additionalProperties: true }
+          }
+        }
+      ],
+      handle,
+      dispose
+    };
+
+    const toolset = await buildWorkerToolsetAsync(root, { mcpToolset });
+
+    expect(toolset.specs.map((spec) => spec.function.name)).toContain("mcp_shared_lookup");
+    expect(await toolset.handle("mcp_shared_lookup", { query: "x" })).toBe("shared-result");
+    await toolset.dispose();
+    expect(handle).toHaveBeenCalledWith("mcp_shared_lookup", { query: "x" });
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it("disposes the base toolset when MCP startup fails", async () => {
+    const root = await worktree();
+    const server = await writeFailingMcpServer();
+    const listeners = new Set<unknown>();
+    const signal = {
+      aborted: false,
+      addEventListener: vi.fn((_type: string, listener: unknown) => listeners.add(listener)),
+      removeEventListener: vi.fn((_type: string, listener: unknown) => listeners.delete(listener))
+    } as unknown as AbortSignal;
+
+    await expect(
+      buildWorkerToolsetAsync(root, {
+        signal,
+        mcpServers: [
+          {
+            id: "bad",
+            name: "Bad MCP",
+            transport: "stdio",
+            command: process.execPath,
+            args: [server]
+          }
+        ]
+      })
+    ).rejects.toThrow(/MCP server bad exited/);
+
+    expect(signal.removeEventListener).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(listeners.size).toBe(0);
   });
 });

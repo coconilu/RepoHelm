@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { killProcessTree } from "./process-tree.js";
 import { extractTokenUsage } from "./runtime-usage.js";
 
 /**
@@ -259,12 +260,12 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
 
     const timer = timeoutMs
       ? setTimeout(() => {
-          killTree(child, "SIGKILL");
+          killProcessTree(child, "SIGKILL");
         }, timeoutMs)
       : undefined;
     const onAbort = () => {
       cancelled = true;
-      killTree(child, "SIGTERM");
+      killProcessTree(child, "SIGTERM");
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -307,21 +308,4 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
     // Close stdin so CLIs that read it (codex exec, opencode run) get EOF.
     child.stdin?.end();
   });
-}
-
-function killTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
-  const pid = child.pid;
-  try {
-    if (pid) {
-      process.kill(-pid, signal);
-      return;
-    }
-  } catch {
-    // process group may already be gone
-  }
-  try {
-    child.kill(signal);
-  } catch {
-    // best effort
-  }
 }
