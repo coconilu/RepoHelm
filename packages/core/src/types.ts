@@ -14,6 +14,7 @@ export type QuestStatus =
 export type ProjectRole = "frontend" | "backend" | "documentation" | "library" | "infra" | "unknown";
 export type AgentBackendId = "mock" | "codex-cli" | "claude-code" | "opencode" | "openai-compatible";
 export type ProjectHealthStatus = "unknown" | "ok" | "missing" | "not_git" | "invalid";
+export type SandboxRuntimeId = "local-worktree" | "cubesandbox";
 
 export interface ProjectHealth {
   status: ProjectHealthStatus;
@@ -155,8 +156,19 @@ export interface CapabilityDefinition {
   permissions: string[];
   installed: boolean;
   tags: string[];
+  mcp?: McpServerDefinition;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface McpServerDefinition {
+  id: string;
+  name: string;
+  transport: "stdio";
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
 }
 
 export interface CapabilityRecommendation {
@@ -181,7 +193,7 @@ export interface SecurityPolicy {
   fileScopes: string[];
   networkScopes: string[];
   secretsPolicy: "redact-env" | "deny";
-  sandboxRuntime: "local" | "external";
+  sandboxRuntime: SandboxRuntimeId;
   updatedAt: string;
 }
 
@@ -573,6 +585,18 @@ export interface CreateQuestInput {
   entrySubAgentId?: string;
   affectedProjectIds?: string[];
   autoApprovePlan?: boolean;
+}
+
+export interface CreateMcpCapabilityInput {
+  id?: string;
+  name: string;
+  description?: string;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  permissions?: string[];
+  tags?: string[];
 }
 
 /**

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { killProcessTree } from "./process-tree.js";
+import { extractTokenUsage } from "./runtime-usage.js";
 
 /**
  * A coding-CLI stream event, normalized into the same shape RepoHelm uses for its
@@ -14,7 +16,8 @@ export interface CliStreamEvent {
     | "agent.completed"
     | "agent.output"
     | "agent.file_change"
-    | "agent.command";
+    | "agent.command"
+    | "agent.usage";
   title: string;
   detail: string;
   agent: string;
@@ -127,6 +130,7 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
     message?: { content?: AssistantContentBlock[] };
     item?: CodexItem;
     error?: unknown;
+    usage?: unknown;
   };
 
   if (obj.type === "system") {
@@ -137,8 +141,19 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
   // (each action emits both `item.started` and `item.completed`; emitting only
   // the latter avoids duplicate timeline entries), and treat thread/turn
   // bookkeeping as noise.
-  if (obj.type === "thread.started" || obj.type === "turn.started" || obj.type === "turn.completed") {
+  if (obj.type === "thread.started" || obj.type === "turn.started") {
     return undefined;
+  }
+  if (obj.type === "turn.completed") {
+    const usage = extractTokenUsage(obj.usage);
+    return usage
+      ? {
+          type: "agent.usage",
+          title: "Token 使用",
+          detail: JSON.stringify(usage),
+          agent
+        }
+      : undefined;
   }
   if (obj.type === "item.started" || obj.type === "item.updated") {
     return undefined;
@@ -189,6 +204,7 @@ export interface RunStreamingCliOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  signal?: AbortSignal;
   /** Called once per parsed event as it arrives, before the promise resolves. */
   onEvent?: (event: CliStreamEvent) => void;
 }
@@ -209,11 +225,12 @@ export interface StreamingCliResult {
  * alongside any partial events — a non-zero exit is a result, not an exception.
  */
 export function runStreamingCli(options: RunStreamingCliOptions): Promise<StreamingCliResult> {
-  const { command, args, agent, cwd, env, timeoutMs, onEvent } = options;
+  const { command, args, agent, cwd, env, timeoutMs, signal, onEvent } = options;
   return new Promise<StreamingCliResult>((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      env: { ...process.env, NO_COLOR: "1", ...env }
+      env: { ...process.env, NO_COLOR: "1", ...env },
+      detached: true
     });
 
     const events: CliStreamEvent[] = [];
@@ -222,6 +239,7 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
     let buffer = "";
     let stderr = "";
     let settled = false;
+    let cancelled = false;
 
     const handleEvent = (event: CliStreamEvent) => {
       events.push(event);
@@ -242,14 +260,20 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
 
     const timer = timeoutMs
       ? setTimeout(() => {
-          child.kill("SIGKILL");
+          killProcessTree(child, "SIGKILL");
         }, timeoutMs)
       : undefined;
+    const onAbort = () => {
+      cancelled = true;
+      killProcessTree(child, "SIGTERM");
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       fn();
     };
 
@@ -275,7 +299,9 @@ export function runStreamingCli(options: RunStreamingCliOptions): Promise<Stream
       }
       // Fall back to stderr for content when stdout produced nothing parseable,
       // so a stderr-only failure is still diagnosable rather than empty.
-      const content = resultText ?? (textParts.length > 0 ? textParts.join("\n") : stderr.trim());
+      const content = cancelled
+        ? "Quest cancelled"
+        : (resultText ?? (textParts.length > 0 ? textParts.join("\n") : stderr.trim()));
       finish(() => resolve({ content, events, exitCode: code, stderr }));
     });
 

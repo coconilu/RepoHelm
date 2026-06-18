@@ -1,4 +1,7 @@
 import type { LlmToolSpec } from "../llm.js";
+import { createMcpToolset, type McpToolset } from "../mcp-runtime.js";
+import type { SandboxRuntime } from "../sandbox.js";
+import type { McpServerDefinition } from "../types.js";
 import { buildEditToolHandler, EDIT_TOOL, editToolSpec } from "./edit.js";
 import { buildFsToolHandlers, fsToolSpecs } from "./fs.js";
 import {
@@ -29,6 +32,11 @@ export interface WorkerToolOptions {
   allowLoopback?: boolean;
   /** Resolve hostnames to IPs for the web_fetch SSRF guard (DNS-rebinding). */
   resolveHost?: (hostname: string) => Promise<string[]>;
+  runtime?: SandboxRuntime;
+  signal?: AbortSignal;
+  mcpServers?: McpServerDefinition[];
+  /** Reused MCP toolset owned by the caller, typically for one quest run. */
+  mcpToolset?: McpToolset;
 }
 
 export interface WorkerToolset {
@@ -61,10 +69,12 @@ export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}
   const edit = buildEditToolHandler(root);
   const shell = buildShellToolHandler(root, {
     isAllowed: options.isAllowed,
-    timeoutMs: options.commandTimeoutMs
+    timeoutMs: options.commandTimeoutMs,
+    runtime: options.runtime,
+    signal: options.signal
   });
   const search = buildSearchToolHandler(root);
-  const processes = buildProcessToolHandlers(root, { isAllowed: options.isAllowed });
+  const processes = buildProcessToolHandlers(root, { isAllowed: options.isAllowed, signal: options.signal });
   const todos = buildTodoToolHandler();
   const web = buildWebToolHandlers({
     enabled: options.enableWeb,
@@ -117,6 +127,45 @@ export function buildWorkerToolset(root: string, options: WorkerToolOptions = {}
     },
     async dispose() {
       await processes.dispose();
+    }
+  };
+}
+
+export async function buildWorkerToolsetAsync(
+  root: string,
+  options: WorkerToolOptions = {}
+): Promise<WorkerToolset> {
+  const base = buildWorkerToolset(root, options);
+  const mcpServers = options.mcpServers ?? [];
+  if (!options.mcpToolset && mcpServers.length === 0) {
+    return base;
+  }
+  let mcp: McpToolset;
+  let ownsMcp = false;
+  try {
+    if (options.mcpToolset) {
+      mcp = options.mcpToolset;
+    } else {
+      mcp = await createMcpToolset(mcpServers);
+      ownsMcp = true;
+    }
+  } catch (error) {
+    await base.dispose();
+    throw error;
+  }
+  return {
+    specs: [...base.specs, ...mcp.specs],
+    get written() {
+      return base.written;
+    },
+    async handle(name, args) {
+      if (mcp.specs.some((spec) => spec.function.name === name)) {
+        return mcp.handle(name, args);
+      }
+      return base.handle(name, args);
+    },
+    async dispose() {
+      await Promise.all([base.dispose(), ownsMcp ? mcp.dispose() : Promise.resolve()]);
     }
   };
 }

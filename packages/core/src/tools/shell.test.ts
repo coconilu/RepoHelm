@@ -2,6 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createSandboxRuntime } from "../sandbox.js";
 import { buildShellToolHandler, SHELL_RUN_TOOL } from "./shell.js";
 
 async function worktree(): Promise<string> {
@@ -69,5 +70,45 @@ describe("buildShellToolHandler", () => {
 
     expect(result.ok).toBe(false);
     expect(String(result.error ?? "")).toMatch(/time|超时/i);
+  });
+
+  it("cancels an in-flight command when the abort signal fires", async () => {
+    const root = await worktree();
+    const controller = new AbortController();
+    const handler = buildShellToolHandler(root, { isAllowed: allowAll, signal: controller.signal });
+
+    const pending = handler.handle(SHELL_RUN_TOOL, { command: "sleep 5" });
+    setTimeout(() => controller.abort(), 50);
+    const result = JSON.parse(await pending);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/cancelled/i);
+  });
+
+  it("does not start a command when the abort signal is already fired", async () => {
+    const root = await worktree();
+    const controller = new AbortController();
+    controller.abort();
+    const handler = buildShellToolHandler(root, { isAllowed: allowAll, signal: controller.signal });
+
+    const result = JSON.parse(await handler.handle(SHELL_RUN_TOOL, { command: "echo should-not-run" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/cancelled/i);
+    expect(result.stdout ?? "").not.toContain("should-not-run");
+  });
+
+  it("returns a tool error instead of throwing when the sandbox runtime is unavailable", async () => {
+    const root = await worktree();
+    const handler = buildShellToolHandler(root, {
+      isAllowed: allowAll,
+      runtime: createSandboxRuntime("cubesandbox")
+    });
+
+    const result = JSON.parse(await handler.handle(SHELL_RUN_TOOL, { command: "echo should-not-crash" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.command).toBe("echo should-not-crash");
+    expect(result.error).toMatch(/reserved but not configured/i);
   });
 });

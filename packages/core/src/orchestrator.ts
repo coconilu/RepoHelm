@@ -15,7 +15,10 @@ import { buildDelegationPrompt, runDelegationLoop } from "./delegation.js";
 import { QuestWorkspaceManager } from "./quest-workspace.js";
 import { type DelegateInput } from "./tools/delegate.js";
 import { buildFsToolHandlers, extractFilesFromContent, FS_WRITE_TOOL } from "./tools/fs.js";
-import { buildWorkerToolset } from "./tools/worker-tools.js";
+import { buildWorkerToolsetAsync } from "./tools/worker-tools.js";
+import { createMcpToolset, type McpToolset } from "./mcp-runtime.js";
+import { createSandboxRuntime } from "./sandbox.js";
+import { extractTokenUsage, runtimeUsageEvent } from "./runtime-usage.js";
 import { runStreamingCli } from "./cli-stream.js";
 import {
   resolveContract,
@@ -170,11 +173,70 @@ export interface OrchestratorQuestResult {
  */
 export class SubAgentOrchestrator {
   readonly questWorkspace: QuestWorkspaceManager;
+  private sharedMcpToolsetPromise?: Promise<McpToolset | undefined>;
 
   constructor(private service: RepoHelmService, questWorkspaceRoot?: string) {
     this.questWorkspace = new QuestWorkspaceManager(
       questWorkspaceRoot ?? service.getRootDir()
     );
+  }
+
+  private questSignal(questId: string | undefined): AbortSignal | undefined {
+    const maybeService = this.service as RepoHelmService & {
+      getQuestAbortSignal?: (questId: string) => AbortSignal | undefined;
+    };
+    return questId && typeof maybeService.getQuestAbortSignal === "function"
+      ? maybeService.getQuestAbortSignal(questId)
+      : undefined;
+  }
+
+  private assertNotCancelled(questId: string | undefined): void {
+    const maybeService = this.service as RepoHelmService & {
+      assertQuestNotCancelled?: (questId: string) => void;
+    };
+    if (questId && typeof maybeService.assertQuestNotCancelled === "function") {
+      maybeService.assertQuestNotCancelled(questId);
+    }
+  }
+
+  private async sandboxRuntimeId(): Promise<"local-worktree" | "cubesandbox"> {
+    const maybeService = this.service as RepoHelmService & {
+      getSandboxRuntimeId?: () => Promise<"local-worktree" | "cubesandbox">;
+    };
+    return typeof maybeService.getSandboxRuntimeId === "function"
+      ? maybeService.getSandboxRuntimeId()
+      : "local-worktree";
+  }
+
+  private async approvedMcpServers(): Promise<Awaited<ReturnType<RepoHelmService["listApprovedMcpServers"]>>> {
+    const maybeService = this.service as RepoHelmService & {
+      listApprovedMcpServers?: RepoHelmService["listApprovedMcpServers"];
+    };
+    return typeof maybeService.listApprovedMcpServers === "function"
+      ? maybeService.listApprovedMcpServers()
+      : [];
+  }
+
+  private async sharedMcpToolset(): Promise<McpToolset | undefined> {
+    this.sharedMcpToolsetPromise ??= this.approvedMcpServers().then((servers) =>
+      servers.length > 0 ? createMcpToolset(servers) : undefined
+    );
+    return this.sharedMcpToolsetPromise;
+  }
+
+  private async disposeSharedMcpToolset(): Promise<void> {
+    const promise = this.sharedMcpToolsetPromise;
+    this.sharedMcpToolsetPromise = undefined;
+    const toolset = await promise?.catch(() => undefined);
+    await toolset?.dispose();
+  }
+
+  private async withSharedMcpToolset<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } finally {
+      await this.disposeSharedMcpToolset();
+    }
   }
 
   async generatePlan(questId: string): Promise<OrchestrationPlan> {
@@ -257,6 +319,10 @@ export class SubAgentOrchestrator {
   }
 
   async executeApprovedPlan(questId: string, plan: OrchestrationPlan): Promise<OrchestratorQuestResult> {
+    return this.withSharedMcpToolset(() => this.executeApprovedPlanInner(questId, plan));
+  }
+
+  private async executeApprovedPlanInner(questId: string, plan: OrchestrationPlan): Promise<OrchestratorQuestResult> {
     const entryAgent = await this.service.getEntrySubAgent();
     if (!entryAgent) {
       throw new Error("No entry sub-agent configured");
@@ -276,6 +342,7 @@ export class SubAgentOrchestrator {
     let aborted = false;
 
     while (stepsToRun.length > 0 && !aborted) {
+      this.assertNotCancelled(questId);
       const ready = stepsToRun.filter(
         (step) => step.dependencies.every((dep) => executed.has(dep))
       );
@@ -284,6 +351,7 @@ export class SubAgentOrchestrator {
       }
 
       for (const step of ready) {
+        this.assertNotCancelled(questId);
         const failedDependencies = step.dependencies.filter((dep) => failedSteps.has(dep));
         if (failedDependencies.length > 0) {
           const summary = `skipped: dependency failed (${failedDependencies.join(", ")})`;
@@ -367,6 +435,10 @@ export class SubAgentOrchestrator {
    * so persistence is shared.
    */
   async executeDelegated(questId: string): Promise<OrchestratorQuestResult> {
+    return this.withSharedMcpToolset(() => this.executeDelegatedInner(questId));
+  }
+
+  private async executeDelegatedInner(questId: string): Promise<OrchestratorQuestResult> {
     const entryAgent = await this.service.getEntrySubAgent();
     if (!entryAgent) {
       throw new Error("No entry sub-agent configured");
@@ -485,8 +557,15 @@ export class SubAgentOrchestrator {
 
     const loop = await runDelegationLoop(system, user, {
       callModel: async (messages, tools) => {
-        const result = await callLlmWithModelKit({ modelKit, messages, tools });
-        return { content: result.content, toolCalls: result.toolCalls };
+        this.assertNotCancelled(questId);
+        const result = await callLlmWithModelKit({
+          modelKit,
+          messages,
+          tools,
+          signal: this.questSignal(questId)
+        });
+        const usage = runtimeUsageEvent(modelKit, result.usage, entryAgent.name, "delegate-loop");
+        return { content: result.content, toolCalls: result.toolCalls, events: usage ? [usage] : [] };
       },
       onDelegate,
       maxIterations: MAX_TOOL_LOOP_ITERATIONS,
@@ -546,6 +625,7 @@ export class SubAgentOrchestrator {
     let attempt = 0;
 
     while (true) {
+      this.assertNotCancelled(ctx.quest.id);
       attempt++;
       const agent = ctx.agentPool.find((a) => a.id === effectiveStep.agentId);
       const agentLabel = agent?.name ?? effectiveStep.agentName;
@@ -847,6 +927,7 @@ export class SubAgentOrchestrator {
   ): Promise<{ content: string; error?: string; writtenFiles?: string[]; events?: BackendEvent[] }> {
     const workerEvents: BackendEvent[] = [];
     try {
+      this.assertNotCancelled(input.quest.id);
       const modelKit = await this.requireModelKit(worker);
       const basePrompt =
         worker.promptTemplate ??
@@ -899,7 +980,8 @@ export class SubAgentOrchestrator {
             userContent,
             worktree.worktreePath,
             worker.name,
-            isAllowed
+            isAllowed,
+            input.quest.id
           );
           content = loop.content || "";
           loop.written.forEach((file) => writtenFiles.add(file));
@@ -993,9 +1075,12 @@ export class SubAgentOrchestrator {
     userContent: string,
     worktreeRoot: string,
     agentName: string,
-    isAllowed?: (command: string) => boolean | Promise<boolean>
+    isAllowed?: (command: string) => boolean | Promise<boolean>,
+    questId?: string
   ): Promise<{ content: string; written: string[]; events: BackendEvent[] }> {
-    const tools = buildWorkerToolset(worktreeRoot, {
+    const sandboxRuntimeId = await this.sandboxRuntimeId();
+    const signal = questId ? this.questSignal(questId) : undefined;
+    const tools = await buildWorkerToolsetAsync(worktreeRoot, {
       isAllowed,
       enableWeb: process.env.REPOHELM_ENABLE_WEB === "1",
       allowLoopback: process.env.REPOHELM_WEB_ALLOW_LOOPBACK === "1",
@@ -1003,7 +1088,10 @@ export class SubAgentOrchestrator {
         const { lookup } = await import("node:dns/promises");
         const records = await lookup(hostname, { all: true });
         return records.map((r) => r.address);
-      }
+      },
+      runtime: createSandboxRuntime(sandboxRuntimeId),
+      signal,
+      mcpToolset: await this.sharedMcpToolset()
     });
     const events: BackendEvent[] = [];
     const messages: LlmMessage[] = [
@@ -1013,7 +1101,19 @@ export class SubAgentOrchestrator {
     let finalContent = "";
     try {
       for (let i = 0; i < MAX_TOOL_LOOP_ITERATIONS; i++) {
-        const result = await callLlmWithModelKit({ modelKit, messages, tools: tools.specs });
+        if (questId) {
+          this.assertNotCancelled(questId);
+        }
+        const result = await callLlmWithModelKit({
+          modelKit,
+          messages,
+          tools: tools.specs,
+          signal
+        });
+        const usage = runtimeUsageEvent(modelKit, result.usage, agentName, "worker-tool-loop");
+        if (usage) {
+          events.push(usage);
+        }
         if (result.content) {
           finalContent = result.content;
           events.push({ type: "agent.message", title: "助手消息", detail: truncate(result.content, 500), agent: agentName });
@@ -1088,7 +1188,7 @@ export class SubAgentOrchestrator {
 
   private createByokBackend(modelKit: ModelKit): SubAgentBackend {
     return {
-      async run(input) {
+      run: async (input) => {
         const messages: LlmMessage[] = [
           { role: "system", content: input.systemPrompt },
           ...input.messages.map((m) => ({
@@ -1099,13 +1199,16 @@ export class SubAgentOrchestrator {
         const result = await callLlmWithModelKit({
           modelKit,
           messages,
-          tools: input.tools && input.tools.length > 0 ? input.tools : undefined
+          tools: input.tools && input.tools.length > 0 ? input.tools : undefined,
+          signal: input.quest?.id ? this.questSignal(input.quest.id) : undefined
         });
+        const usage = runtimeUsageEvent(modelKit, result.usage, modelKit.name, "byok-backend");
         return {
           content: result.content,
           toolCalls: result.toolCalls,
           finishReason: result.finishReason,
           events: [
+            ...(usage ? [usage] : []),
             {
               type: "agent.byok.call",
               title: `ModelKit ${modelKit.name} 调用完成`,
@@ -1162,8 +1265,12 @@ export class SubAgentOrchestrator {
           args: cliArgs,
           agent: modelKit.name,
           cwd: createdWorktree?.worktreePath,
-          timeoutMs: Number(process.env.REPOHELM_AGENT_TIMEOUT_MS ?? 120_000)
+          timeoutMs: Number(process.env.REPOHELM_AGENT_TIMEOUT_MS ?? 120_000),
+          signal: input.quest?.id ? this.questSignal(input.quest.id) : undefined
         });
+        if (input.quest?.id) {
+          this.assertNotCancelled(input.quest.id);
+        }
         if (stream.exitCode !== 0 && stream.exitCode !== null) {
           const tail = stream.events.slice(-3).map((event) => event.detail).filter(Boolean).join("\n");
           const stderrTail = stream.stderr.trim().slice(-500);
@@ -1174,9 +1281,23 @@ export class SubAgentOrchestrator {
         const content = stream.content.trim();
         // Fall back to a single completion event only when the CLI emitted nothing
         // parseable (e.g. a silent print-mode CLI), so the step still has a record.
+        const enrichedEvents = stream.events.map((event) => {
+          if (event.type !== "agent.usage") {
+            return event;
+          }
+          let rawUsage: unknown;
+          try {
+            rawUsage = JSON.parse(event.detail);
+          } catch {
+            rawUsage = undefined;
+          }
+          const usage = extractTokenUsage(rawUsage);
+          const enriched = runtimeUsageEvent(modelKit, usage, modelKit.name, "cli-stream");
+          return enriched ?? event;
+        });
         const events =
-          stream.events.length > 0
-            ? stream.events
+          enrichedEvents.length > 0
+            ? enrichedEvents
             : [
                 {
                   type: "agent.cli.call",

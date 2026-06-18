@@ -13,6 +13,7 @@ import { SqliteStateStore } from "./store.js";
 import { SubAgentOrchestrator, isDelegatableWorker, foldDelegations, type DelegateAttempt } from "./orchestrator.js";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { McpToolset } from "./mcp-runtime.js";
 import type { ModelKit, Quest, SubAgent, WorktreeState } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -351,6 +352,95 @@ describe("Plan-then-execute flow", () => {
     await chmod(commandPath, 0o755);
     return commandPath;
   }
+
+  async function createCountingMcpServer(rootDir: string) {
+    const countPath = join(rootDir, "mcp-start-count.txt");
+    const serverPath = join(rootDir, "counting-mcp.mjs");
+    await writeFile(
+      serverPath,
+      [
+        "#!/usr/bin/env node",
+        "import { readFileSync, writeFileSync } from 'node:fs';",
+        "const countPath = process.argv[2];",
+        "let buffer = Buffer.alloc(0);",
+        "function bump() {",
+        "  let count = 0;",
+        "  try { count = Number(readFileSync(countPath, 'utf8')) || 0; } catch {}",
+        "  writeFileSync(countPath, String(count + 1));",
+        "}",
+        "function send(id, result) {",
+        "  const body = JSON.stringify({ jsonrpc: '2.0', id, result });",
+        "  process.stdout.write('Content-Length: ' + Buffer.byteLength(body) + '\\r\\n\\r\\n' + body);",
+        "}",
+        "function handle(msg) {",
+        "  if (msg.method === 'initialize') {",
+        "    bump();",
+        "    send(msg.id, { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'counting' } });",
+        "    return;",
+        "  }",
+        "  if (msg.method === 'tools/list') {",
+        "    send(msg.id, { tools: [] });",
+        "  }",
+        "}",
+        "process.stdin.on('data', (chunk) => {",
+        "  buffer = Buffer.concat([buffer, chunk]);",
+        "  while (true) {",
+        "    const headerEnd = buffer.indexOf('\\r\\n\\r\\n');",
+        "    if (headerEnd < 0) return;",
+        "    const header = buffer.slice(0, headerEnd).toString();",
+        "    const match = header.match(/content-length:\\s*(\\d+)/i);",
+        "    const length = Number(match?.[1] || 0);",
+        "    const start = headerEnd + 4;",
+        "    const end = start + length;",
+        "    if (buffer.length < end) return;",
+        "    const body = buffer.slice(start, end).toString();",
+        "    buffer = buffer.slice(end);",
+        "    const msg = JSON.parse(body);",
+        "    if (msg.id !== undefined) handle(msg);",
+        "  }",
+        "});"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(serverPath, 0o755);
+    return { countPath, serverPath };
+  }
+
+  it("reuses MCP servers across one orchestrator lifecycle and resets after disposal", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-orchestrator-mcp-"));
+    const { countPath, serverPath } = await createCountingMcpServer(rootDir);
+    const service = {
+      getRootDir: () => rootDir,
+      listApprovedMcpServers: async () => [
+        {
+          id: "counting",
+          name: "Counting MCP",
+          transport: "stdio" as const,
+          command: process.execPath,
+          args: [serverPath, countPath]
+        }
+      ]
+    } as unknown as RepoHelmService;
+    const orchestrator = new SubAgentOrchestrator(service, rootDir);
+    const access = orchestrator as unknown as {
+      withSharedMcpToolset<T>(run: () => Promise<T>): Promise<T>;
+      sharedMcpToolset(): Promise<McpToolset | undefined>;
+    };
+
+    await access.withSharedMcpToolset(async () => {
+      const first = await access.sharedMcpToolset();
+      const second = await access.sharedMcpToolset();
+
+      expect(second).toBe(first);
+      expect(await readFile(countPath, "utf8")).toBe("1");
+    });
+
+    await access.withSharedMcpToolset(async () => {
+      await access.sharedMcpToolset();
+    });
+
+    expect(await readFile(countPath, "utf8")).toBe("2");
+  });
 
   it("runQuest with no entry agent throws guidance error", async () => {
     const { service } = await createGitRepoService();

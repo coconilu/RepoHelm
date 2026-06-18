@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { buildChildEnv } from "./env.js";
+import { createSandboxRuntime, type SandboxRuntime, type SandboxSession } from "../sandbox.js";
 import type { LlmToolSpec } from "../llm.js";
 
 export const SHELL_RUN_TOOL = "run_command";
@@ -39,6 +38,8 @@ export interface ShellToolOptions {
   timeoutMs?: number;
   /** Max bytes of stdout/stderr to keep in the tool result. */
   maxOutputBytes?: number;
+  runtime?: SandboxRuntime;
+  signal?: AbortSignal;
 }
 
 export interface ShellToolHandler {
@@ -53,6 +54,7 @@ export function buildShellToolHandler(root: string, options: ShellToolOptions = 
   const isAllowed = options.isAllowed ?? (() => false);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutput = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT;
+  const runtime = options.runtime ?? createSandboxRuntime("local-worktree");
 
   return {
     async handle(name, args) {
@@ -67,58 +69,64 @@ export function buildShellToolHandler(root: string, options: ShellToolOptions = 
         const name = command.split(/\s+/)[0] ?? command;
         return JSON.stringify({ ok: false, error: `command not permitted: ${name}` });
       }
-      return runCommand(command, root, timeoutMs, maxOutput);
+      if (options.signal?.aborted) {
+        return JSON.stringify({ ok: false, command, error: "command cancelled" });
+      }
+      return runCommand(command, root, timeoutMs, maxOutput, runtime, options.signal);
     }
   };
 }
 
-function runCommand(command: string, cwd: string, timeoutMs: number, maxOutput: number): Promise<string> {
-  return new Promise<string>((resolve) => {
-    const child = spawn("sh", ["-lc", command], {
-      cwd,
-      env: buildChildEnv()
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-
-    const cap = (current: string, chunk: Buffer): string =>
-      current.length >= maxOutput ? current : current + chunk.toString();
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, timeoutMs);
-
-    const finish = (payload: Record<string, unknown>) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(JSON.stringify(payload));
-    };
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout = cap(stdout, chunk);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr = cap(stderr, chunk);
-    });
-    child.on("error", (error) => finish({ ok: false, command, error: error.message }));
-    child.on("close", (code) => {
-      if (timedOut) {
-        finish({ ok: false, command, error: `command timed out after ${timeoutMs}ms`, stdout, stderr });
-        return;
+async function runCommand(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  maxOutput: number,
+  runtime: SandboxRuntime,
+  signal?: AbortSignal
+): Promise<string> {
+  let stdout = "";
+  let stderr = "";
+  let session: SandboxSession | undefined;
+  const cap = (current: string, data: string): string =>
+    current.length >= maxOutput ? current : (current + data).slice(0, maxOutput);
+  try {
+    session = await runtime.prepare({ worktreePath: cwd });
+    for await (const event of runtime.run(session, { command, timeoutMs, signal })) {
+      if (event.type === "stdout") {
+        stdout = cap(stdout, event.data);
+      } else if (event.type === "stderr") {
+        stderr = cap(stderr, event.data);
+      } else if (event.type === "error") {
+        return JSON.stringify({ ok: false, command, error: event.message, stdout, stderr });
+      } else if (event.type === "exit") {
+        if (event.cancelled) {
+          return JSON.stringify({ ok: false, command, error: "command cancelled", stdout, stderr });
+        }
+        if (event.timedOut) {
+          return JSON.stringify({ ok: false, command, error: `command timed out after ${timeoutMs}ms`, stdout, stderr });
+        }
+        return JSON.stringify({
+          ok: event.exitCode === 0,
+          command,
+          exitCode: event.exitCode,
+          stdout: stdout.slice(0, maxOutput),
+          stderr: stderr.slice(0, maxOutput)
+        });
       }
-      finish({
-        ok: code === 0,
-        command,
-        exitCode: code,
-        stdout: stdout.slice(0, maxOutput),
-        stderr: stderr.slice(0, maxOutput)
-      });
+    }
+    return JSON.stringify({ ok: false, command, error: "sandbox command ended without an exit event", stdout, stderr });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      command,
+      error: error instanceof Error ? error.message : String(error),
+      stdout,
+      stderr
     });
-    child.stdin?.end();
-  });
+  } finally {
+    if (session) {
+      await runtime.dispose(session).catch(() => undefined);
+    }
+  }
 }

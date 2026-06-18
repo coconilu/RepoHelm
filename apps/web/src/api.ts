@@ -148,8 +148,31 @@ export interface CapabilityDefinition {
   permissions: string[];
   installed: boolean;
   tags: string[];
+  mcp?: McpServerDefinition;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface McpServerDefinition {
+  id: string;
+  name: string;
+  transport: "stdio";
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface CreateMcpCapabilityInput {
+  id?: string;
+  name: string;
+  description?: string;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  permissions?: string[];
+  tags?: string[];
 }
 
 export interface CapabilityRecommendation {
@@ -167,7 +190,7 @@ export interface SecurityPolicy {
   fileScopes: string[];
   networkScopes: string[];
   secretsPolicy: "redact-env" | "deny";
-  sandboxRuntime: "local" | "external";
+  sandboxRuntime: "local-worktree" | "cubesandbox";
   updatedAt: string;
 }
 
@@ -726,6 +749,11 @@ export const api = {
       body: JSON.stringify(input)
     }),
   capabilities: () => request<CapabilityDefinition[]>("/api/capabilities"),
+  registerMcpCapability: (input: CreateMcpCapabilityInput) =>
+    request<CapabilityDefinition>("/api/capabilities/mcp", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   securityPolicy: () => request<SecurityPolicy>("/api/security-policy"),
   auditLog: () => request<AuditLogEntry[]>("/api/audit-log"),
   updateSecurityPolicy: (input: Partial<Omit<SecurityPolicy, "updatedAt">>) =>
@@ -782,6 +810,10 @@ export const api = {
     }),
   retryQuest: (questId: string) =>
     request<Quest>(`/api/quests/${questId}/retry`, {
+      method: "POST"
+    }),
+  cancelQuest: (questId: string) =>
+    request<Quest>(`/api/quests/${questId}/cancel`, {
       method: "POST"
     }),
   cleanupQuest: (questId: string) =>

@@ -350,6 +350,14 @@ export function App() {
           onError: () => { streamingQuestIdRef.current = null; setStreamingAnalysis(""); resolve(); }
         });
       });
+      const latestState = await api.state();
+      setState(latestState);
+      const latestQuest = latestState.quests.find((item) => item.id === quest.id);
+      if (latestQuest?.status === "cancelled") {
+        setDraftWorkspaceId("");
+        setInspectorTab("overview");
+        return;
+      }
       setPendingAction("Supervisor 正在生成编排计划...");
       await api.runQuest(quest.id);
       // 同时创建专家团 session（fake mode 下自动生成任务树）
@@ -405,6 +413,21 @@ export function App() {
       await api.approvePlan(selectedQuest.id);
       await load();
       setInspectorTab("plan");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setPendingAction("");
+    }
+  }
+
+  async function cancelQuest() {
+    if (!selectedQuest) return;
+    setError("");
+    setPendingAction("正在取消当前运行...");
+    try {
+      await api.cancelQuest(selectedQuest.id);
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -699,6 +722,7 @@ export function App() {
               selectedEntrySubAgentId={selectedEntrySubAgentId}
               workspace={workspace}
               onApprovePlan={approvePlan}
+              onCancelQuest={cancelQuest}
               onEntrySubAgentChange={setSelectedEntrySubAgentId}
               onCreateQuest={createQuest}
               onDeliverQuest={deliverQuest}
@@ -1004,6 +1028,7 @@ function QuestStage({
   selectedEntrySubAgentId,
   workspace,
   onApprovePlan,
+  onCancelQuest,
   onEntrySubAgentChange,
   onCreateQuest,
   onDeliverQuest,
@@ -1024,6 +1049,7 @@ function QuestStage({
   selectedEntrySubAgentId: string;
   workspace: Workspace;
   onApprovePlan: () => void;
+  onCancelQuest: () => void;
   onEntrySubAgentChange: (id: string) => void;
   onCreateQuest: (event: FormEvent) => void;
   onDeliverQuest: () => void;
@@ -1075,6 +1101,7 @@ function QuestStage({
 
   const affectedProjectCount = quest ? quest.affectedProjectIds.length : projects.length;
   const canDeliver = Boolean(quest && quest.changedFiles.length > 0);
+  const canCancel = Boolean(quest && busy && pendingAction && pendingAction !== "正在拒绝计划...");
 
   useEffect(() => {
     const chatThread = chatThreadRef.current;
@@ -1110,16 +1137,28 @@ function QuestStage({
           </div>
         </div>
         {quest ? (
-          <button
-            className="request-delivery-action"
-            disabled={busy || !canDeliver}
-            title={canDeliver ? "提交变更并准备 PR handoff" : "没有可交付的文件变更"}
-            onClick={onDeliverQuest}
-            type="button"
-          >
-            <GitPullRequest size={15} />
-            <span>交付</span>
-          </button>
+          <div className="chat-header-actions">
+            {canCancel ? (
+              <button
+                className="ghost-action"
+                onClick={onCancelQuest}
+                type="button"
+              >
+                <X size={15} />
+                <span>取消</span>
+              </button>
+            ) : null}
+            <button
+              className="request-delivery-action"
+              disabled={busy || !canDeliver}
+              title={canDeliver ? "提交变更并准备 PR handoff" : "没有可交付的文件变更"}
+              onClick={onDeliverQuest}
+              type="button"
+            >
+              <GitPullRequest size={15} />
+              <span>交付</span>
+            </button>
+          </div>
         ) : null}
       </header>
 
