@@ -46,6 +46,10 @@ export interface RepoChangeSet {
   files: RepoFileChange[];
 }
 
+interface GitProcessOptions {
+  signal?: AbortSignal;
+}
+
 export class GitWorktreeManager {
   async inspectRepository(path: string, defaultBranch: string): Promise<ProjectHealth> {
     try {
@@ -171,7 +175,11 @@ export class GitWorktreeManager {
     }
   }
 
-  async runValidation(worktreePath: string, command: string): Promise<GitOperationResult> {
+  async runValidation(
+    worktreePath: string,
+    command: string,
+    options: GitProcessOptions = {}
+  ): Promise<GitOperationResult> {
     if (!command.trim()) {
       return {
         status: "skipped",
@@ -182,6 +190,7 @@ export class GitWorktreeManager {
       const { stdout, stderr } = await execFileAsync("sh", ["-lc", command], {
         cwd: worktreePath,
         timeout: Number(process.env.REPOHELM_DELIVERY_TIMEOUT_MS ?? 120_000),
+        signal: options.signal,
         env: {
           ...process.env,
           GIT_TERMINAL_PROMPT: "0"
@@ -201,7 +210,11 @@ export class GitWorktreeManager {
     }
   }
 
-  async commitAll(worktreePath: string, message: string): Promise<GitOperationResult> {
+  async commitAll(
+    worktreePath: string,
+    message: string,
+    options: GitProcessOptions = {}
+  ): Promise<GitOperationResult> {
     try {
       const changedFiles = await this.getChangedFiles("delivery", worktreePath);
       if (changedFiles.length === 0) {
@@ -210,7 +223,7 @@ export class GitWorktreeManager {
           note: "没有可提交的文件变更。"
         };
       }
-      await this.git(worktreePath, ["add", "-A"]);
+      await this.git(worktreePath, ["add", "-A"], options);
       await this.git(worktreePath, [
         "-c",
         "user.name=RepoHelm",
@@ -219,8 +232,8 @@ export class GitWorktreeManager {
         "commit",
         "-m",
         message
-      ]);
-      const commitSha = (await this.git(worktreePath, ["rev-parse", "HEAD"])).trim();
+      ], options);
+      const commitSha = (await this.git(worktreePath, ["rev-parse", "HEAD"], options)).trim();
       return {
         status: "ok",
         note: "Worktree 变更已提交。",
@@ -234,7 +247,12 @@ export class GitWorktreeManager {
     }
   }
 
-  async createPullRequest(worktreePath: string, title: string, body: string): Promise<GitOperationResult> {
+  async createPullRequest(
+    worktreePath: string,
+    title: string,
+    body: string,
+    options: GitProcessOptions = {}
+  ): Promise<GitOperationResult> {
     if (process.env.REPOHELM_ENABLE_GH_PR !== "1") {
       return {
         status: "skipped",
@@ -245,6 +263,7 @@ export class GitWorktreeManager {
       const { stdout } = await execFileAsync("gh", ["pr", "create", "--title", title, "--body", body], {
         cwd: worktreePath,
         timeout: Number(process.env.REPOHELM_DELIVERY_TIMEOUT_MS ?? 120_000),
+        signal: options.signal,
         env: {
           ...process.env,
           GIT_TERMINAL_PROMPT: "0"
@@ -356,9 +375,10 @@ export class GitWorktreeManager {
     return output.trim();
   }
 
-  private async git(cwd: string, args: string[]): Promise<string> {
+  private async git(cwd: string, args: string[], options: GitProcessOptions = {}): Promise<string> {
     const { stdout } = await execFileAsync("git", args, {
       cwd,
+      signal: options.signal,
       env: {
         ...process.env,
         GIT_TERMINAL_PROMPT: "0"

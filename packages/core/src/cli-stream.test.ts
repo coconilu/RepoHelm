@@ -184,12 +184,21 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     expect(parseCliStreamLine(line, AGENT)).toBeUndefined();
   });
 
-  it("ignores Codex thread/turn lifecycle noise", () => {
+  it("ignores Codex thread/turn lifecycle noise without usage", () => {
     expect(parseCliStreamLine(JSON.stringify({ type: "thread.started", thread_id: "x" }), AGENT)).toBeUndefined();
     expect(parseCliStreamLine(JSON.stringify({ type: "turn.started" }), AGENT)).toBeUndefined();
-    expect(
-      parseCliStreamLine(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }), AGENT)
-    ).toBeUndefined();
+    expect(parseCliStreamLine(JSON.stringify({ type: "turn.completed" }), AGENT)).toBeUndefined();
+  });
+
+  it("maps Codex turn.completed usage to an agent.usage event", () => {
+    const event = parseCliStreamLine(
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 12, output_tokens: 5 } }),
+      AGENT
+    );
+    expect(event).toBeDefined();
+    expect(event!.type).toBe("agent.usage");
+    expect(event!.detail).toContain("promptTokens");
+    expect(event!.detail).toContain("completionTokens");
   });
 
   it("surfaces a Codex error/turn.failed as agent.output so the failure stays visible", () => {

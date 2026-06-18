@@ -1,11 +1,58 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildWorkerToolset } from "./worker-tools.js";
+import { buildWorkerToolset, buildWorkerToolsetAsync } from "./worker-tools.js";
 
 async function worktree(): Promise<string> {
   return mkdtemp(join(tmpdir(), "rh-worker-tools-"));
+}
+
+async function writeFakeMcpServer(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "rh-worker-mcp-"));
+  const file = join(dir, "fake-mcp.mjs");
+  await writeFile(
+    file,
+    `
+let buffer = Buffer.alloc(0);
+function send(id, result) {
+  const body = JSON.stringify({ jsonrpc: "2.0", id, result });
+  process.stdout.write("Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n" + body);
+}
+function handle(msg) {
+  if (msg.method === "initialize") {
+    send(msg.id, { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake" } });
+    return;
+  }
+  if (msg.method === "tools/list") {
+    send(msg.id, { tools: [{ name: "lookup", description: "Lookup docs", inputSchema: { type: "object", properties: { query: { type: "string" } } } }] });
+    return;
+  }
+  if (msg.method === "tools/call") {
+    send(msg.id, { content: [{ type: "text", text: "docs:" + msg.params.arguments.query }] });
+  }
+}
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd < 0) return;
+    const header = buffer.slice(0, headerEnd).toString();
+    const match = header.match(/content-length:\\s*(\\d+)/i);
+    const length = Number(match?.[1] || 0);
+    const start = headerEnd + 4;
+    const end = start + length;
+    if (buffer.length < end) return;
+    const body = buffer.slice(start, end).toString();
+    buffer = buffer.slice(end);
+    const msg = JSON.parse(body);
+    if (msg.id !== undefined) handle(msg);
+  }
+});
+`,
+    "utf8"
+  );
+  return file;
 }
 
 describe("buildWorkerToolset", () => {
@@ -103,5 +150,28 @@ describe("buildWorkerToolset", () => {
     const result = JSON.parse(await toolset.handle("run_command", { command: "rm -rf /" }));
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/not permitted/i);
+  });
+
+  it("exposes approved MCP tools through the async worker toolset", async () => {
+    const root = await worktree();
+    const server = await writeFakeMcpServer();
+    const toolset = await buildWorkerToolsetAsync(root, {
+      mcpServers: [
+        {
+          id: "docs",
+          name: "Docs",
+          transport: "stdio",
+          command: process.execPath,
+          args: [server]
+        }
+      ]
+    });
+
+    try {
+      expect(toolset.specs.map((spec) => spec.function.name)).toContain("mcp_docs_lookup");
+      expect(await toolset.handle("mcp_docs_lookup", { query: "sandbox" })).toContain("docs:sandbox");
+    } finally {
+      await toolset.dispose();
+    }
   });
 });

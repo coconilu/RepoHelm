@@ -17,7 +17,7 @@ const emptyState = (): RepoHelmState => ({
     fileScopes: ["workspace", "worktree", "knowledge"],
     networkScopes: ["localhost"],
     secretsPolicy: "redact-env",
-    sandboxRuntime: "local",
+    sandboxRuntime: "local-worktree",
     updatedAt: new Date().toISOString()
   },
   auditLog: [],

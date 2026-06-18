@@ -106,7 +106,10 @@ const securityPolicySchema = z.object({
   fileScopes: z.array(z.string()).optional(),
   networkScopes: z.array(z.string()).optional(),
   secretsPolicy: z.enum(["redact-env", "deny"]).optional(),
-  sandboxRuntime: z.enum(["local", "external"]).optional()
+  sandboxRuntime: z
+    .enum(["local-worktree", "cubesandbox", "local", "external"])
+    .transform((value) => (value === "local" ? "local-worktree" : value === "external" ? "cubesandbox" : value))
+    .optional()
 });
 
 const questSchema = z.object({
@@ -191,6 +194,18 @@ const setEntrySchema = z.object({
   id: z.string().min(1)
 });
 
+const registerMcpCapabilitySchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  permissions: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional()
+});
+
 app.get("/api/health", (context) =>
   context.json({
     ok: true,
@@ -269,6 +284,12 @@ app.patch("/api/engine", async (context) => {
 app.get("/api/capabilities", async (context) => {
   const capabilities = await service.listCapabilities();
   return context.json(capabilities);
+});
+
+app.post("/api/capabilities/mcp", async (context) => {
+  const input = registerMcpCapabilitySchema.parse(await context.req.json());
+  const capability = await service.registerMcpCapability(input);
+  return context.json(capability, 201);
 });
 
 app.get("/api/security-policy", async (context) => {
@@ -477,6 +498,11 @@ app.post("/api/assist/enhance-requirement", async (context) => {
 
 app.post("/api/quests/:id/retry", async (context) => {
   const quest = await service.retryQuest(context.req.param("id"));
+  return context.json(quest);
+});
+
+app.post("/api/quests/:id/cancel", async (context) => {
+  const quest = await service.cancelQuest(context.req.param("id"));
   return context.json(quest);
 });
 

@@ -16,6 +16,7 @@ import { QuestWorkspaceManager } from "./quest-workspace.js";
 import { RepoWikiManager, type RepoWikiDeps, type KeyFile } from "./repo-wiki.js";
 import { seedBuiltInSubAgents } from "./seed-agents.js";
 import { InMemoryWikiStore, type WikiStore } from "./wiki-store.js";
+import { normalizeSandboxRuntimeId } from "./sandbox.js";
 import type {
   AgentEvent,
   AuditLogEntry,
@@ -23,6 +24,7 @@ import type {
   CapabilityRecommendation,
   ChangedFile,
   CliTestResult,
+  CreateMcpCapabilityInput,
   CreateModelKitInput,
   CreateProjectInput,
   CreateQuestInput,
@@ -33,6 +35,7 @@ import type {
   KnowledgeItem,
   ListProviderModelsInput,
   LocalCliInfo,
+  McpServerDefinition,
   ModelKit,
   OrchestrationPlan,
   PlanApproval,
@@ -50,6 +53,7 @@ import type {
   RepoHelmState,
   RepoWikiPage,
   SecurityPolicy,
+  SandboxRuntimeId,
   SubAgent,
   TestModelInput,
   UpdateEngineInput,
@@ -108,6 +112,14 @@ function matchesCommandTemplate(command: string, templates: string[]): boolean {
 const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 // Delay between streamed quest-spec timeline events, for a "thinking" cadence in the UI.
 const SPEC_EVENT_PACE_MS = 350;
+const CANCELLABLE_QUEST_STATUSES = new Set<QuestStatus>([
+  "specifying",
+  "planning",
+  "preparing",
+  "executing",
+  "validating",
+  "reviewing"
+]);
 const unknownHealth = (): ProjectHealth => ({
   status: "unknown",
   message: "尚未检查项目状态。"
@@ -130,6 +142,7 @@ export class RepoHelmService {
   private readonly questWorkspaceManager: QuestWorkspaceManager;
   private readonly wikiStore: WikiStore;
   private readonly repoWiki: RepoWikiManager;
+  private readonly questRunControllers = new Map<string, AbortController>();
 
   /** Serializes read-modify-write cycles to prevent concurrent writes from clobbering each other. */
   private _mutationQueue: Promise<void> = Promise.resolve();
@@ -150,6 +163,91 @@ export class RepoHelmService {
 
   getRootDir(): string {
     return this.rootDir;
+  }
+
+  getQuestAbortSignal(questId: string): AbortSignal | undefined {
+    return this.questRunControllers.get(questId)?.signal;
+  }
+
+  assertQuestNotCancelled(questId: string): void {
+    if (this.getQuestAbortSignal(questId)?.aborted) {
+      throw new Error("Quest cancelled");
+    }
+  }
+
+  async cancelQuest(questId: string): Promise<Quest> {
+    const controller = this.questRunControllers.get(questId);
+    if (!controller) {
+      const state = await this.getState();
+      const quest = state.quests.find((item) => item.id === questId);
+      if (!quest) {
+        throw new Error("Quest not found");
+      }
+      if (!CANCELLABLE_QUEST_STATUSES.has(quest.status)) {
+        throw new Error("Quest is not running");
+      }
+    }
+    controller?.abort();
+    return this.markQuestCancelled(questId, controller ? "用户取消了正在运行的 Quest。" : "Quest 已标记为取消。");
+  }
+
+  private async runCancellableQuest<T>(questId: string, fn: () => Promise<T>): Promise<T> {
+    const existing = this.questRunControllers.get(questId);
+    if (existing && !existing.signal.aborted) {
+      throw new Error("Quest is already running");
+    }
+    const state = await this.getState();
+    const quest = state.quests.find((item) => item.id === questId);
+    if (!quest) {
+      throw new Error("Quest not found");
+    }
+    if (quest.status === "cancelled") {
+      throw new Error("Quest cancelled");
+    }
+    const controller = new AbortController();
+    this.questRunControllers.set(questId, controller);
+    try {
+      const result = await fn();
+      if (controller.signal.aborted) {
+        throw new Error("Quest cancelled");
+      }
+      return result;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        await this.markQuestCancelled(questId, "运行已取消，正在清理 agent 和外部进程。").catch(() => undefined);
+        throw new Error("Quest cancelled");
+      }
+      throw error;
+    } finally {
+      if (this.questRunControllers.get(questId) === controller) {
+        this.questRunControllers.delete(questId);
+      }
+    }
+  }
+
+  private async markQuestCancelled(questId: string, detail: string): Promise<Quest> {
+    let updatedQuest: Quest | undefined;
+    await this.mutateState(async (state) => {
+      const quest = state.quests.find((item) => item.id === questId);
+      if (!quest) {
+        throw new Error("Quest not found");
+      }
+      if (quest.status === "cancelled") {
+        updatedQuest = quest;
+        return { newState: state, result: undefined };
+      }
+      updatedQuest = { ...quest, status: "cancelled", updatedAt: now() };
+      const event = this.event(questId, "quest.cancelled", "Quest 已取消", detail, "User");
+      return {
+        newState: {
+          ...state,
+          quests: state.quests.map((item) => (item.id === questId ? updatedQuest! : item)),
+          events: [event, ...state.events]
+        },
+        result: undefined
+      };
+    });
+    return updatedQuest!;
   }
 
   private buildWikiDeps(): RepoWikiDeps {
@@ -404,7 +502,7 @@ export class RepoHelmService {
     fn: (state: RepoHelmState) => Promise<{ newState: RepoHelmState; result: T }>
   ): Promise<T> {
     const run = async () => {
-      const state = await this.store.read();
+      const state = this.normalizeState(await this.store.read());
       const { newState, result } = await fn(state);
       await this.store.write(newState);
       return result;
@@ -1640,6 +1738,9 @@ export class RepoHelmService {
     if (!initialQuest) {
       throw new Error("Quest not found");
     }
+    if (initialQuest.status === "cancelled") {
+      throw new Error("Quest cancelled");
+    }
 
     const entryAgent = this.resolveEntryAgentFromState(initialState, initialQuest);
     if (!entryAgent) {
@@ -1648,51 +1749,53 @@ export class RepoHelmService {
       );
     }
 
-    const orchestrator = new SubAgentOrchestrator(this);
+    return this.runCancellableQuest(questId, async () => {
+      const orchestrator = new SubAgentOrchestrator(this);
 
-    const mode = await this.selectExecutionModeForQuest(questId, entryAgent);
+      const mode = await this.selectExecutionModeForQuest(questId, entryAgent);
 
-    if (mode === "delegate") {
-      return this.runQuestDelegated(questId, orchestrator);
-    }
+      if (mode === "delegate") {
+        return this.runQuestDelegated(questId, orchestrator);
+      }
 
-    const plan = await orchestrator.generatePlan(questId);
-    const planPath = await orchestrator.questWorkspace.writePlan(questId, plan);
+      const plan = await orchestrator.generatePlan(questId);
+      const planPath = await orchestrator.questWorkspace.writePlan(questId, plan);
 
-    const state = await this.getState();
-    const quest = state.quests.find((item) => item.id === questId);
-    if (!quest) {
-      throw new Error("Quest not found");
-    }
+      const state = await this.getState();
+      const quest = state.quests.find((item) => item.id === questId);
+      if (!quest) {
+        throw new Error("Quest not found");
+      }
 
-    const updatedQuest: Quest = {
-      ...quest,
-      planPath,
-      planApproval: { status: "pending" },
-      updatedAt: now()
-    };
+      const updatedQuest: Quest = {
+        ...quest,
+        planPath,
+        planApproval: { status: "pending" },
+        updatedAt: now()
+      };
 
-    const events: AgentEvent[] = [
-      this.event(
-        questId,
-        "plan.generated",
-        "编排计划已生成",
-        `Supervisor ${entryAgent.name} 生成了 ${plan.steps.length} 个步骤的执行计划。`,
-        entryAgent.name
-      )
-    ];
+      const events: AgentEvent[] = [
+        this.event(
+          questId,
+          "plan.generated",
+          "编排计划已生成",
+          `Supervisor ${entryAgent.name} 生成了 ${plan.steps.length} 个步骤的执行计划。`,
+          entryAgent.name
+        )
+      ];
 
-    await this.store.write({
-      ...state,
-      quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
-      events: [...events, ...state.events]
+      await this.store.write({
+        ...state,
+        quests: state.quests.map((item) => (item.id === questId ? updatedQuest : item)),
+        events: [...events, ...state.events]
+      });
+
+      if (quest.autoApprovePlan) {
+        return this.approvePlanInternal(questId);
+      }
+
+      return updatedQuest;
     });
-
-    if (quest.autoApprovePlan) {
-      return this.approvePlan(questId);
-    }
-
-    return updatedQuest;
   }
 
   /**
@@ -1719,6 +1822,10 @@ export class RepoHelmService {
   }
 
   async approvePlan(questId: string): Promise<Quest> {
+    return this.runCancellableQuest(questId, () => this.approvePlanInternal(questId));
+  }
+
+  private async approvePlanInternal(questId: string): Promise<Quest> {
     const state = await this.getState();
     const quest = state.quests.find((item) => item.id === questId);
     if (!quest) {
@@ -2153,11 +2260,16 @@ export class RepoHelmService {
   }
 
   async deliverQuest(questId: string): Promise<Quest> {
+    return this.runCancellableQuest(questId, () => this.deliverQuestInternal(questId));
+  }
+
+  private async deliverQuestInternal(questId: string): Promise<Quest> {
     const state = await this.getState();
     const quest = state.quests.find((item) => item.id === questId);
     if (!quest) {
       throw new Error("Quest not found");
     }
+    const signal = this.getQuestAbortSignal(questId);
     const createdWorktrees = quest.worktrees.filter((worktree) => worktree.status === "created");
     const commitMessage = this.generateCommitMessage(quest);
     const auditEntries: AuditLogEntry[] = [];
@@ -2197,7 +2309,7 @@ export class RepoHelmService {
             };
           }
         }
-        const validation = await this.gitWorktreeManager.runValidation(worktree.worktreePath, project.validationCommand);
+        const validation = await this.gitWorktreeManager.runValidation(worktree.worktreePath, project.validationCommand, { signal });
         if (validation.status === "failed") {
           return {
             projectId: project.id,
@@ -2209,7 +2321,7 @@ export class RepoHelmService {
             createdAt: now()
           };
         }
-        const commit = await this.gitWorktreeManager.commitAll(worktree.worktreePath, commitMessage);
+        const commit = await this.gitWorktreeManager.commitAll(worktree.worktreePath, commitMessage, { signal });
         if (commit.status !== "ok") {
           return {
             projectId: project.id,
@@ -2224,7 +2336,8 @@ export class RepoHelmService {
         const pr = await this.gitWorktreeManager.createPullRequest(
           worktree.worktreePath,
           commitMessage,
-          `RepoHelm Quest: ${quest.title}\n\n${quest.requirement}`
+          `RepoHelm Quest: ${quest.title}\n\n${quest.requirement}`,
+          { signal }
         );
         return {
           projectId: project.id,
@@ -2299,6 +2412,66 @@ export class RepoHelmService {
     return state.capabilities;
   }
 
+  async listApprovedMcpServers(): Promise<McpServerDefinition[]> {
+    const state = await this.getState();
+    return state.capabilities
+      .filter((capability) => capability.kind === "mcp" && capability.installed && capability.mcp)
+      .map((capability) => capability.mcp!)
+      .filter((server) => server.transport === "stdio" && Boolean(server.command));
+  }
+
+  async registerMcpCapability(input: CreateMcpCapabilityInput): Promise<CapabilityDefinition> {
+    const command = input.command.trim();
+    if (!command) {
+      throw new Error("MCP command is required");
+    }
+    return this.mutateState(async (state) => {
+      const timestamp = now();
+      const capabilityId = input.id ?? id("cap_mcp");
+      if (state.capabilities.some((capability) => capability.id === capabilityId)) {
+        throw new Error(`Capability ${capabilityId} already exists`);
+      }
+      const serverId = input.id ?? capabilityId;
+      const capability: CapabilityDefinition = {
+        id: capabilityId,
+        kind: "mcp",
+        name: input.name,
+        description: input.description ?? `Approved MCP server: ${input.name}`,
+        source: "workspace",
+        permissions: input.permissions ?? ["call:mcp-tools"],
+        installed: true,
+        tags: input.tags ?? ["mcp"],
+        mcp: {
+          id: serverId,
+          name: input.name,
+          transport: "stdio",
+          command,
+          args: input.args ?? [],
+          cwd: input.cwd,
+          env: input.env
+        },
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+      return {
+        newState: {
+          ...state,
+          capabilities: [...state.capabilities, capability],
+          auditLog: [
+            this.audit("capability", "recorded", capability.name, "用户登记并启用了 MCP server runtime。"),
+            ...state.auditLog
+          ]
+        },
+        result: capability
+      };
+    });
+  }
+
+  async getSandboxRuntimeId(): Promise<SandboxRuntimeId> {
+    const state = await this.getState();
+    return normalizeSandboxRuntimeId(state.securityPolicy.sandboxRuntime);
+  }
+
   async getSecurityPolicy(): Promise<SecurityPolicy> {
     const state = await this.getState();
     return state.securityPolicy;
@@ -2309,6 +2482,7 @@ export class RepoHelmService {
     const securityPolicy: SecurityPolicy = {
       ...state.securityPolicy,
       ...input,
+      sandboxRuntime: normalizeSandboxRuntimeId(input.sandboxRuntime ?? state.securityPolicy.sandboxRuntime),
       updatedAt: now()
     };
     await this.store.write({
@@ -2416,7 +2590,7 @@ export class RepoHelmService {
           id: "m7",
           label: "安全执行和权限模型",
           status: "ready",
-          detail: "命令 allowlist、scope、secrets 策略、sandbox 声明和 audit log 已接入。"
+          detail: "命令 allowlist、scope、secrets 策略、SandboxRuntime、MCP runtime、取消和 token/成本事件已接入。"
         },
         {
           id: "m8",
@@ -2517,6 +2691,15 @@ export class RepoHelmService {
       yield { type: "error", message: "Quest not found" };
       return;
     }
+    if (quest.status === "cancelled") {
+      yield { type: "done", quest };
+      return;
+    }
+    const cancelledQuest = async (): Promise<Quest | undefined> => {
+      const latest = await this.getState();
+      const current = latest.quests.find((q) => q.id === questId);
+      return current?.status === "cancelled" ? current : undefined;
+    };
     const workspace = state.workspaces.find((w) => w.id === quest.workspaceId);
     const relatedPages = workspace
       ? await this.searchProjectKnowledge(workspace.projectIds, quest.requirement).catch(() => [])
@@ -2562,53 +2745,108 @@ export class RepoHelmService {
     }
 
     const relatedKnowledgeIds = relatedKnowledge.map((p) => p.id);
+    let afterSpecQuest: Quest | undefined;
     await this.mutateState(async (s) => {
+      const current = s.quests.find((q) => q.id === questId);
+      if (current?.status === "cancelled") {
+        afterSpecQuest = current;
+        return { newState: s, result: undefined };
+      }
       const quests = s.quests.map((q) =>
         q.id === questId ? { ...q, spec, relatedKnowledgeIds, updatedAt: now() } : q
       );
+      afterSpecQuest = quests.find((q) => q.id === questId);
       return { newState: { ...s, quests }, result: undefined };
     });
+    if (afterSpecQuest?.status === "cancelled") {
+      yield { type: "done", quest: afterSpecQuest };
+      return;
+    }
     yield { type: "spec_ready", spec };
 
     const emit = async (type: string, title: string, detail: string, agent: string) => {
       const ev = this.event(questId, type, title, detail, agent);
-      await this.mutateState(async (s) => ({ newState: { ...s, events: [ev, ...s.events] }, result: undefined }));
+      await this.mutateState(async (s) => {
+        const current = s.quests.find((q) => q.id === questId);
+        if (current?.status === "cancelled") {
+          return { newState: s, result: undefined };
+        }
+        return { newState: { ...s, events: [ev, ...s.events] }, result: undefined };
+      });
       return ev;
     };
     const pace = () => new Promise((r) => setTimeout(r, SPEC_EVENT_PACE_MS));
 
     await pace();
+    {
+      const cancelled = await cancelledQuest();
+      if (cancelled) {
+        yield { type: "done", quest: cancelled };
+        return;
+      }
+    }
     yield { type: "event_added", event: await emit("spec.generated", "轻量 Spec 已生成", "Spec Agent 根据需求生成了初版目标、范围和验收标准。", "Spec Agent") };
 
     if (relatedKnowledge.length > 0) {
       await pace();
+      const cancelled = await cancelledQuest();
+      if (cancelled) {
+        yield { type: "done", quest: cancelled };
+        return;
+      }
       yield { type: "event_added", event: await emit("knowledge.retrieved", "知识库已引用", `Agent 读取了 ${relatedKnowledge.length} 条相关知识。`, "Knowledge Agent") };
     }
 
     const userPrefs = await this.getUserPreferences(undefined, 0.5).catch(() => []);
     if (userPrefs.length > 0) {
       await pace();
+      const cancelled = await cancelledQuest();
+      if (cancelled) {
+        yield { type: "done", quest: cancelled };
+        return;
+      }
       yield { type: "event_added", event: await emit("preference.injected", "用户偏好已注入", `检测到 ${userPrefs.length} 条用户偏好，将作为约束指导 Agent 行为。`, "用户习惯助手") };
     }
 
     const riskPatterns = await this.checkRisk(quest.requirement, quest.affectedProjectIds).catch(() => []);
     if (riskPatterns.length > 0) {
       await pace();
+      const cancelled = await cancelledQuest();
+      if (cancelled) {
+        yield { type: "done", quest: cancelled };
+        return;
+      }
       yield { type: "event_added", event: await emit("risk.warning", "风险提示已生成", `发现 ${riskPatterns.length} 条相关失败经验，已提示 Agent 注意规避。`, "失败经验助手") };
     }
 
     const caps = this.recommendCapabilities(state.capabilities, quest.requirement, now());
     if (caps.length > 0) {
       await this.mutateState(async (s) => {
+        const current = s.quests.find((q) => q.id === questId);
+        if (current?.status === "cancelled") {
+          return { newState: s, result: undefined };
+        }
         const quests = s.quests.map((q) => (q.id === questId ? { ...q, capabilityRecommendations: caps } : q));
         return { newState: { ...s, quests }, result: undefined };
       });
       await pace();
+      const cancelled = await cancelledQuest();
+      if (cancelled) {
+        yield { type: "done", quest: cancelled };
+        return;
+      }
       yield { type: "event_added", event: await emit("capability.recommended", "能力推荐已生成", `Capability Agent 推荐了 ${caps.length} 个可审计能力。`, "Capability Agent") };
     }
 
     const executionMode = await this.selectExecutionModeForQuest(questId).catch(() => "plan" as ExecutionMode);
     await pace();
+    {
+      const cancelled = await cancelledQuest();
+      if (cancelled) {
+        yield { type: "done", quest: cancelled };
+        return;
+      }
+    }
     yield {
       type: "event_added",
       event:
@@ -2629,6 +2867,11 @@ export class RepoHelmService {
 
     let finalQuest!: Quest;
     await this.mutateState(async (s) => {
+      const current = s.quests.find((q) => q.id === questId);
+      if (current?.status === "cancelled") {
+        finalQuest = current;
+        return { newState: s, result: undefined };
+      }
       const quests = s.quests.map((q) => (q.id === questId ? { ...q, status: "planning" as QuestStatus, updatedAt: now() } : q));
       finalQuest = quests.find((q) => q.id === questId)!;
       return { newState: { ...s, quests }, result: undefined };
@@ -2727,7 +2970,7 @@ export class RepoHelmService {
         autoApprovePlan: quest.autoApprovePlan ?? false
       })),
       capabilities: state.capabilities?.length ? state.capabilities : this.seedCapabilities(now()),
-      securityPolicy: state.securityPolicy ?? this.seedSecurityPolicy(now()),
+      securityPolicy: this.normalizeSecurityPolicy(state.securityPolicy ?? this.seedSecurityPolicy(now())),
       auditLog: state.auditLog ?? [],
       engine: state.engine ?? defaultEngineConfig(),
       modelCache: state.modelCache ?? {},
@@ -2738,6 +2981,14 @@ export class RepoHelmService {
 
   private generateCommitMessage(quest: Quest): string {
     return `RepoHelm: ${quest.title}`.slice(0, 72);
+  }
+
+  private normalizeSecurityPolicy(policy: SecurityPolicy): SecurityPolicy {
+    return {
+      ...policy,
+      commandTemplates: policy.commandTemplates ?? DEFAULT_COMMAND_TEMPLATES,
+      sandboxRuntime: normalizeSandboxRuntimeId(policy.sandboxRuntime)
+    };
   }
 
   private async updateCapabilityRecommendation(
@@ -2858,7 +3109,7 @@ export class RepoHelmService {
       fileScopes: ["workspace", "worktree", "knowledge"],
       networkScopes: ["localhost"],
       secretsPolicy: "redact-env",
-      sandboxRuntime: "local",
+      sandboxRuntime: "local-worktree",
       updatedAt: timestamp
     };
   }

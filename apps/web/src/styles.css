@@ -139,6 +139,7 @@ textarea:focus-visible,
 .project-row,
 .quest-row,
 .run-context,
+.chat-header-actions,
 .composer-footer,
 .composer-tools,
 .composer-select,
@@ -868,6 +869,17 @@ kbd {
 .request-delivery-action:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
+}
+
+.chat-header-actions {
+  flex: 0 0 auto;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.chat-header-actions .request-delivery-action {
+  margin-top: 0;
 }
 
 .chat-thread {

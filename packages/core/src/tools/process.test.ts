@@ -77,6 +77,24 @@ describe("buildProcessToolHandlers", () => {
     await procs.dispose();
   });
 
+  it("kills running processes when the abort signal fires and refuses new starts", async () => {
+    const root = await worktree();
+    const controller = new AbortController();
+    const procs = buildProcessToolHandlers(root, { isAllowed: allowAll, signal: controller.signal });
+
+    const started = JSON.parse(await procs.handle(PROCESS_START_TOOL, { command: "sleep 30" }));
+    expect(started.ok).toBe(true);
+
+    controller.abort();
+    const result = await readUntilExited(procs, started.handle);
+    const next = JSON.parse(await procs.handle(PROCESS_START_TOOL, { command: "echo nope" }));
+
+    expect(result.running).toBe(false);
+    expect(next.ok).toBe(false);
+    expect(next.error).toMatch(/cancelled/i);
+    await procs.dispose();
+  });
+
   it("kills the whole process tree on dispose, not just the top-level shell", async () => {
     const root = await worktree();
     const pidFile = join(root, "child.pid");

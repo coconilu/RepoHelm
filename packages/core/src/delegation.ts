@@ -6,6 +6,7 @@ import { DELEGATE_TOOL_NAME, delegateToolSpec, type DelegateInput } from "./tool
 export interface DelegationCallResult {
   content: string;
   toolCalls: LlmToolCall[];
+  events?: BackendEvent[];
 }
 
 export interface DelegationLoopDeps {
@@ -52,6 +53,9 @@ export async function runDelegationLoop(
 
   for (let i = 0; i < deps.maxIterations; i++) {
     const result = await deps.callModel(messages, [delegateToolSpec]);
+    if (result.events) {
+      events.push(...result.events);
+    }
     if (result.content) {
       finalContent = result.content;
       events.push({

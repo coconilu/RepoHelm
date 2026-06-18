@@ -103,6 +103,115 @@ describe("RepoHelmService", () => {
     expect(nextState.projects[0]?.health.status).toBe("ok");
   });
 
+  it("marks a quest cancelled and records a cancellation event", async () => {
+    const { service } = await createService();
+    const state = await service.bootstrap();
+    const workspace = state.workspaces[0]!;
+    const quest = await service.createQuest({
+      workspaceId: workspace.id,
+      title: "Cancel me",
+      requirement: "Cancel this quest before execution."
+    });
+
+    const cancelled = await service.cancelQuest(quest.id);
+    const nextState = await service.getState();
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(nextState.events.some((event) => event.questId === quest.id && event.type === "quest.cancelled")).toBe(true);
+  });
+
+  it("normalizes sandbox runtime ids and lists registered stdio MCP servers", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "repohelm-core-runtime-test-"));
+    const service = new RepoHelmService(new SqliteStateStore(rootDir), rootDir);
+    await service.bootstrap();
+
+    await service.updateSecurityPolicy({ sandboxRuntime: "external" as any });
+    expect(await service.getSandboxRuntimeId()).toBe("cubesandbox");
+    await service.updateSecurityPolicy({ sandboxRuntime: "local" as any });
+    expect(await service.getSandboxRuntimeId()).toBe("local-worktree");
+
+    const capability = await service.registerMcpCapability({
+      id: "docs",
+      name: "Docs MCP",
+      description: "Docs lookup",
+      command: process.execPath,
+      args: ["server.mjs"],
+      permissions: ["read:docs"],
+      tags: ["mcp", "docs"]
+    });
+
+    expect(capability.installed).toBe(true);
+    expect(capability.mcp?.command).toBe(process.execPath);
+    expect(await service.listApprovedMcpServers()).toEqual([
+      {
+        id: "docs",
+        name: "Docs MCP",
+        transport: "stdio",
+        command: process.execPath,
+        args: ["server.mjs"],
+        cwd: undefined,
+        env: undefined
+      }
+    ]);
+  });
+
+  it("does not let a cancelled quest stream advance back to planning or run", async () => {
+    const oldFake = process.env.REPOHELM_FAKE_MODELS;
+    const oldStream = process.env.REPOHELM_FAKE_STREAM_TEXT;
+    process.env.REPOHELM_FAKE_MODELS = "1";
+    process.env.REPOHELM_FAKE_STREAM_TEXT = [
+      "analysis",
+      "```json",
+      JSON.stringify({
+        background: "b",
+        userGoal: "g",
+        functionalRequirements: [],
+        nonFunctionalRequirements: [],
+        affectedSurfaces: [],
+        outOfScope: [],
+        acceptanceCriteria: [],
+        openQuestions: []
+      }),
+      "```"
+    ].join("\n");
+    try {
+      const { service } = await createService();
+      const state = await service.bootstrap();
+      const workspace = state.workspaces[0]!;
+      const quest = await service.createQuest({
+        workspaceId: workspace.id,
+        title: "Cancel during spec",
+        requirement: "Generate spec then cancel"
+      });
+      const stream = service.streamQuestSpec(quest.id);
+      for (;;) {
+        const next = await stream.next();
+        if (next.done || next.value.type === "spec_ready") {
+          break;
+        }
+      }
+
+      await service.cancelQuest(quest.id);
+      let finalStatus = "";
+      for (;;) {
+        const next = await stream.next();
+        if (next.done) break;
+        if (next.value.type === "done") {
+          finalStatus = next.value.quest.status;
+        }
+      }
+
+      expect(finalStatus).toBe("cancelled");
+      await expect(service.runQuest(quest.id)).rejects.toThrow(/cancelled/i);
+      expect((await service.getQuest(quest.id)).status).toBe("cancelled");
+    } finally {
+      if (oldFake === undefined) delete process.env.REPOHELM_FAKE_MODELS;
+      else process.env.REPOHELM_FAKE_MODELS = oldFake;
+      if (oldStream === undefined) delete process.env.REPOHELM_FAKE_STREAM_TEXT;
+      else process.env.REPOHELM_FAKE_STREAM_TEXT = oldStream;
+    }
+  });
+
   it("registers a global repo and links it to a workspace with a checked-out worktree", async () => {
     const { rootDir, service } = await createGitRepoService();
     const state = await service.bootstrap();
@@ -268,7 +377,7 @@ describe("RepoHelmService", () => {
         fileScopes: ["workspace"],
         networkScopes: ["localhost"],
         secretsPolicy: "redact-env",
-        sandboxRuntime: "local",
+        sandboxRuntime: "local-worktree",
         updatedAt: new Date().toISOString()
       },
       auditLog: [],

@@ -70,4 +70,30 @@ describe("buildShellToolHandler", () => {
     expect(result.ok).toBe(false);
     expect(String(result.error ?? "")).toMatch(/time|超时/i);
   });
+
+  it("cancels an in-flight command when the abort signal fires", async () => {
+    const root = await worktree();
+    const controller = new AbortController();
+    const handler = buildShellToolHandler(root, { isAllowed: allowAll, signal: controller.signal });
+
+    const pending = handler.handle(SHELL_RUN_TOOL, { command: "sleep 5" });
+    setTimeout(() => controller.abort(), 50);
+    const result = JSON.parse(await pending);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/cancelled/i);
+  });
+
+  it("does not start a command when the abort signal is already fired", async () => {
+    const root = await worktree();
+    const controller = new AbortController();
+    controller.abort();
+    const handler = buildShellToolHandler(root, { isAllowed: allowAll, signal: controller.signal });
+
+    const result = JSON.parse(await handler.handle(SHELL_RUN_TOOL, { command: "echo should-not-run" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/cancelled/i);
+    expect(result.stdout ?? "").not.toContain("should-not-run");
+  });
 });

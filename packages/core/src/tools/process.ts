@@ -73,6 +73,7 @@ export interface ProcessToolOptions {
   isAllowed?: (command: string) => boolean | Promise<boolean>;
   /** Max bytes of stdout/stderr retained per process. */
   maxOutputBytes?: number;
+  signal?: AbortSignal;
 }
 
 export interface ProcessToolHandler {
@@ -120,6 +121,16 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
   const procs = new Map<string, ProcEntry>();
   let counter = 0;
 
+  const disposeAll = () => {
+    for (const entry of procs.values()) {
+      if (entry.running) {
+        killTree(entry.child, "SIGKILL");
+      }
+    }
+  };
+
+  options.signal?.addEventListener("abort", disposeAll, { once: true });
+
   function start(command: string): ProcEntry {
     const child = spawn("sh", ["-lc", command], {
       cwd: root,
@@ -152,6 +163,9 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
   return {
     async handle(name, args) {
       if (name === PROCESS_START_TOOL) {
+        if (options.signal?.aborted) {
+          return JSON.stringify({ ok: false, error: "process start cancelled" });
+        }
         const command = String(args.command ?? "").trim();
         if (!command) return JSON.stringify({ ok: false, error: "command is required" });
         if (!(await isAllowed(command))) {
@@ -205,11 +219,8 @@ export function buildProcessToolHandlers(root: string, options: ProcessToolOptio
     },
 
     async dispose() {
-      for (const entry of procs.values()) {
-        if (entry.running) {
-          killTree(entry.child, "SIGKILL");
-        }
-      }
+      options.signal?.removeEventListener("abort", disposeAll);
+      disposeAll();
     }
   };
 }
