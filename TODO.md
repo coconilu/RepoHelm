@@ -21,13 +21,13 @@
   - [ ] 缓存 pnpm store。
   - [ ] 设置最小 GitHub token 权限。
 
-- [ ] 增加 `CONTRIBUTING.md`
-  - [ ] 写清本地开发环境要求。
-  - [ ] 写清如何安装、启动、测试和构建。
-  - [ ] 写清 PR 提交流程。
-  - [ ] 写清推荐先阅读的文档。
-  - [ ] 写清哪些贡献类型当前最欢迎。
-  - [ ] 写清哪些方向不在项目范围内。
+- [x] 增加 `CONTRIBUTING.md`
+  - [x] 写清本地开发环境要求。
+  - [x] 写清如何安装、启动、测试和构建。
+  - [x] 写清 PR 提交流程。
+  - [x] 写清推荐先阅读的文档。
+  - [x] 写清哪些贡献类型当前最欢迎。
+  - [x] 写清哪些方向不在项目范围内。
 
 - [ ] 增加 `SECURITY.md`
   - [ ] 写清漏洞报告方式。
@@ -73,7 +73,7 @@
 
 - [ ] 增加 GitHub issue templates
   - [ ] Bug report。
-  - [ ] Feature request。
+  - [x] Feature request。
   - [ ] Provider integration proposal。
   - [ ] Agent backend integration proposal。
   - [ ] MCP/skill proposal。
@@ -161,4 +161,3 @@
   - [ ] 安全策略。
   - [ ] 威胁模型。
   - [ ] 清晰治理。
-

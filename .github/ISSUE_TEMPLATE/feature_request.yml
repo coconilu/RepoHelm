@@ -1,0 +1,80 @@
+name: Feature request
+description: 提议一个新功能或新能力，并按 RepoHelm 的复用优先流程完成选型。
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提议新功能。RepoHelm 遵循复用优先原则：在自建新能力前，先调研成熟的开源库、组件库、skills、MCP servers、CLI 或其他现成方案。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题 / 目标
+      description: 这个 feature 要解决什么用户问题或产品目标？
+      placeholder: 描述工作流、用户场景和期望结果。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 建议范围
+      description: 哪些内容在范围内，哪些明确不做？
+      placeholder: 列出预期行为、受影响界面/模块和非目标。
+    validations:
+      required: true
+
+  - type: textarea
+    id: community-research
+    attributes:
+      label: 社区方案调研
+      description: 列出你在自建前调研过的开源库、组件库、skills、MCP servers、CLI 或现成服务。
+      placeholder: |
+        - 候选方案：
+          来源：
+          契合度：
+          维护活跃度：
+          许可证：
+          安全 / 权限面：
+          集成成本：
+          初步判断：
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: evaluation
+    attributes:
+      label: 评估清单
+      options:
+        - label: 已检查是否契合 RepoHelm 的 Quest、worktree、审计和知识库边界。
+          required: true
+        - label: 已检查 release、commit、issue 响应或社区使用情况等维护信号。
+          required: true
+        - label: 已检查许可证兼容性。
+          required: true
+        - label: 已考虑安全、权限、sandbox 和供应链风险。
+          required: true
+        - label: 已评估集成成本，以及封装或自建的长期维护成本。
+          required: true
+
+  - type: textarea
+    id: decision
+    attributes:
+      label: 选型结论
+      description: RepoHelm 应该复用、封装还是自建？为什么？如果选择自建，请说明为什么不复用。
+      placeholder: 复用 / 封装 / 自建，以及核心取舍。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 维护者如何判断这个 issue 已完成？
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
