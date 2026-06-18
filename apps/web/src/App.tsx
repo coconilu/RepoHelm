@@ -39,6 +39,8 @@ import {
   ChangedFile,
   CapabilityDefinition,
   CliTestResult,
+  CommandApproval,
+  CommandApprovalScope,
   CreateModelKitInput,
   CreateSubAgentInput,
   EngineConfig,
@@ -99,7 +101,7 @@ const statusClass: Record<string, string> = {
 
 type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
 type ResizeDivider = "sidebar" | "inspector";
-type SettingsTab = "repositories" | "models" | "modelkits" | "subagents";
+type SettingsTab = "repositories" | "models" | "modelkits" | "subagents" | "security";
 
 const defaultColumnWidths = {
   sidebar: 280,
@@ -1993,6 +1995,16 @@ function AppSettingsDialog({
   const [creatingSubAgent, setCreatingSubAgent] = useState(false);
   const [editingSubAgent, setEditingSubAgent] = useState<SubAgent | null>(null);
   const [subAgentError, setSubAgentError] = useState("");
+  const [securityPolicy, setSecurityPolicy] = useState<SecurityPolicy | null>(null);
+  const [commandApprovals, setCommandApprovals] = useState<CommandApproval[]>([]);
+  const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
+  const [securityDraft, setSecurityDraft] = useState({
+    allowedCommands: "",
+    commandTemplates: "",
+    fileScopes: "",
+    networkScopes: ""
+  });
+  const [securityError, setSecurityError] = useState("");
 
   const repoAutoCheckedRef = useRef(false);
 
@@ -2018,8 +2030,17 @@ function AppSettingsDialog({
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.listClis(), api.getEngine(), api.listModelKits(), api.listSubAgents(), api.getEntrySubAgent()])
-      .then(([cliList, eng, kits, agents, entryAgent]) => {
+    Promise.all([
+      api.listClis(),
+      api.getEngine(),
+      api.listModelKits(),
+      api.listSubAgents(),
+      api.getEntrySubAgent(),
+      api.securityPolicy(),
+      api.commandApprovals(),
+      api.auditLog()
+    ])
+      .then(([cliList, eng, kits, agents, entryAgent, policy, approvals, auditEntries]) => {
         if (cancelled) {
           return;
         }
@@ -2028,6 +2049,15 @@ function AppSettingsDialog({
         setModelKits(kits);
         setSubAgents(agents);
         setEntrySubAgentId(entryAgent?.id);
+        setSecurityPolicy(policy);
+        setSecurityDraft({
+          allowedCommands: formatListDraft(policy.allowedCommands),
+          commandTemplates: formatListDraft(policy.commandTemplates),
+          fileScopes: formatListDraft(policy.fileScopes),
+          networkScopes: formatListDraft(policy.networkScopes)
+        });
+        setCommandApprovals(approvals);
+        setAuditLog(auditEntries);
         const activeId = eng.activeByokProviderId;
         const savedConfig = eng.byokProviders[activeId];
         setProviderId(activeId as ProviderId);
@@ -2305,6 +2335,74 @@ function AppSettingsDialog({
     }
   }
 
+  async function refreshSecurity() {
+    const [policy, approvals, auditEntries] = await Promise.all([
+      api.securityPolicy(),
+      api.commandApprovals(),
+      api.auditLog()
+    ]);
+    setSecurityPolicy(policy);
+    setSecurityDraft({
+      allowedCommands: formatListDraft(policy.allowedCommands),
+      commandTemplates: formatListDraft(policy.commandTemplates),
+      fileScopes: formatListDraft(policy.fileScopes),
+      networkScopes: formatListDraft(policy.networkScopes)
+    });
+    setCommandApprovals(approvals);
+    setAuditLog(auditEntries);
+  }
+
+  async function patchSecurityPolicy(input: Partial<Omit<SecurityPolicy, "updatedAt">>) {
+    onSetBusy(true);
+    setSecurityError("");
+    try {
+      const next = await api.updateSecurityPolicy(input);
+      setSecurityPolicy(next);
+      setSecurityDraft({
+        allowedCommands: formatListDraft(next.allowedCommands),
+        commandTemplates: formatListDraft(next.commandTemplates),
+        fileScopes: formatListDraft(next.fileScopes),
+        networkScopes: formatListDraft(next.networkScopes)
+      });
+      setAuditLog(await api.auditLog());
+    } catch (err) {
+      setSecurityError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  async function saveSecurityPolicy(event: FormEvent) {
+    event.preventDefault();
+    await patchSecurityPolicy({
+      allowedCommands: parseListDraft(securityDraft.allowedCommands),
+      commandTemplates: parseListDraft(securityDraft.commandTemplates),
+      fileScopes: parseListDraft(securityDraft.fileScopes),
+      networkScopes: parseListDraft(securityDraft.networkScopes)
+    });
+  }
+
+  async function decideCommandApproval(approvalId: string, decision: "approve" | "deny", scope?: CommandApprovalScope) {
+    onSetBusy(true);
+    setSecurityError("");
+    try {
+      if (decision === "approve") {
+        await api.approveCommandApproval(approvalId, { scope });
+      } else {
+        await api.denyCommandApproval(approvalId);
+      }
+      await refreshSecurity();
+    } catch (err) {
+      setSecurityError(err instanceof Error ? err.message : String(err));
+    } finally {
+      onSetBusy(false);
+    }
+  }
+
+  const pendingCommandApprovals = commandApprovals.filter((approval) => approval.status === "pending");
+  const recentCommandApprovals = commandApprovals.filter((approval) => approval.status !== "pending").slice(0, 8);
+  const recentAuditLog = auditLog.slice(0, 10);
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section aria-labelledby="app-settings-title" className="modal-panel settings-modal" role="dialog">
@@ -2329,6 +2427,9 @@ function AppSettingsDialog({
           </button>
           <button className={tab === "subagents" ? "active" : ""} onClick={() => setTab("subagents")} role="tab" type="button">
             Agent 管理
+          </button>
+          <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")} role="tab" type="button">
+            安全
           </button>
         </div>
         <div className="modal-body settings-body">
@@ -2865,6 +2966,228 @@ function AppSettingsDialog({
               })()}
             </section>
           ) : null}
+
+          {tab === "security" ? (
+            <section className="config-section">
+              <div className="settings-section-heading">
+                <h3>命令安全</h3>
+                <button className="ghost-action" disabled={busy} onClick={refreshSecurity} type="button">
+                  <RefreshCw size={14} />
+                  <span>刷新</span>
+                </button>
+              </div>
+              {securityError ? <div className="error-banner">{securityError}</div> : null}
+              {!securityPolicy ? (
+                <p className="muted">正在加载安全策略…</p>
+              ) : (
+                <>
+                  <div className="settings-policy-grid">
+                    <div>
+                      <span>命令模式</span>
+                      <strong>{securityPolicy.commandApprovalMode === "manual" ? "人工审批" : "Allowlist"}</strong>
+                    </div>
+                    <div>
+                      <span>Sandbox</span>
+                      <strong>{securityPolicy.sandboxRuntime}</strong>
+                    </div>
+                    <div>
+                      <span>Secrets</span>
+                      <strong>{securityPolicy.secretsPolicy}</strong>
+                    </div>
+                    <div>
+                      <span>更新时间</span>
+                      <strong>{formatDate(securityPolicy.updatedAt)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="seg-control" role="tablist" aria-label="命令审批模式">
+                    <button
+                      className={securityPolicy.commandApprovalMode === "allowlist" ? "active" : ""}
+                      disabled={busy}
+                      onClick={() => patchSecurityPolicy({ commandApprovalMode: "allowlist" })}
+                      role="tab"
+                      type="button"
+                    >
+                      Allowlist
+                    </button>
+                    <button
+                      className={securityPolicy.commandApprovalMode === "manual" ? "active" : ""}
+                      disabled={busy}
+                      onClick={() => patchSecurityPolicy({ commandApprovalMode: "manual" })}
+                      role="tab"
+                      type="button"
+                    >
+                      人工审批
+                    </button>
+                  </div>
+
+                  <div className="security-select-row">
+                    <label>
+                      <span>Sandbox Runtime</span>
+                      <Select
+                        ariaLabel="Sandbox Runtime"
+                        value={securityPolicy.sandboxRuntime}
+                        onValueChange={(sandboxRuntime) =>
+                          patchSecurityPolicy({ sandboxRuntime: sandboxRuntime as SecurityPolicy["sandboxRuntime"] })
+                        }
+                        options={[
+                          { value: "local-worktree", label: "local-worktree" },
+                          { value: "cubesandbox", label: "cubesandbox" }
+                        ]}
+                      />
+                    </label>
+                    <label>
+                      <span>Secrets 策略</span>
+                      <Select
+                        ariaLabel="Secrets 策略"
+                        value={securityPolicy.secretsPolicy}
+                        onValueChange={(secretsPolicy) =>
+                          patchSecurityPolicy({ secretsPolicy: secretsPolicy as SecurityPolicy["secretsPolicy"] })
+                        }
+                        options={[
+                          { value: "redact-env", label: "redact-env" },
+                          { value: "deny", label: "deny" }
+                        ]}
+                      />
+                    </label>
+                  </div>
+
+                  <form className="security-policy-form" onSubmit={saveSecurityPolicy}>
+                    <label>
+                      <span>Validation command allowlist</span>
+                      <textarea
+                        className="compact-textarea"
+                        value={securityDraft.allowedCommands}
+                        onChange={(event) =>
+                          setSecurityDraft((current) => ({ ...current, allowedCommands: event.target.value }))
+                        }
+                      />
+                      <span className="field-hint">一行一个命令名，用于用户配置的 validation command。</span>
+                    </label>
+                    <label>
+                      <span>Worker command templates</span>
+                      <textarea
+                        className="compact-textarea"
+                        value={securityDraft.commandTemplates}
+                        onChange={(event) =>
+                          setSecurityDraft((current) => ({ ...current, commandTemplates: event.target.value }))
+                        }
+                      />
+                      <span className="field-hint">一行一个 argv 前缀模板，用于自动放行 worker run_command。</span>
+                    </label>
+                    <label>
+                      <span>File scopes</span>
+                      <textarea
+                        className="compact-textarea"
+                        value={securityDraft.fileScopes}
+                        onChange={(event) =>
+                          setSecurityDraft((current) => ({ ...current, fileScopes: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Network scopes</span>
+                      <textarea
+                        className="compact-textarea"
+                        value={securityDraft.networkScopes}
+                        onChange={(event) =>
+                          setSecurityDraft((current) => ({ ...current, networkScopes: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <div className="project-config-actions">
+                      <button className="secondary-action" disabled={busy} type="submit">
+                        保存策略
+                      </button>
+                    </div>
+                  </form>
+                </>
+              )}
+
+              <div className="settings-section-heading">
+                <h3>待审批命令</h3>
+                <span>{pendingCommandApprovals.length} pending</span>
+              </div>
+              {pendingCommandApprovals.length === 0 ? <p className="muted">暂无待审批命令。</p> : null}
+              <div className="command-approval-list">
+                {pendingCommandApprovals.map((approval) => (
+                  <article className="command-approval-row" key={approval.id}>
+                    <div>
+                      <strong>{approval.subject}</strong>
+                      <code>{approval.command}</code>
+                      <p>{approval.reason}</p>
+                      <span className="field-hint">
+                        请求 {approval.requestCount} 次 · {formatDate(approval.updatedAt)}
+                      </span>
+                    </div>
+                    <div className="settings-row-actions">
+                      <button
+                        className="secondary-action"
+                        disabled={busy}
+                        onClick={() => decideCommandApproval(approval.id, "approve", "session")}
+                        type="button"
+                      >
+                        本会话批准
+                      </button>
+                      <button
+                        className="ghost-action"
+                        disabled={busy}
+                        onClick={() => decideCommandApproval(approval.id, "approve", "persistent")}
+                        type="button"
+                      >
+                        持久批准
+                      </button>
+                      <button
+                        className="danger-action"
+                        disabled={busy}
+                        onClick={() => decideCommandApproval(approval.id, "deny")}
+                        type="button"
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="security-history-grid">
+                <section>
+                  <div className="settings-section-heading">
+                    <h3>最近审批</h3>
+                    <span>{recentCommandApprovals.length}</span>
+                  </div>
+                  {recentCommandApprovals.length === 0 ? <p className="muted">暂无审批历史。</p> : null}
+                  <div className="command-approval-list compact">
+                    {recentCommandApprovals.map((approval) => (
+                      <article className="command-approval-row compact" key={approval.id}>
+                        <div>
+                          <strong>{approval.status === "approved" ? `已批准 · ${approval.scope}` : "已拒绝"}</strong>
+                          <code>{approval.command}</code>
+                          <span className="field-hint">{approval.decidedAt ? formatDate(approval.decidedAt) : formatDate(approval.updatedAt)}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <div className="settings-section-heading">
+                    <h3>Audit log</h3>
+                    <span>{recentAuditLog.length}</span>
+                  </div>
+                  {recentAuditLog.length === 0 ? <p className="muted">暂无审计记录。</p> : null}
+                  <div className="command-approval-list compact">
+                    {recentAuditLog.map((entry) => (
+                      <article className="audit-row" key={entry.id}>
+                        <span>{entry.type} · {entry.decision}</span>
+                        <strong>{entry.subject}</strong>
+                        <p>{entry.detail}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            </section>
+          ) : null}
         </div>
       </section>
 
@@ -3192,6 +3515,24 @@ function WorkspaceConfigDialog({
 
 function basenameFromPath(path: string): string {
   return path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).pop() ?? "";
+}
+
+function formatListDraft(values: string[] = []): string {
+  return values.join("\n");
+}
+
+function parseListDraft(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      if (!item || seen.has(item)) {
+        return false;
+      }
+      seen.add(item);
+      return true;
+    });
 }
 
 interface ProjectDraft {

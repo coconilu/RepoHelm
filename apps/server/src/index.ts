@@ -103,6 +103,7 @@ const providerModelsSchema = z.object({
 const securityPolicySchema = z.object({
   commandApprovalMode: z.enum(["allowlist", "manual"]).optional(),
   allowedCommands: z.array(z.string()).optional(),
+  commandTemplates: z.array(z.string()).optional(),
   fileScopes: z.array(z.string()).optional(),
   networkScopes: z.array(z.string()).optional(),
   secretsPolicy: z.enum(["redact-env", "deny"]).optional(),
@@ -110,6 +111,10 @@ const securityPolicySchema = z.object({
     .enum(["local-worktree", "cubesandbox", "local", "external"])
     .transform((value) => (value === "local" ? "local-worktree" : value === "external" ? "cubesandbox" : value))
     .optional()
+});
+
+const commandApprovalDecisionSchema = z.object({
+  scope: z.enum(["session", "persistent"]).optional()
 });
 
 const questSchema = z.object({
@@ -306,6 +311,30 @@ app.patch("/api/security-policy", async (context) => {
 app.get("/api/audit-log", async (context) => {
   const auditLog = await service.listAuditLog();
   return context.json(auditLog);
+});
+
+app.get("/api/command-approvals", async (context) => {
+  const approvals = await service.listCommandApprovals();
+  return context.json(approvals);
+});
+
+app.post("/api/command-approvals/:id/approve", async (context) => {
+  try {
+    const input = commandApprovalDecisionSchema.parse(await context.req.json().catch(() => ({})));
+    const approval = await service.approveCommandApproval(context.req.param("id"), input);
+    return context.json(approval);
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+});
+
+app.post("/api/command-approvals/:id/deny", async (context) => {
+  try {
+    const approval = await service.denyCommandApproval(context.req.param("id"));
+    return context.json(approval);
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
 });
 
 app.get("/api/product-readiness", async (context) => {

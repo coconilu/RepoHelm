@@ -13,7 +13,16 @@ const emptyState = (): RepoHelmState => ({
   securityPolicy: {
     commandApprovalMode: "allowlist",
     allowedCommands: ["mock", "node", "git", "pnpm"],
-    commandTemplates: ["pnpm test", "pnpm run build", "pnpm typecheck", "pnpm lint", "git status", "git diff"],
+    commandTemplates: [
+      "pnpm test",
+      "pnpm run build",
+      "pnpm run test",
+      "pnpm typecheck",
+      "pnpm lint",
+      "git status",
+      "git diff",
+      "git diff --name-only"
+    ],
     fileScopes: ["workspace", "worktree", "knowledge"],
     networkScopes: ["localhost"],
     secretsPolicy: "redact-env",
@@ -21,6 +30,7 @@ const emptyState = (): RepoHelmState => ({
     updatedAt: new Date().toISOString()
   },
   auditLog: [],
+  commandApprovals: [],
   engine: defaultEngineConfig(),
   modelCache: {},
   subAgents: {}, // SubAgent 集合,默认为空
@@ -106,7 +116,7 @@ export class JsonStateStore implements StateStore {
     try {
       const raw = await readFile(this.statePath, "utf8");
       const state = JSON.parse(raw) as RepoHelmState;
-      return { ...state, engine: migrateEngine(state.engine) };
+      return { ...state, engine: migrateEngine(state.engine), commandApprovals: state.commandApprovals ?? [] };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return emptyState();
@@ -144,6 +154,7 @@ export class SqliteStateStore implements StateStore {
       return {
         ...state,
         engine: migrateEngine(state.engine),
+        commandApprovals: state.commandApprovals ?? [],
         subAgents: state.subAgents ?? {},
         userPreferences: state.userPreferences ?? {},
         failurePatterns: state.failurePatterns ?? {}

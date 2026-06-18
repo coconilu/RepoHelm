@@ -187,6 +187,7 @@ export interface CapabilityRecommendation {
 export interface SecurityPolicy {
   commandApprovalMode: "allowlist" | "manual";
   allowedCommands: string[];
+  commandTemplates: string[];
   fileScopes: string[];
   networkScopes: string[];
   secretsPolicy: "redact-env" | "deny";
@@ -201,6 +202,21 @@ export interface AuditLogEntry {
   subject: string;
   detail: string;
   createdAt: string;
+}
+
+export type CommandApprovalScope = "session" | "persistent";
+
+export interface CommandApproval {
+  id: string;
+  command: string;
+  subject: string;
+  status: "pending" | "approved" | "denied";
+  scope?: CommandApprovalScope;
+  reason: string;
+  requestCount: number;
+  requestedAt: string;
+  decidedAt?: string;
+  updatedAt: string;
 }
 
 export interface ProductReadinessItem {
@@ -371,6 +387,7 @@ export interface RepoHelmState {
   capabilities: CapabilityDefinition[];
   securityPolicy: SecurityPolicy;
   auditLog: AuditLogEntry[];
+  commandApprovals: CommandApproval[];
   engine: EngineConfig;
   subAgents: Record<string, SubAgent>;
   entrySubAgentId?: string;
@@ -756,6 +773,16 @@ export const api = {
     }),
   securityPolicy: () => request<SecurityPolicy>("/api/security-policy"),
   auditLog: () => request<AuditLogEntry[]>("/api/audit-log"),
+  commandApprovals: () => request<CommandApproval[]>("/api/command-approvals"),
+  approveCommandApproval: (approvalId: string, input: { scope?: CommandApprovalScope }) =>
+    request<CommandApproval>(`/api/command-approvals/${approvalId}/approve`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  denyCommandApproval: (approvalId: string) =>
+    request<CommandApproval>(`/api/command-approvals/${approvalId}/deny`, {
+      method: "POST"
+    }),
   updateSecurityPolicy: (input: Partial<Omit<SecurityPolicy, "updatedAt">>) =>
     request<SecurityPolicy>("/api/security-policy", {
       method: "PATCH",

@@ -206,6 +206,22 @@ export interface AuditLogEntry {
   createdAt: string;
 }
 
+export type CommandApprovalStatus = "pending" | "approved" | "denied";
+export type CommandApprovalScope = "session" | "persistent";
+
+export interface CommandApproval {
+  id: string;
+  command: string;
+  subject: string;
+  status: CommandApprovalStatus;
+  scope?: CommandApprovalScope;
+  reason: string;
+  requestCount: number;
+  requestedAt: string;
+  decidedAt?: string;
+  updatedAt: string;
+}
+
 export interface ProductReadinessItem {
   id: string;
   label: string;
@@ -534,6 +550,7 @@ export interface RepoHelmState {
   capabilities: CapabilityDefinition[];
   securityPolicy: SecurityPolicy;
   auditLog: AuditLogEntry[];
+  commandApprovals: CommandApproval[];
   engine: EngineConfig;
   modelCache: Record<string, ModelCacheEntry>;
   subAgents: Record<string, SubAgent>; // SubAgent 集合,按 ID 索引
