@@ -1,0 +1,65 @@
+name: Bug report
+description: 报告一个可复现的问题，并写清现状、目标和验收标准。
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你报告问题。请尽量提供可复现信息，并把修复目标写成可验证的验收标准。
+
+  - type: textarea
+    id: current-state
+    attributes:
+      label: 现状
+      description: 当前发生了什么？影响哪些用户、流程或模块？
+      placeholder: 描述实际行为、错误信息、影响范围和复现频率。
+    validations:
+      required: true
+
+  - type: textarea
+    id: target-state
+    attributes:
+      label: 目标
+      description: 修复后应该恢复或新增什么行为？
+      placeholder: 描述预期行为，以及不应该再发生的问题。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 如何稳定触发这个问题？
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 维护者如何判断这个 bug 已修复？
+      placeholder: |
+        - ...
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 可选。Node、pnpm、操作系统、浏览器、backend/provider 配置等。
+      placeholder: |
+        - OS:
+        - Node:
+        - pnpm:
+        - Browser:
+        - Backend/provider:
+    validations:
+      required: false

@@ -72,18 +72,19 @@
   - [ ] `examples/capabilities/README.md`
 
 - [ ] 增加 GitHub issue templates
-  - [ ] Bug report。
+  - [x] Bug report。
   - [x] Feature request。
   - [ ] Provider integration proposal。
   - [ ] Agent backend integration proposal。
   - [ ] MCP/skill proposal。
 
-- [ ] 增加 PR template
-  - [ ] 变更摘要。
-  - [ ] 关联 issue。
-  - [ ] 测试结果。
-  - [ ] 安全影响。
-  - [ ] 文档影响。
+- [x] 增加 PR template
+  - [x] 变更摘要。
+  - [x] 关联 issue。
+  - [x] 测试结果。
+  - [x] 安全影响。
+  - [x] 文档影响。
+  - [x] 现状 / 目标 / 验收标准。
 
 - [ ] 建立标签体系
   - [ ] `good first issue`
