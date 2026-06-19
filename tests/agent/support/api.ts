@@ -1,6 +1,25 @@
+export interface ProjectKnowledgeView {
+  projectId: string;
+  knowledgeBranch: string;
+  status: "empty" | "indexing" | "ready" | "stale" | "error";
+  pendingCommits: number;
+  lastIndexedSha?: string;
+  lastIndexedAt?: string;
+  head?: string;
+  error?: string;
+  pages: Array<{ id: string; projectId: string; slug: string; title: string; body: string; sourcePath: string; updatedAtSha: string; updatedAt: string }>;
+}
+
 export interface RepoHelmState {
   workspaces: Array<{ id: string; name: string; projectIds: string[]; worktrees: Array<{ projectId: string; worktreePath: string; status: string }> }>;
-  projects: Array<{ id: string; name: string; path: string; defaultBranch: string; health: { status: string } }>;
+  projects: Array<{
+    id: string;
+    name: string;
+    path: string;
+    defaultBranch: string;
+    health: { status: string };
+    knowledge?: { status: string; lastIndexedSha?: string; lastIndexedAt?: string; error?: string };
+  }>;
   quests: Array<{
     id: string;
     workspaceId: string;
@@ -8,6 +27,7 @@ export interface RepoHelmState {
     status: string;
     planPath?: string;
     agentSummary?: string;
+    affectedProjectIds: string[];
     worktrees: Array<{ projectId: string; worktreePath: string; status: string }>;
     changedFiles: Array<{ projectId: string; path: string; status: string; diff: string; worktreePath: string } | string>;
   }>;
@@ -170,10 +190,88 @@ export async function seedQaDelegationAgents(byokBaseUrl: string) {
   };
 }
 
+/**
+ * Seed agents for the recovery-knowledge scenario. The entry agent and all
+ * workers are BYOK agents pointed at a local fake OpenAI-compatible server so
+ * the real delegate loop and worker tool-calling loop run end to end.
+ */
+export async function seedQaRecoveryKnowledgeAgents(byokBaseUrl: string) {
+  const byokKit = async (name: string) =>
+    postJson<{ id: string }>("/api/model-kits", {
+      name,
+      type: "byok",
+      providerId: "qa-fake",
+      model: "qa-fake-model",
+      config: { provider: "qa-fake", baseUrl: byokBaseUrl, model: "qa-fake-model", apiKey: "qa-fake-key" }
+    });
+
+  const entryKit = await byokKit("qa-recovery-knowledge-entry-byok");
+  const workerKit = await byokKit("qa-recovery-knowledge-worker-byok");
+
+  const entry = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Supervisor",
+    role: "Entry supervisor that delegates a recovery-oriented multi-repo QA quest.",
+    capabilities: ["planning", "recovery"],
+    modelKitId: entryKit.id,
+    mode: "entry",
+    permissions: { allowedTools: ["delegate"], deniedTools: [] }
+  });
+  const researcher = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Researcher",
+    role: "Worker agent that inspects source and stale knowledge context before implementation.",
+    capabilities: ["research", "analysis"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  const implementer = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Implementer",
+    role: "Worker agent that updates API and web code and performs targeted repairs.",
+    capabilities: ["coding", "repair"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  const verifier = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Verifier",
+    role: "Worker agent that runs repo-local validation and preserves failed validation output.",
+    capabilities: ["testing", "verification"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  const curator = await postJson<{ id: string }>("/api/sub-agents", {
+    name: "QA Knowledge Curator",
+    role: "Worker agent that updates operator-facing release notes and prepares knowledge sync evidence.",
+    capabilities: ["documentation", "knowledge"],
+    modelKitId: workerKit.id,
+    mode: "worker",
+    permissions: { allowedTools: [], deniedTools: [] }
+  });
+  await postJson("/api/sub-agents/set-entry", { id: entry.id });
+  return {
+    entryKitId: entryKit.id,
+    workerKitId: workerKit.id,
+    entryAgentId: entry.id,
+    researcherAgentId: researcher.id,
+    implementerAgentId: implementer.id,
+    verifierAgentId: verifier.id,
+    curatorAgentId: curator.id
+  };
+}
+
 export async function getState(): Promise<RepoHelmState> {
   const response = await fetch(`${apiBase}/api/state`);
   if (!response.ok) {
     throw new Error(`/api/state failed: ${response.status} ${await response.text()}`);
   }
   return response.json() as Promise<RepoHelmState>;
+}
+
+export async function getProjectKnowledge(projectId: string): Promise<ProjectKnowledgeView> {
+  const response = await fetch(`${apiBase}/api/projects/${projectId}/knowledge`);
+  if (!response.ok) {
+    throw new Error(`/api/projects/${projectId}/knowledge failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json() as Promise<ProjectKnowledgeView>;
 }

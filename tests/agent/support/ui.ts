@@ -105,3 +105,37 @@ export async function runDelegationQuestViaUi(page: Page, input: {
     timeout: 120_000
   });
 }
+
+export async function openKnowledgeCenterViaUi(page: Page) {
+  const existing = page.locator(".knowledge-center");
+  if (await existing.isVisible().catch(() => false)) return;
+  await page.getByRole("button", { name: /打开知识中心/ }).click();
+  await expect(existing).toBeVisible({ timeout: 15_000 });
+}
+
+export async function syncProjectKnowledgeViaUi(page: Page, repoName: string, expectedButton?: RegExp) {
+  await openKnowledgeCenterViaUi(page);
+  const center = page.locator(".knowledge-center");
+  const row = center.locator(".knowledge-repo-row").filter({ hasText: repoName }).last();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  await row.scrollIntoViewIfNeeded();
+  await row.click();
+  const meta = center.locator(".knowledge-content-meta").filter({ hasText: repoName });
+  if (!(await meta.isVisible({ timeout: 1_000 }).catch(() => false))) {
+    // If the repo row was already expanded but not selected, the first click only
+    // collapses it. A second click expands and selects it.
+    await row.click();
+  }
+  await expect(meta).toBeVisible({ timeout: 15_000 });
+
+  const button = center.locator(".knowledge-regenerate");
+  if (expectedButton) {
+    await expect(button).toContainText(expectedButton, { timeout: 15_000 });
+  }
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(button).toBeEnabled({ timeout: 60_000 });
+  await expect(center.locator(".knowledge-toast").filter({ hasText: "知识库更新成功" })).toBeVisible({
+    timeout: 15_000
+  });
+}
