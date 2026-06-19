@@ -674,11 +674,13 @@ export function App() {
             setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
             setInspectorTab("spec");
           }}
-          onSelectQuest={(questId) => {
+          onSelectQuest={(questId, workspaceId) => {
             setKnowledgeOpen(false);
+            setSelectedWorkspaceId(workspaceId);
             setSelectedQuestId(questId);
             setDraftWorkspaceId("");
             setInspectorTab("spec");
+            setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
           }}
           onSelectWorkspace={(workspaceId) => {
             setKnowledgeOpen(false);
@@ -865,7 +867,7 @@ function Sidebar({
   onCreateWorkspace: () => void;
   onKnowledgeOpen: () => void;
   onNewQuest: (workspaceId: string) => void;
-  onSelectQuest: (questId: string) => void;
+  onSelectQuest: (questId: string, workspaceId: string) => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onToggleWorkspace: (workspaceId: string) => void;
 }) {
@@ -954,7 +956,7 @@ function Sidebar({
                       <button
                         className={`quest-row ${quest.id === selectedQuest?.id ? "active" : ""}`}
                         key={quest.id}
-                        onClick={() => onSelectQuest(quest.id)}
+                        onClick={() => onSelectQuest(quest.id, quest.workspaceId)}
                         type="button"
                       >
                         <Circle size={10} />
