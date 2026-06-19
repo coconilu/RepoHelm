@@ -12,7 +12,6 @@ const VERIFIER_TASK =
   "Run the web repo validation and write a validation file reports/final-validation.md only when the check passes.";
 
 let callId = 0;
-let verifierRuns = 0;
 
 function makeCall(name, args) {
   callId += 1;
@@ -379,7 +378,6 @@ function handleVerifier(res, messages) {
   const n = countToolMessages(messages);
   const c = collect(messages);
   if (n === 0) {
-    verifierRuns += 1;
     return reply(res, {
       role: "assistant",
       content: "Starting verifier process probe.",
@@ -408,7 +406,7 @@ function handleVerifier(res, messages) {
       tool_calls: [makeCall("run_command", { command: "pnpm test" })]
     });
   }
-  if (verifierRuns === 1 || c.shell.ok === false) {
+  if (c.shell.ok === false) {
     return reply(res, {
       role: "assistant",
       content: `VALIDATION_FAILED preserved=true command=pnpm test exit=${c.shell.exitCode} stderr=${(c.shell.stderr || "").slice(0, 120)}`
