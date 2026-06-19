@@ -6,13 +6,14 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const questTitle = `E2E Worktree Quest ${Date.now()}`;
 const repoRoot = process.cwd();
+const apiBase = process.env.REPOHELM_E2E_API_BASE ?? "http://127.0.0.1:4300";
 const e2eWorktreeRoot = join(repoRoot, ".repohelm", "e2e", "configured-worktrees");
 const docsPath = join(repoRoot, "docs");
 // Repos are now added by directory; the name is auto-derived from the basename.
 const boundRepoName = "docs";
 
 test.afterAll(async () => {
-  const response = await fetch("http://127.0.0.1:4300/api/state");
+  const response = await fetch(`${apiBase}/api/state`);
   const state = await response.json();
   const targetTitles = new Set([questTitle]);
   const targetQuests = state.quests.filter((quest: { title: string }) => targetTitles.has(quest.title));
@@ -30,10 +31,126 @@ test.afterAll(async () => {
   }
 });
 
+test("selects the owning workspace when clicking a request from another workspace", async ({ page }) => {
+  const runId = Date.now().toString(36);
+  const firstWorkspaceName = `Cross Workspace Source ${runId}`;
+  const firstQuestTitle = `Cross Workspace First Quest ${runId}`;
+  const secondWorkspaceName = `Cross Workspace Second ${runId}`;
+  const secondQuestTitle = `Cross Workspace Second Quest ${runId}`;
+  const createdAt = new Date().toISOString();
+
+  const firstWorkspace = {
+    id: `ws-source-${runId}`,
+    name: firstWorkspaceName,
+    description: "Selection regression workspace",
+    projectIds: [],
+    worktrees: [],
+    worktreeRoot: "",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const secondWorkspace = {
+    ...firstWorkspace,
+    id: `ws-second-${runId}`,
+    name: secondWorkspaceName
+  };
+  const spec = {
+    background: "Selection regression",
+    userGoal: "Switch request details across workspaces",
+    functionalRequirements: [],
+    nonFunctionalRequirements: [],
+    affectedSurfaces: ["Workspace sidebar"],
+    outOfScope: [],
+    acceptanceCriteria: [],
+    openQuestions: []
+  };
+  const firstQuest = {
+    id: `quest-source-${runId}`,
+    workspaceId: firstWorkspace.id,
+    title: firstQuestTitle,
+    requirement: "First workspace request",
+    status: "ready",
+    spec,
+    agentBackendId: "mock",
+    affectedProjectIds: [],
+    worktrees: [],
+    changedFiles: [],
+    validationResults: [],
+    reviewNotes: [],
+    deliveryResults: [],
+    capabilityRecommendations: [],
+    autoApprovePlan: false,
+    createdAt,
+    updatedAt: createdAt
+  };
+  const secondQuest = {
+    ...firstQuest,
+    id: `quest-second-${runId}`,
+    workspaceId: secondWorkspace.id,
+    title: secondQuestTitle,
+    requirement: "Second workspace request"
+  };
+
+  await page.route("**/api/state", (route) => route.fulfill({
+    json: {
+      workspaces: [firstWorkspace, secondWorkspace],
+      projects: [],
+      quests: [firstQuest, secondQuest],
+      events: [],
+      knowledge: [],
+      capabilities: [],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: [],
+        commandTemplates: [],
+        fileScopes: [],
+        networkScopes: [],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local-worktree",
+        updatedAt: createdAt
+      },
+      auditLog: [],
+      commandApprovals: [],
+      engine: {
+        mode: "cli",
+        cliId: "mock",
+        cliModels: {},
+        byokProviders: {},
+        activeByokProviderId: "openai",
+        modelKits: {},
+        updatedAt: createdAt
+      },
+      subAgents: {},
+      userPreferences: {},
+      failurePatterns: {}
+    }
+  }));
+  await page.route("**/api/agent-backends", (route) => route.fulfill({
+    json: [{ id: "mock", name: "Mock Agent", available: true, configured: true, detail: "Mock backend" }]
+  }));
+  await page.route("**/api/product-readiness", (route) => route.fulfill({
+    json: {
+      version: "test",
+      status: "prototype-ready",
+      milestones: [],
+      workspaceTemplates: [],
+      dependencyMap: { nodes: [], edges: [] },
+      governance: []
+    }
+  }));
+
+  await page.goto("/");
+  await page.locator(".workspace-title-button").filter({ hasText: secondWorkspaceName }).click();
+  await expect(page.getByRole("heading", { name: secondQuestTitle })).toBeVisible();
+
+  const firstQuestButton = page.getByRole("button", { name: firstQuestTitle, exact: false });
+  await firstQuestButton.click();
+  await expect(page.getByRole("heading", { name: firstQuestTitle })).toBeVisible();
+});
+
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Heavy end-to-end flow: settings + real git worktree checkout + streamed spec + delivery.
   test.setTimeout(120_000);
-  const apiBase = "http://127.0.0.1:4300";
   await page.goto("/");
 
   // The fresh e2e state has no ModelKit, so seedBuiltInAgents skips and no entry sub-agent
