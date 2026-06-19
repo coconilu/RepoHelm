@@ -143,12 +143,8 @@ test("selects the owning workspace when clicking a request from another workspac
   await page.locator(".workspace-title-button").filter({ hasText: secondWorkspaceName }).click();
   await expect(page.getByRole("heading", { name: secondQuestTitle })).toBeVisible();
 
-  const firstWorkspaceNode = page.locator(".workspace-node").filter({ hasText: firstWorkspace.name });
-  const firstQuestButton = page.getByRole("button", { name: new RegExp(firstQuestTitle) });
-  if (!(await firstQuestButton.isVisible())) {
-    await firstWorkspaceNode.getByRole("button", { name: "展开 workspace" }).click();
-  }
-  await page.getByRole("button", { name: new RegExp(firstQuestTitle) }).click();
+  const firstQuestButton = page.getByRole("button", { name: firstQuestTitle, exact: false });
+  await firstQuestButton.click();
   await expect(page.getByRole("heading", { name: firstQuestTitle })).toBeVisible();
 });
 
