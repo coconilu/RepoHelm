@@ -9,9 +9,10 @@ export async function createFixtureRepo(options: {
   repoRoot: string;
   runDir: string;
   fixtureName: string;
+  targetName?: string;
 }): Promise<string> {
   const source = join(options.repoRoot, "fixtures", "repos", options.fixtureName);
-  const target = join(options.runDir, "repos", options.fixtureName);
+  const target = join(options.runDir, "repos", options.targetName ?? options.fixtureName);
   await rm(target, { recursive: true, force: true });
   await mkdir(target, { recursive: true });
   await cp(source, target, { recursive: true });

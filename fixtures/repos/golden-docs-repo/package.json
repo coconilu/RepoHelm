@@ -1,0 +1,9 @@
+{
+  "name": "repohelm-golden-docs-repo",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node -e \"import('node:fs/promises').then((fs) => fs.readFile('docs/release-notes.md', 'utf8')).then((text) => { if (!text.includes('offer status')) process.exit(1); console.log('docs ok'); })\""
+  }
+}
