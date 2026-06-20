@@ -19,6 +19,9 @@ import { InMemoryWikiStore, type WikiStore } from "./wiki-store.js";
 import { normalizeSandboxRuntimeId } from "./sandbox.js";
 import type {
   AgentEvent,
+  AgentEventPhase,
+  AgentEventSeverity,
+  AgentEventVisibility,
   AuditLogEntry,
   CapabilityDefinition,
   CapabilityRecommendation,
@@ -71,6 +74,55 @@ import { defaultEngineConfig, type StateStore } from "./store.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
+
+type AgentEventMeta = Partial<Pick<AgentEvent, "phase" | "visibility" | "severity" | "stepId" | "projectId">>;
+
+function defaultEventMeta(type: string): Pick<AgentEvent, "phase" | "visibility" | "severity"> {
+  let phase: AgentEventPhase = "audit";
+  let visibility: AgentEventVisibility = "audit";
+  let severity: AgentEventSeverity = "info";
+
+  if (type.startsWith("quest.") || type.startsWith("spec.") || type.startsWith("knowledge.") || type.startsWith("preference.") || type.startsWith("risk.") || type.startsWith("capability.")) {
+    phase = type.startsWith("spec.") ? "spec" : "plan";
+    visibility = type === "risk.warning" ? "process" : "milestone";
+    severity = type === "risk.warning" ? "warning" : "info";
+  } else if (type.startsWith("plan.") || type.startsWith("delegate.")) {
+    phase = type.startsWith("delegate.") ? "execute" : "plan";
+    visibility = "milestone";
+    severity = type.endsWith(".rejected") ? "warning" : "info";
+  } else if (type.startsWith("worktree.")) {
+    phase = "prepare";
+    visibility = "milestone";
+    severity = type.endsWith(".failed") ? "error" : "success";
+  } else if (type.startsWith("step.")) {
+    phase = "execute";
+    visibility = "milestone";
+    severity = type.endsWith(".failed") ? "error" : "success";
+  } else if (type.startsWith("orchestrator.")) {
+    phase = "review";
+    visibility = "summary";
+    severity = type.endsWith(".failed") ? "error" : type.endsWith(".no_changes") ? "warning" : "success";
+  } else if (type.startsWith("delivery.")) {
+    phase = "deliver";
+    visibility = "summary";
+    severity = type.endsWith(".partial") || type.endsWith(".skipped") ? "warning" : "success";
+  } else if (type === "agent.command") {
+    phase = "validate";
+    visibility = "audit";
+  } else if (type === "agent.file_change") {
+    phase = "execute";
+    visibility = "process";
+    severity = "success";
+  } else if (type === "agent.message") {
+    phase = "execute";
+    visibility = "process";
+  } else if (type.startsWith("agent.")) {
+    phase = "audit";
+    visibility = "audit";
+  }
+
+  return { phase, visibility, severity };
+}
 
 /**
  * Return the first shell control/metacharacter found in a command, or undefined.
@@ -1910,7 +1962,8 @@ export class RepoHelmService {
           created.status === "created" ? "worktree.created" : "worktree.failed",
           created.status === "created" ? "Worktree 已创建" : "Worktree 创建失败",
           `${project.name}: ${created.note}`,
-          "Worktree Manager"
+          "Worktree Manager",
+          { projectId }
         )
       );
     }
@@ -2122,17 +2175,18 @@ export class RepoHelmService {
           ),
       // Surface the entry agent's own loop events (delegate tool calls / messages)
       // before the per-delegation worker events below.
-      ...(result.entryEvents ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent)),
-      ...result.delegations.flatMap((d) => [
+      ...(result.entryEvents ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent, e)),
+      ...result.delegations.flatMap((d, index) => [
         // Surface the worker's fine-grained execution events (tool calls,
         // messages, command output) first, then the step's conclusion.
-        ...(d.events ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent)),
+        ...(d.events ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent, { ...e, stepId: e.stepId ?? `step_${index + 1}` })),
         this.event(
           questId,
           d.ok ? "step.completed" : "step.failed",
           `${d.ok ? "步骤完成" : "步骤失败"}: ${d.agentName}`,
           d.summary,
-          d.agentName
+          d.agentName,
+          { stepId: `step_${index + 1}` }
         )
       ]),
       this.event(
@@ -2922,8 +2976,8 @@ export class RepoHelmService {
     }
     yield { type: "spec_ready", spec };
 
-    const emit = async (type: string, title: string, detail: string, agent: string) => {
-      const ev = this.event(questId, type, title, detail, agent);
+    const emit = async (type: string, title: string, detail: string, agent: string, meta: AgentEventMeta = {}) => {
+      const ev = this.event(questId, type, title, detail, agent, meta);
       await this.mutateState(async (s) => {
         const current = s.quests.find((q) => q.id === questId);
         if (current?.status === "cancelled") {
@@ -2974,7 +3028,7 @@ export class RepoHelmService {
         yield { type: "done", quest: cancelled };
         return;
       }
-      yield { type: "event_added", event: await emit("risk.warning", "风险提示已生成", `发现 ${riskPatterns.length} 条相关失败经验，已提示 Agent 注意规避。`, "失败经验助手") };
+      yield { type: "event_added", event: await emit("risk.warning", "风险提示已生成", `发现 ${riskPatterns.length} 条相关失败经验，已提示 Agent 注意规避。`, "失败经验助手", { severity: "warning", visibility: "process" }) };
     }
 
     const caps = this.recommendCapabilities(state.capabilities, quest.requirement, now());
@@ -3401,7 +3455,18 @@ export class RepoHelmService {
       }));
   }
 
-  private event(questId: string, type: string, title: string, detail: string, agent: string): AgentEvent {
+  private event(
+    questId: string,
+    type: string,
+    title: string,
+    detail: string,
+    agent: string,
+    meta: AgentEventMeta = {}
+  ): AgentEvent {
+    const defaults = defaultEventMeta(type);
+    const phase = meta.phase ?? defaults.phase;
+    const visibility = meta.visibility ?? defaults.visibility;
+    const severity = meta.severity ?? defaults.severity;
     return {
       id: id("event"),
       questId,
@@ -3409,7 +3474,12 @@ export class RepoHelmService {
       title,
       detail,
       agent,
-      createdAt: now()
+      createdAt: now(),
+      phase,
+      visibility,
+      severity,
+      ...(meta.stepId ? { stepId: meta.stepId } : {}),
+      ...(meta.projectId ? { projectId: meta.projectId } : {})
     };
   }
 

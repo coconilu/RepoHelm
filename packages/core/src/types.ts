@@ -123,6 +123,20 @@ export interface ChangedFile {
   worktreePath: string;
 }
 
+export type AgentEventPhase =
+  | "spec"
+  | "plan"
+  | "prepare"
+  | "execute"
+  | "validate"
+  | "review"
+  | "deliver"
+  | "audit";
+
+export type AgentEventVisibility = "summary" | "milestone" | "process" | "audit";
+
+export type AgentEventSeverity = "info" | "success" | "warning" | "error";
+
 export interface AgentEvent {
   id: string;
   questId: string;
@@ -131,6 +145,11 @@ export interface AgentEvent {
   detail: string;
   agent: string;
   createdAt: string;
+  phase?: AgentEventPhase;
+  visibility?: AgentEventVisibility;
+  severity?: AgentEventSeverity;
+  stepId?: string;
+  projectId?: string;
 }
 
 export interface DeliveryState {

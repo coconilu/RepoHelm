@@ -2661,6 +2661,35 @@ describe("CLI backend timeline propagation", () => {
       const toolCall = events.find((event) => event.type === "agent.tool_call");
       expect(toolCall).toBeDefined();
       expect(toolCall!.detail).toContain("pnpm test");
+      expect(toolCall).toMatchObject({
+        phase: "execute",
+        visibility: "audit",
+        severity: "info",
+        stepId: "step_1"
+      });
+
+      const worktreeCreated = events.find((event) => event.type === "worktree.created");
+      expect(worktreeCreated).toMatchObject({
+        phase: "prepare",
+        visibility: "milestone",
+        severity: "success",
+        projectId: project.id
+      });
+
+      const stepCompleted = events.find((event) => event.type === "step.completed");
+      expect(stepCompleted).toMatchObject({
+        phase: "execute",
+        visibility: "milestone",
+        severity: "success",
+        stepId: "step_1"
+      });
+
+      const orchestratorCompleted = events.find((event) => event.type === "orchestrator.completed");
+      expect(orchestratorCompleted).toMatchObject({
+        phase: "review",
+        visibility: "summary",
+        severity: "success"
+      });
     } finally {
       if (oldCommand === undefined) delete process.env.REPOHELM_GENERIC_CLI_COMMAND;
       else process.env.REPOHELM_GENERIC_CLI_COMMAND = oldCommand;

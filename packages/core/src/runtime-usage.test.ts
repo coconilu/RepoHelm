@@ -59,7 +59,10 @@ describe("runtime usage tracking", () => {
     expect(event).toMatchObject({
       type: "agent.usage",
       title: "Token / 成本记录",
-      agent: "Worker"
+      agent: "Worker",
+      phase: "audit",
+      visibility: "audit",
+      severity: "info"
     });
     expect(event!.detail).toContain("source=byok-backend");
     expect(event!.detail).toContain("modelKit=mk-fast");

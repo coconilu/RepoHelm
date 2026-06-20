@@ -21,6 +21,9 @@ export interface CliStreamEvent {
   title: string;
   detail: string;
   agent: string;
+  phase?: "execute" | "validate" | "audit";
+  visibility?: "summary" | "milestone" | "process" | "audit";
+  severity?: "info" | "success" | "warning" | "error";
 }
 
 interface AssistantContentBlock {
@@ -70,7 +73,9 @@ function parseCodexItem(item: CodexItem, agent: string): CliStreamEvent | undefi
   switch (item.type) {
     case "agent_message": {
       const text = (item.text ?? "").trim();
-      return text ? { type: "agent.message", title: "助手消息", detail: text, agent } : undefined;
+      return text
+        ? { type: "agent.message", title: "助手消息", detail: text, agent, phase: "execute", visibility: "process", severity: "info" }
+        : undefined;
     }
     case "reasoning":
       // Model's private chain-of-thought — keep it off the content/timeline.
@@ -79,22 +84,38 @@ function parseCodexItem(item: CodexItem, agent: string): CliStreamEvent | undefi
       const detail = (item.changes ?? [])
         .map((change) => `${change.kind ?? "edit"} ${change.path ?? "(unknown)"}`)
         .join("\n");
-      return { type: "agent.file_change", title: "文件变更", detail: detail || "(no files)", agent };
+      return {
+        type: "agent.file_change",
+        title: "文件变更",
+        detail: detail || "(no files)",
+        agent,
+        phase: "execute",
+        visibility: "process",
+        severity: "success"
+      };
     }
     case "command_execution": {
       const output = truncateEnds((item.aggregated_output ?? "").trim(), 800);
       const exit = item.exit_code === null || item.exit_code === undefined ? "" : ` (exit ${item.exit_code})`;
       const detail = [item.command, output].filter(Boolean).join("\n");
-      return { type: "agent.command", title: `执行命令${exit}`, detail: detail || "(no output)", agent };
+      return {
+        type: "agent.command",
+        title: `执行命令${exit}`,
+        detail: detail || "(no output)",
+        agent,
+        phase: "validate",
+        visibility: item.exit_code && item.exit_code !== 0 ? "process" : "audit",
+        severity: item.exit_code && item.exit_code !== 0 ? "error" : "info"
+      };
     }
     case "mcp_tool_call": {
       const name = item.name ?? "tool";
       const args = item.arguments ?? item.input;
       const detail = args === undefined ? "" : JSON.stringify(args);
-      return { type: "agent.tool_call", title: `调用工具: ${name}`, detail, agent };
+      return { type: "agent.tool_call", title: `调用工具: ${name}`, detail, agent, phase: "execute", visibility: "audit", severity: "info" };
     }
     default:
-      return { type: "agent.output", title: "输出", detail: JSON.stringify(item), agent };
+      return { type: "agent.output", title: "输出", detail: JSON.stringify(item), agent, phase: "audit", visibility: "audit", severity: "info" };
   }
 }
 
@@ -117,11 +138,11 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
     parsed = JSON.parse(trimmed);
   } catch {
     // Not JSON — surface the raw line as output (covers print-mode CLIs).
-    return { type: "agent.output", title: "输出", detail: trimmed, agent };
+    return { type: "agent.output", title: "输出", detail: trimmed, agent, phase: "audit", visibility: "audit", severity: "info" };
   }
 
   if (typeof parsed !== "object" || parsed === null) {
-    return { type: "agent.output", title: "输出", detail: trimmed, agent };
+    return { type: "agent.output", title: "输出", detail: trimmed, agent, phase: "audit", visibility: "audit", severity: "info" };
   }
 
   const obj = parsed as {
@@ -151,7 +172,10 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
           type: "agent.usage",
           title: "Token 使用",
           detail: JSON.stringify(usage),
-          agent
+          agent,
+          phase: "audit",
+          visibility: "audit",
+          severity: "info"
         }
       : undefined;
   }
@@ -168,13 +192,16 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
       type: "agent.output",
       title: "错误",
       detail: typeof detail === "string" ? detail : JSON.stringify(detail),
-      agent
+      agent,
+      phase: "execute",
+      visibility: "process",
+      severity: "error"
     };
   }
 
   if (obj.type === "result") {
     const detail = typeof obj.result === "string" ? obj.result : JSON.stringify(obj.result ?? "");
-    return { type: "agent.completed", title: "执行完成", detail, agent };
+    return { type: "agent.completed", title: "执行完成", detail, agent, phase: "execute", visibility: "milestone", severity: "success" };
   }
 
   if (obj.type === "assistant" && Array.isArray(obj.message?.content)) {
@@ -183,18 +210,18 @@ export function parseCliStreamLine(line: string, agent: string): CliStreamEvent 
     if (toolUse) {
       const name = toolUse.name ?? "tool";
       const input = toolUse.input === undefined ? "" : JSON.stringify(toolUse.input);
-      return { type: "agent.tool_call", title: `调用工具: ${name}`, detail: input, agent };
+      return { type: "agent.tool_call", title: `调用工具: ${name}`, detail: input, agent, phase: "execute", visibility: "audit", severity: "info" };
     }
     const textBlock = blocks.find((block) => block.type === "text" && typeof block.text === "string");
     if (textBlock?.text) {
-      return { type: "agent.message", title: "助手消息", detail: textBlock.text, agent };
+      return { type: "agent.message", title: "助手消息", detail: textBlock.text, agent, phase: "execute", visibility: "process", severity: "info" };
     }
   }
 
   // Not a recognized streaming envelope — likely a print-mode CLI emitting its whole
   // answer (plan/result payload) as a single JSON line. Preserve it as raw output so
   // it reaches `content` rather than being silently dropped.
-  return { type: "agent.output", title: "输出", detail: trimmed, agent };
+  return { type: "agent.output", title: "输出", detail: trimmed, agent, phase: "audit", visibility: "audit", severity: "info" };
 }
 
 export interface RunStreamingCliOptions {

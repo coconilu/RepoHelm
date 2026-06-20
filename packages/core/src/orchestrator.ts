@@ -32,7 +32,17 @@ import {
   parseLeadDecision,
   type LeadDecision
 } from "./lead-decision.js";
-import type { ModelKit, OrchestrationPlan, OrchestrationPlanStep, Quest, SubAgent, WorktreeState } from "./types.js";
+import type {
+  AgentEventPhase,
+  AgentEventSeverity,
+  AgentEventVisibility,
+  ModelKit,
+  OrchestrationPlan,
+  OrchestrationPlanStep,
+  Quest,
+  SubAgent,
+  WorktreeState
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -145,6 +155,11 @@ export interface BackendEvent {
   title: string;
   detail: string;
   agent: string;
+  phase?: AgentEventPhase;
+  visibility?: AgentEventVisibility;
+  severity?: AgentEventSeverity;
+  stepId?: string;
+  projectId?: string;
 }
 
 export interface SubAgentBackendResult {
@@ -1116,7 +1131,15 @@ export class SubAgentOrchestrator {
         }
         if (result.content) {
           finalContent = result.content;
-          events.push({ type: "agent.message", title: "助手消息", detail: truncate(result.content, 500), agent: agentName });
+          events.push({
+            type: "agent.message",
+            title: "助手消息",
+            detail: truncate(result.content, 500),
+            agent: agentName,
+            phase: "execute",
+            visibility: "process",
+            severity: "info"
+          });
         }
         if (!result.toolCalls || result.toolCalls.length === 0) {
           break;
@@ -1133,7 +1156,10 @@ export class SubAgentOrchestrator {
             type: "agent.tool_call",
             title: `调用工具: ${call.function.name}`,
             detail: truncate(call.function.arguments || "", 300),
-            agent: agentName
+            agent: agentName,
+            phase: "execute",
+            visibility: "audit",
+            severity: "info"
           });
           const output = await tools.handle(call.function.name, args);
           messages.push({ role: "tool", tool_call_id: call.id, content: output });
