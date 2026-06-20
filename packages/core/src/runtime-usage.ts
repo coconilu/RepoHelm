@@ -101,7 +101,15 @@ export function runtimeUsageEvent(
   usage: TokenUsage | undefined,
   agent: string,
   source: string
-): { type: string; title: string; detail: string; agent: string } | undefined {
+): {
+  type: string;
+  title: string;
+  detail: string;
+  agent: string;
+  phase: "audit";
+  visibility: "audit";
+  severity: "info";
+} | undefined {
   if (!usage) {
     return undefined;
   }
@@ -109,6 +117,9 @@ export function runtimeUsageEvent(
     type: "agent.usage",
     title: "Token / 成本记录",
     detail: formatRuntimeUsageDetail(modelKit, usage, source),
-    agent
+    agent,
+    phase: "audit",
+    visibility: "audit",
+    severity: "info"
   };
 }

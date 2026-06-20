@@ -242,7 +242,10 @@ export function App() {
     [state?.quests, workspace?.id]
   );
   const selectedQuest = draftWorkspaceId === workspace?.id ? undefined : quests.find((quest) => quest.id === selectedQuestId) ?? quests[0];
-  const questEvents = state?.events.filter((event) => event.questId === selectedQuest?.id) ?? [];
+  const questEvents = useMemo(
+    () => state?.events.filter((event) => event.questId === selectedQuest?.id) ?? [],
+    [selectedQuest?.id, state?.events]
+  );
 
   // Resume spec streaming for a quest left in "specifying" (e.g. the page was refreshed
   // or navigated away mid-stream), so it never gets stuck on the placeholder spec.
@@ -730,6 +733,7 @@ export function App() {
               onEntrySubAgentChange={setSelectedEntrySubAgentId}
               onCreateQuest={createQuest}
               onDeliverQuest={deliverQuest}
+              onInspectorTabChange={setInspectorTab}
               onRejectPlan={rejectPlan}
               onRequirementChange={setQuestRequirement}
             />
@@ -1002,7 +1006,10 @@ const INTERNAL_EVENT_TYPES = new Set([
 
 /** Icon per structured agent-event type, so the Quest timeline distinguishes
  *  file edits, command/test output and tool calls at a glance. */
-function eventIcon(type: string) {
+function eventIcon(type: string, severity?: AgentEvent["severity"]) {
+  if (severity === "error") {
+    return <X size={15} />;
+  }
   switch (type) {
     case "agent.file_change":
       return <Pencil size={15} />;
@@ -1015,6 +1022,268 @@ function eventIcon(type: string) {
     default:
       return <CheckCircle2 size={15} />;
   }
+}
+
+const RAW_DEFAULT_EVENT_TYPES = new Set(["agent.output", "agent.tool_call", "agent.usage"]);
+const PROCESS_EVENT_TYPES = new Set(["agent.message", "agent.command", "agent.file_change"]);
+const MILESTONE_EVENT_TYPES = new Set([
+  "quest.created",
+  "spec.generated",
+  "knowledge.retrieved",
+  "preference.injected",
+  "risk.warning",
+  "capability.recommended",
+  "plan.created",
+  "plan.generated",
+  "plan.approved",
+  "plan.rejected",
+  "delegate.prepared",
+  "delegate.started",
+  "worktree.created",
+  "worktree.failed",
+  "step.completed",
+  "step.failed",
+  "orchestrator.completed",
+  "orchestrator.failed",
+  "orchestrator.no_changes",
+  "delivery.completed",
+  "delivery.partial",
+  "delivery.skipped",
+  "quest.cancelled"
+]);
+
+function orderedQuestEvents(events: AgentEvent[], options: { includeInternal?: boolean } = {}) {
+  return [...events]
+    .filter((event) => options.includeInternal || !INTERNAL_EVENT_TYPES.has(event.type))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function visibleQuestEvents(events: AgentEvent[]) {
+  return orderedQuestEvents(events);
+}
+
+function isAuditEvent(event: AgentEvent) {
+  return event.visibility === "audit" || RAW_DEFAULT_EVENT_TYPES.has(event.type);
+}
+
+function isFailedQuest(quest: Quest, events: AgentEvent[]) {
+  return (
+    quest.status === "blocked" ||
+    quest.status === "cancelled" ||
+    events.some((event) => event.type === "step.failed" || event.type === "orchestrator.failed")
+  );
+}
+
+function isMilestoneEvent(event: AgentEvent, includeFailureDetails = false) {
+  if (includeFailureDetails && event.severity === "error") {
+    return true;
+  }
+  if (isAuditEvent(event)) {
+    return false;
+  }
+  return event.visibility === "summary" || event.visibility === "milestone" || MILESTONE_EVENT_TYPES.has(event.type);
+}
+
+function compactDetail(detail: string, max = 180) {
+  const normalized = detail.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, max - 1)}…`;
+}
+
+function questResultTone(quest: Quest) {
+  if (quest.status === "ready" || quest.status === "delivered") return "success";
+  if (quest.status === "blocked" || quest.status === "cancelled") return "danger";
+  if (quest.status === "planning" && quest.planApproval?.status === "pending") return "warning";
+  return "active";
+}
+
+function questResultTitle(quest: Quest) {
+  if (quest.status === "ready") return "结果已就绪，等待交付";
+  if (quest.status === "delivered") return "结果已交付";
+  if (quest.status === "blocked") return "任务已阻塞";
+  if (quest.status === "cancelled") return "任务已取消";
+  if (quest.status === "planning" && quest.planApproval?.status === "pending") return "计划待确认";
+  return statusLabel[quest.status] ?? "任务进行中";
+}
+
+function hasQuestResultCard(quest: Quest) {
+  return (
+    quest.status === "ready" ||
+    quest.status === "delivered" ||
+    quest.status === "blocked" ||
+    quest.status === "cancelled" ||
+    (quest.status === "planning" && quest.planApproval?.status === "pending")
+  );
+}
+
+function latestDetail(items: string[]) {
+  return items.length > 0 ? items[items.length - 1] : "";
+}
+
+function projectName(projects: Project[], projectId: string) {
+  return projects.find((project) => project.id === projectId)?.name ?? projectId;
+}
+
+function changedProjectSummary(quest: Quest, projects: Project[]) {
+  const counts = new Map<string, number>();
+  for (const file of quest.changedFiles) {
+    const projectId = typeof file === "string" ? "unknown" : file.projectId;
+    counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .slice(0, 3)
+    .map(([projectId, count]) => `${projectId === "unknown" ? "unknown project" : projectName(projects, projectId)} · ${count}`)
+    .join(" / ");
+}
+
+function QuestResultSummary({
+  busy,
+  events,
+  onDeliverQuest,
+  onInspectorTabChange,
+  projects,
+  quest
+}: {
+  busy: boolean;
+  events: AgentEvent[];
+  onDeliverQuest: () => void;
+  onInspectorTabChange: (tab: InspectorTab) => void;
+  projects: Project[];
+  quest: Quest;
+}) {
+  const tone = questResultTone(quest);
+  const changedCount = quest.changedFiles.length;
+  const completedSteps = events.filter((event) => event.type === "step.completed").length;
+  const failedSteps = events.filter((event) => event.type === "step.failed").length;
+  const stepCount = completedSteps + failedSteps;
+  const latestSummary = [...events].reverse().find((event) => event.visibility === "summary" || event.type.startsWith("orchestrator.") || event.type.startsWith("delivery."));
+  const detail =
+    latestDetail(quest.reviewNotes) ||
+    latestSummary?.detail ||
+    (changedCount > 0
+      ? `执行产生了 ${changedCount} 个文件变更。`
+      : "Spec、Plan、文件和 Diff 证据已保留。");
+  const projectSummary = changedProjectSummary(quest, projects);
+  const canDeliver = changedCount > 0 && quest.status !== "delivered" && quest.status !== "cancelled";
+  const canOpenPlan = Boolean(quest.planPath);
+
+  return (
+    <section className={`quest-result-card ${tone}`} aria-label="Quest 结果摘要">
+      <div className="quest-result-icon">
+        {tone === "success" ? <CheckCircle2 size={18} /> : tone === "danger" ? <X size={18} /> : tone === "warning" ? <Route size={18} /> : <RefreshCw size={18} />}
+      </div>
+      <div className="quest-result-main">
+        <div className="quest-result-heading">
+          <div>
+            <p className="eyebrow">结果</p>
+            <h2>{questResultTitle(quest)}</h2>
+          </div>
+          <em className={statusClass[quest.status] ?? "badge"}>{quest.status === "planning" && quest.planApproval?.status === "pending" ? "待确认" : statusLabel[quest.status]}</em>
+        </div>
+        <p>{compactDetail(detail, 220)}</p>
+        {projectSummary ? <span className="quest-result-subtle">{projectSummary}</span> : null}
+        <div className="quest-result-metrics">
+          <button type="button" onClick={() => onInspectorTabChange("files")} disabled={changedCount === 0}>
+            <FileText size={14} />
+            <span>{changedCount} 文件</span>
+          </button>
+          <button type="button" onClick={() => onInspectorTabChange("plan")} disabled={!canOpenPlan}>
+            <Route size={14} />
+            <span>{stepCount > 0 ? `${stepCount} 步骤` : "Plan"}</span>
+          </button>
+          <button type="button" onClick={() => onInspectorTabChange("diff")} disabled={changedCount === 0}>
+            <Pencil size={14} />
+            <span>Diff</span>
+          </button>
+          <button type="button" onClick={onDeliverQuest} disabled={busy || !canDeliver}>
+            <GitPullRequest size={14} />
+            <span>{quest.status === "delivered" ? "Delivered" : "交付"}</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function QuestMilestones({
+  events,
+  quest
+}: {
+  events: AgentEvent[];
+  quest: Quest;
+}) {
+  const includeFailureDetails = isFailedQuest(quest, events);
+  const milestones = events.filter((event) => isMilestoneEvent(event, includeFailureDetails));
+  const processCount = events.filter((event) => PROCESS_EVENT_TYPES.has(event.type) || event.visibility === "process").length;
+
+  if (milestones.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="quest-milestones" aria-label="关键进展">
+      <div className="quest-section-heading">
+        <h2>关键进展</h2>
+        <span>阶段摘要</span>
+      </div>
+      <div className="milestone-list">
+        {milestones.slice(-8).map((event) => (
+          <article className={`milestone-row ${event.severity ?? "info"}`} key={event.id}>
+            <div className="milestone-dot">{eventIcon(event.type, event.severity)}</div>
+            <div>
+              <strong>{event.title}</strong>
+              <span>{event.agent}</span>
+              <p>{compactDetail(event.detail)}</p>
+            </div>
+          </article>
+        ))}
+      </div>
+      {processCount > 0 ? <p className="quest-section-note">{processCount} 条过程事件</p> : null}
+    </section>
+  );
+}
+
+function RawAuditLog({ events }: { events: AgentEvent[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (events.length === 0) {
+    return null;
+  }
+  const hiddenCount = events.filter(
+    (event) => isAuditEvent(event) || PROCESS_EVENT_TYPES.has(event.type) || INTERNAL_EVENT_TYPES.has(event.type)
+  ).length;
+  const internalCount = events.filter((event) => INTERNAL_EVENT_TYPES.has(event.type)).length;
+  const shownEvents = expanded ? events : [];
+
+  return (
+    <section className="raw-audit-log" aria-label="原始审计日志">
+      <div>
+        <h2>Raw Audit Log {expanded ? "已展开" : "已折叠"}</h2>
+        <p>
+          {events.length} 条原始事件完整保留，包含 {hiddenCount} 条 agent/tool/internal 过程记录
+          {internalCount > 0 ? `，其中 ${internalCount} 条为 internal 事件` : ""}。
+        </p>
+      </div>
+      <button className="ghost-action" type="button" onClick={() => setExpanded((current) => !current)}>
+        {expanded ? "收起审计日志" : "显示全部事件"}
+      </button>
+      {expanded ? (
+        <div className="raw-audit-list">
+          {shownEvents.map((event) => (
+            <article className="raw-audit-row" key={event.id}>
+              <div className="raw-audit-row-header">
+                <strong>{event.title}</strong>
+                <span>{event.type}</span>
+              </div>
+              <p>{event.detail}</p>
+              <em>{event.agent}</em>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function QuestStage({
@@ -1036,6 +1305,7 @@ function QuestStage({
   onEntrySubAgentChange,
   onCreateQuest,
   onDeliverQuest,
+  onInspectorTabChange,
   onRejectPlan,
   onRequirementChange
 }: {
@@ -1057,6 +1327,7 @@ function QuestStage({
   onEntrySubAgentChange: (id: string) => void;
   onCreateQuest: (event: FormEvent) => void;
   onDeliverQuest: () => void;
+  onInspectorTabChange: (tab: InspectorTab) => void;
   onRejectPlan: () => void;
   onRequirementChange: (value: string) => void;
 }) {
@@ -1106,6 +1377,10 @@ function QuestStage({
   const affectedProjectCount = quest ? quest.affectedProjectIds.length : projects.length;
   const canDeliver = Boolean(quest && quest.changedFiles.length > 0);
   const canCancel = Boolean(quest && busy && pendingAction && pendingAction !== "正在拒绝计划...");
+  const orderedEvents = useMemo(() => visibleQuestEvents(events), [events]);
+  const auditEvents = useMemo(() => orderedQuestEvents(events, { includeInternal: true }), [events]);
+  const showResultCard = Boolean(quest && hasQuestResultCard(quest) && !pendingAction);
+  const showWorkflowIntro = Boolean(quest && !showResultCard);
 
   useEffect(() => {
     const chatThread = chatThreadRef.current;
@@ -1113,7 +1388,7 @@ function QuestStage({
       return;
     }
     chatThread.scrollTop = chatThread.scrollHeight;
-  }, [events.length, quest?.id, pendingAction]);
+  }, [events.length, pendingAction, quest?.id, showResultCard]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -1208,45 +1483,22 @@ function QuestStage({
                 <p>{quest.requirement}</p>
               </div>
             </article>
-            <article className="chat-message assistant">
-              <div className="chat-avatar">
-                <Bot size={16} />
-              </div>
-              <div className="chat-bubble">
-                <strong>{activeEntryAgent?.name ?? "RepoHelm Agent"}</strong>
-                <p>
-                  Request 已进入工作流。右侧会展示 Supervisor 分派进展、Spec、执行产物和 diff。
-                </p>
-              </div>
-            </article>
-            {analysisBubble}
-            {[...events]
-              .filter((event) => !INTERNAL_EVENT_TYPES.has(event.type))
-              .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-              .map((event) => (
-                <article className="chat-message assistant compact" key={event.id}>
-                  <div className="chat-avatar">
-                    {eventIcon(event.type)}
-                  </div>
-                  <div className="chat-bubble">
-                    <strong>{event.title}</strong>
-                    <span>{event.agent}</span>
-                    <p>{event.detail}</p>
-                  </div>
-                </article>
-              ))}
-            {quest.planApproval?.status === "pending" && !pendingAction ? (
-              <article className="chat-message assistant compact">
+            {showWorkflowIntro ? (
+              <article className="chat-message assistant">
                 <div className="chat-avatar">
-                  <Route size={15} />
+                  <Bot size={16} />
                 </div>
                 <div className="chat-bubble">
-                  <strong>编排计划已生成</strong>
-                  <span>Supervisor</span>
-                  <p>请在右侧 Plan 面板查看执行步骤并确认（Approve &amp; Execute / Reject）。</p>
+                  <strong>{activeEntryAgent?.name ?? "RepoHelm Agent"}</strong>
+                  <p>
+                    Request 已进入工作流。右侧会展示 Supervisor 分派进展、Spec、执行产物和 diff。
+                  </p>
                 </div>
               </article>
             ) : null}
+            {analysisBubble}
+            <QuestMilestones events={orderedEvents} quest={quest} />
+            <RawAuditLog events={auditEvents} />
             {pendingAction ? (
               <article className="chat-message assistant compact">
                 <div className="chat-avatar">
@@ -1258,6 +1510,16 @@ function QuestStage({
                   <p>{pendingAction}</p>
                 </div>
               </article>
+            ) : null}
+            {showResultCard ? (
+              <QuestResultSummary
+                busy={busy}
+                events={orderedEvents}
+                onDeliverQuest={onDeliverQuest}
+                onInspectorTabChange={onInspectorTabChange}
+                projects={projects}
+                quest={quest}
+              />
             ) : null}
           </>
         )}

@@ -17,6 +17,7 @@ describe("parseCliStreamLine", () => {
     expect(event!.type).toBe("agent.message");
     expect(event!.detail).toContain("Updating the router config.");
     expect(event!.agent).toBe(AGENT);
+    expect(event).toMatchObject({ phase: "execute", visibility: "process", severity: "info" });
   });
 
   it("maps a Claude Code tool_use block to an agent.tool_call event with the tool name", () => {
@@ -32,6 +33,7 @@ describe("parseCliStreamLine", () => {
     expect(event!.type).toBe("agent.tool_call");
     expect(event!.title).toContain("Bash");
     expect(event!.detail).toContain("pnpm test");
+    expect(event).toMatchObject({ phase: "execute", visibility: "audit", severity: "info" });
   });
 
   it("maps a Claude Code success result to an agent.completed event", () => {
@@ -45,6 +47,7 @@ describe("parseCliStreamLine", () => {
     expect(event).toBeDefined();
     expect(event!.type).toBe("agent.completed");
     expect(event!.detail).toContain("Done. All tests pass.");
+    expect(event).toMatchObject({ phase: "execute", visibility: "milestone", severity: "success" });
   });
 
   it("treats a plain (non-JSON) text line as agent.output", () => {
@@ -52,6 +55,7 @@ describe("parseCliStreamLine", () => {
     expect(event).toBeDefined();
     expect(event!.type).toBe("agent.output");
     expect(event!.detail).toContain("Refactoring complete.");
+    expect(event).toMatchObject({ phase: "audit", visibility: "audit", severity: "info" });
   });
 
   it("ignores blank lines", () => {
@@ -113,6 +117,7 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     expect(event!.detail).toContain("add");
     expect(event!.detail).toContain("router.ts");
     expect(event!.detail).toContain("update");
+    expect(event).toMatchObject({ phase: "execute", visibility: "process", severity: "success" });
   });
 
   it("maps a Codex command_execution item to an agent.command event with command, exit code and output", () => {
@@ -133,6 +138,7 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     expect(event!.detail).toContain("pnpm test");
     expect(event!.detail).toContain("2 passed");
     expect(event!.title).toContain("0"); // exit code surfaced
+    expect(event).toMatchObject({ phase: "validate", visibility: "audit", severity: "info" });
   });
 
   it("keeps the TAIL of a long command output so trailing failure messages survive truncation", () => {
@@ -162,6 +168,7 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     // Truncation actually happened (an elision marker), so we did not dump 4KB.
     expect(event!.detail).toContain("省略");
     expect(event!.detail.length).toBeLessThan(1500);
+    expect(event).toMatchObject({ phase: "validate", visibility: "process", severity: "error" });
   });
 
   it("maps a Codex mcp_tool_call item to an agent.tool_call event", () => {
@@ -199,6 +206,7 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     expect(event!.type).toBe("agent.usage");
     expect(event!.detail).toContain("promptTokens");
     expect(event!.detail).toContain("completionTokens");
+    expect(event).toMatchObject({ phase: "audit", visibility: "audit", severity: "info" });
   });
 
   it("surfaces a Codex error/turn.failed as agent.output so the failure stays visible", () => {
@@ -206,6 +214,7 @@ describe("parseCliStreamLine (Codex exec --json)", () => {
     expect(event).toBeDefined();
     expect(event!.type).toBe("agent.output");
     expect(event!.detail).toContain("model overloaded");
+    expect(event).toMatchObject({ phase: "execute", visibility: "process", severity: "error" });
   });
 });
 

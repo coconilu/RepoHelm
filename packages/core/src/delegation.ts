@@ -62,7 +62,10 @@ export async function runDelegationLoop(
         type: "agent.message",
         title: "助手消息",
         detail: truncate(result.content, 500),
-        agent: deps.agentName
+        agent: deps.agentName,
+        phase: "execute",
+        visibility: "process",
+        severity: "info"
       });
     }
     if (!result.toolCalls || result.toolCalls.length === 0) {
@@ -83,7 +86,10 @@ export async function runDelegationLoop(
           type: "agent.tool_call",
           title: `委派任务: ${typeof args.agentId === "string" ? args.agentId : "?"}`,
           detail: truncate(call.function.arguments || "", 300),
-          agent: deps.agentName
+          agent: deps.agentName,
+          phase: "execute",
+          visibility: "process",
+          severity: "info"
         });
         output = await deps.onDelegate(args as unknown as DelegateInput);
         delegateCount += 1;
