@@ -148,6 +148,177 @@ test("selects the owning workspace when clicking a request from another workspac
   await expect(page.getByRole("heading", { name: firstQuestTitle })).toBeVisible();
 });
 
+test("surfaces failed command details in the default Quest timeline", async ({ page }) => {
+  const runId = Date.now().toString(36);
+  const workspaceName = `Failure Timeline ${runId}`;
+  const questTitle = `Blocked Quest ${runId}`;
+  const createdAt = new Date().toISOString();
+  const at = (offset: number) => new Date(Date.parse(createdAt) + offset).toISOString();
+  const workspace = {
+    id: `ws-failure-${runId}`,
+    name: workspaceName,
+    description: "Failure timeline regression workspace",
+    projectIds: [],
+    worktrees: [],
+    worktreeRoot: "",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const spec = {
+    background: "Failure visibility regression",
+    userGoal: "Keep failed command output visible",
+    functionalRequirements: [],
+    nonFunctionalRequirements: [],
+    affectedSurfaces: ["Quest timeline"],
+    outOfScope: [],
+    acceptanceCriteria: [],
+    openQuestions: []
+  };
+  const quest = {
+    id: `quest-failure-${runId}`,
+    workspaceId: workspace.id,
+    title: questTitle,
+    requirement: "Show failed command output without expanding raw audit.",
+    status: "blocked",
+    spec,
+    agentBackendId: "mock",
+    affectedProjectIds: [],
+    worktrees: [],
+    changedFiles: [],
+    validationResults: [],
+    reviewNotes: ["Worker failed while running validation."],
+    deliveryResults: [],
+    capabilityRecommendations: [],
+    autoApprovePlan: false,
+    createdAt,
+    updatedAt: createdAt
+  };
+  const events = [
+    {
+      id: `event-command-${runId}`,
+      questId: quest.id,
+      type: "agent.command",
+      title: "执行命令 (exit 1)",
+      detail: "pnpm test src/inventory.test.js\nstderr: missing findItem export",
+      agent: "QA Coder",
+      phase: "validate",
+      visibility: "process",
+      severity: "error",
+      createdAt: at(1)
+    },
+    {
+      id: `event-internal-${runId}`,
+      questId: quest.id,
+      type: "agent.backend.started",
+      title: "内部后端启动",
+      detail: "Internal backend bootstrap token preserved for audit.",
+      agent: "System",
+      phase: "prepare",
+      visibility: "audit",
+      severity: "info",
+      createdAt: at(2)
+    },
+    {
+      id: `event-output-${runId}`,
+      questId: quest.id,
+      type: "agent.output",
+      title: "错误",
+      detail: "CLI failed before completion: model overloaded",
+      agent: "QA Coder",
+      phase: "execute",
+      visibility: "audit",
+      severity: "error",
+      createdAt: at(3)
+    },
+    {
+      id: `event-step-${runId}`,
+      questId: quest.id,
+      type: "step.failed",
+      title: "步骤失败: QA Coder",
+      detail: "Validation failed.",
+      agent: "QA Coder",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "error",
+      createdAt: at(4)
+    },
+    {
+      id: `event-orchestrator-${runId}`,
+      questId: quest.id,
+      type: "orchestrator.failed",
+      title: "编排执行失败",
+      detail: "执行失败，保留错误输出供审计。",
+      agent: "QA Supervisor",
+      phase: "review",
+      visibility: "summary",
+      severity: "error",
+      createdAt: at(5)
+    }
+  ];
+
+  await page.route("**/api/state", (route) => route.fulfill({
+    json: {
+      workspaces: [workspace],
+      projects: [],
+      quests: [quest],
+      events,
+      knowledge: [],
+      capabilities: [],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: [],
+        commandTemplates: [],
+        fileScopes: [],
+        networkScopes: [],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local-worktree",
+        updatedAt: createdAt
+      },
+      auditLog: [],
+      commandApprovals: [],
+      engine: {
+        mode: "cli",
+        cliId: "mock",
+        cliModels: {},
+        byokProviders: {},
+        activeByokProviderId: "openai",
+        modelKits: {},
+        updatedAt: createdAt
+      },
+      subAgents: {},
+      userPreferences: {},
+      failurePatterns: {}
+    }
+  }));
+  await page.route("**/api/agent-backends", (route) => route.fulfill({
+    json: [{ id: "mock", name: "Mock Agent", available: true, configured: true, detail: "Mock backend" }]
+  }));
+  await page.route("**/api/product-readiness", (route) => route.fulfill({
+    json: {
+      version: "test",
+      status: "prototype-ready",
+      milestones: [],
+      workspaceTemplates: [],
+      dependencyMap: { nodes: [], edges: [] },
+      governance: []
+    }
+  }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
+  const rawAudit = page.getByLabel("原始审计日志");
+  await expect(rawAudit.getByText("Raw Audit Log 已折叠")).toBeVisible();
+  await expect(rawAudit.getByText("5 条原始事件完整保留")).toBeVisible();
+  await expect(rawAudit.getByText("其中 1 条为 internal 事件")).toBeVisible();
+  await expect(rawAudit.getByText("Internal backend bootstrap token preserved for audit.")).toHaveCount(0);
+  await expect(page.getByText("stderr: missing findItem export")).toBeVisible();
+  await expect(page.getByText("CLI failed before completion: model overloaded")).toBeVisible();
+  await rawAudit.getByRole("button", { name: "显示全部事件" }).click();
+  await expect(rawAudit.getByText("Raw Audit Log 已展开")).toBeVisible();
+  await expect(rawAudit.getByText("agent.backend.started")).toBeVisible();
+  await expect(rawAudit.getByText("Internal backend bootstrap token preserved for audit.")).toBeVisible();
+});
+
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Heavy end-to-end flow: settings + real git worktree checkout + streamed spec + delivery.
   test.setTimeout(120_000);

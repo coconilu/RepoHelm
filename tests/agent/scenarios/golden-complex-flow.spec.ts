@@ -96,6 +96,50 @@ test("QA agent completes a cross-repo, dependency-ordered quest delivery flow", 
     );
     record("quest is ready for delivery", quest?.status === "ready", quest?.status ?? "quest missing");
 
+    // Result-first UI evidence: completed timelines land at the bottom result card,
+    // while the raw audit drawer still exposes every quest event for replay.
+    const questEventCount = state.events.filter((event) => event.questId === quest?.id).length;
+    const resultCard = page.locator(".quest-result-card");
+    const resultText = await resultCard.innerText({ timeout: 15_000 }).catch(() => "");
+    record(
+      "result-first card is visible",
+      resultText.includes("结果已就绪，等待交付") && resultText.includes("4 文件"),
+      resultText || "result card missing"
+    );
+    const chatScroll = await page.locator(".chat-thread").evaluate((el) => ({
+      top: el.scrollTop,
+      height: el.scrollHeight,
+      client: el.clientHeight
+    })).catch(() => undefined);
+    record(
+      "completed timeline lands on bottom result",
+      Boolean(chatScroll && Math.abs(chatScroll.height - chatScroll.client - chatScroll.top) < 12),
+      chatScroll ? JSON.stringify(chatScroll) : "chat thread missing"
+    );
+    const sectionOrder = await page.locator(".chat-thread > *").evaluateAll((nodes) =>
+      nodes.map((node) => String((node as HTMLElement).className))
+    ).catch(() => []);
+    const rawAuditIndex = sectionOrder.findIndex((className) => className.includes("raw-audit-log"));
+    const resultCardIndex = sectionOrder.findIndex((className) => className.includes("quest-result-card"));
+    record(
+      "result card follows raw audit in timeline order",
+      rawAuditIndex >= 0 && resultCardIndex > rawAuditIndex,
+      `rawAuditIndex=${rawAuditIndex} resultCardIndex=${resultCardIndex}`
+    );
+    const rawAudit = page.locator(".raw-audit-log");
+    const expandAuditButton = rawAudit.getByRole("button", { name: "显示全部事件" });
+    const canExpandAudit = await expandAuditButton.isVisible().catch(() => false);
+    if (canExpandAudit) {
+      await expandAuditButton.click();
+      await expect(rawAudit.getByText("Raw Audit Log 已展开")).toBeVisible();
+    }
+    const rawRows = await page.locator(".raw-audit-row").count();
+    record(
+      "raw audit expands every quest event",
+      canExpandAudit && rawRows === questEventCount && questEventCount > 0,
+      `rows=${rawRows} stateEvents=${questEventCount}`
+    );
+
     // Plan evidence: ≥2 steps, a real dependency, and two distinct target projects.
     if (quest?.planPath) {
       const planMd = await readFile(quest.planPath, "utf8").catch(() => "");

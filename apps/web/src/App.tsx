@@ -242,7 +242,10 @@ export function App() {
     [state?.quests, workspace?.id]
   );
   const selectedQuest = draftWorkspaceId === workspace?.id ? undefined : quests.find((quest) => quest.id === selectedQuestId) ?? quests[0];
-  const questEvents = state?.events.filter((event) => event.questId === selectedQuest?.id) ?? [];
+  const questEvents = useMemo(
+    () => state?.events.filter((event) => event.questId === selectedQuest?.id) ?? [],
+    [selectedQuest?.id, state?.events]
+  );
 
   // Resume spec streaming for a quest left in "specifying" (e.g. the page was refreshed
   // or navigated away mid-stream), so it never gets stuck on the placeholder spec.
@@ -1003,7 +1006,10 @@ const INTERNAL_EVENT_TYPES = new Set([
 
 /** Icon per structured agent-event type, so the Quest timeline distinguishes
  *  file edits, command/test output and tool calls at a glance. */
-function eventIcon(type: string) {
+function eventIcon(type: string, severity?: AgentEvent["severity"]) {
+  if (severity === "error") {
+    return <X size={15} />;
+  }
   switch (type) {
     case "agent.file_change":
       return <Pencil size={15} />;
@@ -1046,17 +1052,32 @@ const MILESTONE_EVENT_TYPES = new Set([
   "quest.cancelled"
 ]);
 
-function visibleQuestEvents(events: AgentEvent[]) {
+function orderedQuestEvents(events: AgentEvent[], options: { includeInternal?: boolean } = {}) {
   return [...events]
-    .filter((event) => !INTERNAL_EVENT_TYPES.has(event.type))
+    .filter((event) => options.includeInternal || !INTERNAL_EVENT_TYPES.has(event.type))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function visibleQuestEvents(events: AgentEvent[]) {
+  return orderedQuestEvents(events);
 }
 
 function isAuditEvent(event: AgentEvent) {
   return event.visibility === "audit" || RAW_DEFAULT_EVENT_TYPES.has(event.type);
 }
 
-function isMilestoneEvent(event: AgentEvent) {
+function isFailedQuest(quest: Quest, events: AgentEvent[]) {
+  return (
+    quest.status === "blocked" ||
+    quest.status === "cancelled" ||
+    events.some((event) => event.type === "step.failed" || event.type === "orchestrator.failed")
+  );
+}
+
+function isMilestoneEvent(event: AgentEvent, includeFailureDetails = false) {
+  if (includeFailureDetails && event.severity === "error") {
+    return true;
+  }
   if (isAuditEvent(event)) {
     return false;
   }
@@ -1193,10 +1214,11 @@ function QuestMilestones({
   events: AgentEvent[];
   quest: Quest;
 }) {
-  const milestones = events.filter(isMilestoneEvent);
+  const includeFailureDetails = isFailedQuest(quest, events);
+  const milestones = events.filter((event) => isMilestoneEvent(event, includeFailureDetails));
   const processCount = events.filter((event) => PROCESS_EVENT_TYPES.has(event.type) || event.visibility === "process").length;
 
-  if (milestones.length === 0 && quest.planApproval?.status !== "pending") {
+  if (milestones.length === 0) {
     return null;
   }
 
@@ -1209,7 +1231,7 @@ function QuestMilestones({
       <div className="milestone-list">
         {milestones.slice(-8).map((event) => (
           <article className={`milestone-row ${event.severity ?? "info"}`} key={event.id}>
-            <div className="milestone-dot">{eventIcon(event.type)}</div>
+            <div className="milestone-dot">{eventIcon(event.type, event.severity)}</div>
             <div>
               <strong>{event.title}</strong>
               <span>{event.agent}</span>
@@ -1217,16 +1239,6 @@ function QuestMilestones({
             </div>
           </article>
         ))}
-        {quest.planApproval?.status === "pending" ? (
-          <article className="milestone-row warning">
-            <div className="milestone-dot"><Route size={15} /></div>
-            <div>
-              <strong>编排计划待确认</strong>
-              <span>Supervisor</span>
-              <p>请在右侧 Plan 面板查看执行步骤并确认。</p>
-            </div>
-          </article>
-        ) : null}
       </div>
       {processCount > 0 ? <p className="quest-section-note">{processCount} 条过程事件</p> : null}
     </section>
@@ -1238,14 +1250,20 @@ function RawAuditLog({ events }: { events: AgentEvent[] }) {
   if (events.length === 0) {
     return null;
   }
-  const hiddenCount = events.filter((event) => isAuditEvent(event) || PROCESS_EVENT_TYPES.has(event.type)).length;
+  const hiddenCount = events.filter(
+    (event) => isAuditEvent(event) || PROCESS_EVENT_TYPES.has(event.type) || INTERNAL_EVENT_TYPES.has(event.type)
+  ).length;
+  const internalCount = events.filter((event) => INTERNAL_EVENT_TYPES.has(event.type)).length;
   const shownEvents = expanded ? events : [];
 
   return (
     <section className="raw-audit-log" aria-label="原始审计日志">
       <div>
         <h2>Raw Audit Log {expanded ? "已展开" : "已折叠"}</h2>
-        <p>{events.length} 条事件完整保留，包含 {hiddenCount} 条 agent/tool 过程记录。</p>
+        <p>
+          {events.length} 条原始事件完整保留，包含 {hiddenCount} 条 agent/tool/internal 过程记录
+          {internalCount > 0 ? `，其中 ${internalCount} 条为 internal 事件` : ""}。
+        </p>
       </div>
       <button className="ghost-action" type="button" onClick={() => setExpanded((current) => !current)}>
         {expanded ? "收起审计日志" : "显示全部事件"}
@@ -1360,6 +1378,7 @@ function QuestStage({
   const canDeliver = Boolean(quest && quest.changedFiles.length > 0);
   const canCancel = Boolean(quest && busy && pendingAction && pendingAction !== "正在拒绝计划...");
   const orderedEvents = useMemo(() => visibleQuestEvents(events), [events]);
+  const auditEvents = useMemo(() => orderedQuestEvents(events, { includeInternal: true }), [events]);
   const showResultCard = Boolean(quest && hasQuestResultCard(quest) && !pendingAction);
   const showWorkflowIntro = Boolean(quest && !showResultCard);
 
@@ -1479,7 +1498,7 @@ function QuestStage({
             ) : null}
             {analysisBubble}
             <QuestMilestones events={orderedEvents} quest={quest} />
-            <RawAuditLog events={orderedEvents} />
+            <RawAuditLog events={auditEvents} />
             {pendingAction ? (
               <article className="chat-message assistant compact">
                 <div className="chat-avatar">
