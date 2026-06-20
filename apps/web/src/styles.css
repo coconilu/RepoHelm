@@ -318,6 +318,18 @@ textarea:focus-visible,
   position: relative;
 }
 
+.quest-main-region {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.quest-main-region.evidence-docked {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) 6px minmax(360px, var(--evidence-width, 440px));
+}
+
 .sidebar {
   background: var(--sidebar);
   border-right: 1px solid var(--border);
@@ -352,6 +364,11 @@ textarea:focus-visible,
 .resize-handle:hover::after,
 .is-resizing-columns .resize-handle::after {
   background: var(--accent);
+}
+
+.evidence-resize-handle {
+  grid-column: 2;
+  z-index: 3;
 }
 
 .is-resizing-columns {
@@ -1841,18 +1858,54 @@ textarea {
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
-  max-width: min(480px, calc(100% - var(--sidebar-width, 280px) - 6px));
+  max-width: min(720px, calc(100% - var(--sidebar-width, 280px) - 6px));
   min-height: 0;
   outline: none;
   position: absolute;
   right: 0;
   top: 0;
-  width: 440px;
+  width: var(--evidence-width, 440px);
   z-index: 7;
 }
 
-.evidence-drawer.pinned {
+.evidence-drawer.docked {
+  animation: none;
   border-left-color: var(--accent-border);
+  bottom: auto;
+  box-shadow: none;
+  grid-column: 3;
+  max-width: none;
+  position: relative;
+  right: auto;
+  top: auto;
+  width: 100%;
+  z-index: 1;
+}
+
+.evidence-drawer-resize-handle {
+  bottom: 0;
+  cursor: col-resize;
+  left: -3px;
+  position: absolute;
+  top: 0;
+  width: 6px;
+  z-index: 2;
+}
+
+.evidence-drawer-resize-handle::after {
+  background: var(--border-strong);
+  bottom: 0;
+  content: "";
+  left: 2px;
+  position: absolute;
+  top: 0;
+  transition: background 120ms var(--ease);
+  width: 2px;
+}
+
+.evidence-drawer-resize-handle:hover::after,
+.is-resizing-columns .evidence-drawer-resize-handle::after {
+  background: var(--accent);
 }
 
 .evidence-drawer-header {
@@ -3310,7 +3363,7 @@ code {
     grid-template-columns: 240px minmax(0, 1fr);
   }
 
-  .resize-handle {
+  .resize-handle-left {
     display: none;
   }
 
@@ -3318,8 +3371,11 @@ code {
     grid-row: 1 / -1;
   }
 
-  .quest-stage {
+  .quest-main-region {
     grid-column: 2;
+  }
+
+  .quest-stage {
     border-right: 0;
   }
 
@@ -3374,10 +3430,19 @@ code {
   }
 
   .sidebar,
+  .quest-main-region,
   .quest-stage {
     border-right: 0;
     height: auto;
     overflow: visible;
+  }
+
+  .quest-main-region {
+    grid-column: 1;
+  }
+
+  .quest-main-region.evidence-docked {
+    display: block;
   }
 
   .quest-stage {
@@ -3405,6 +3470,11 @@ code {
     right: 0;
     top: 0;
     width: 100%;
+  }
+
+  .evidence-resize-handle,
+  .evidence-drawer-resize-handle {
+    display: none;
   }
 
   .stage-intro {

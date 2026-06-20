@@ -103,14 +103,27 @@ const statusClass: Record<string, string> = {
 };
 
 type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "audit" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
-type ResizeDivider = "sidebar";
+type ResizeDivider = "sidebar" | "evidence";
 type SettingsTab = "repositories" | "models" | "modelkits" | "subagents" | "security";
 
 const defaultColumnWidths = {
-  sidebar: 280
+  sidebar: 280,
+  evidence: 440
 };
+const minimumEvidenceDockMainWidth = 786;
+const compactWorkbenchBreakpoint = 1180;
+const compactSidebarWidth = 240;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+function canDockEvidencePane(sidebarWidth: number) {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  const sidebarAndDivider =
+    window.innerWidth <= compactWorkbenchBreakpoint ? compactSidebarWidth : sidebarWidth + 6;
+  return window.innerWidth - sidebarAndDivider >= minimumEvidenceDockMainWidth;
+}
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
@@ -132,6 +145,7 @@ export function App() {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false);
   const [evidenceDrawerPinned, setEvidenceDrawerPinned] = useState(false);
+  const [evidenceDockAvailable, setEvidenceDockAvailable] = useState(() => canDockEvidencePane(defaultColumnWidths.sidebar));
   const [commandOpen, setCommandOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof document !== "undefined") {
@@ -146,9 +160,10 @@ export function App() {
     try {
       const saved = window.localStorage.getItem("repohelm:column-widths");
       if (saved) {
-        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths>;
+        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths> & { inspector?: number };
         return {
-          sidebar: clamp(parsed.sidebar ?? defaultColumnWidths.sidebar, 220, 380)
+          sidebar: clamp(parsed.sidebar ?? defaultColumnWidths.sidebar, 220, 380),
+          evidence: clamp(parsed.evidence ?? parsed.inspector ?? defaultColumnWidths.evidence, 360, 720)
         };
       }
     } catch {
@@ -183,6 +198,7 @@ export function App() {
     divider: ResizeDivider;
     pointerX: number;
     sidebar: number;
+    evidence: number;
   } | null>(null);
   const evidenceReturnFocusRef = useRef<HTMLElement | null>(null);
 
@@ -205,8 +221,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+    try {
+      window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+    } catch {
+      // Ignore unavailable storage; column widths are a non-critical preference.
+    }
   }, [columnWidths]);
+
+  useEffect(() => {
+    const updateDockAvailability = () => setEvidenceDockAvailable(canDockEvidencePane(columnWidths.sidebar));
+    updateDockAvailability();
+    window.addEventListener("resize", updateDockAvailability);
+    return () => window.removeEventListener("resize", updateDockAvailability);
+  }, [columnWidths.sidebar]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -286,6 +313,7 @@ export function App() {
   }, []);
   const closeEvidenceDrawer = useCallback(() => {
     setEvidenceDrawerOpen(false);
+    setEvidenceDrawerPinned(false);
     window.setTimeout(() => {
       const target = evidenceReturnFocusRef.current;
       if (target?.isConnected) {
@@ -482,7 +510,8 @@ export function App() {
     resizeStartRef.current = {
       divider,
       pointerX: event.clientX,
-      sidebar: columnWidths.sidebar
+      sidebar: columnWidths.sidebar,
+      evidence: columnWidths.evidence
     };
     document.body.classList.add("is-resizing-columns");
 
@@ -493,7 +522,8 @@ export function App() {
       }
       const delta = moveEvent.clientX - start.pointerX;
       setColumnWidths({
-        sidebar: clamp(start.sidebar + delta, 220, 380)
+        sidebar: start.divider === "sidebar" ? clamp(start.sidebar + delta, 220, 380) : start.sidebar,
+        evidence: start.divider === "evidence" ? clamp(start.evidence - delta, 360, 720) : start.evidence
       });
     };
 
@@ -626,6 +656,8 @@ export function App() {
     );
   }
 
+  const evidenceDocked = Boolean(evidenceDrawerOpen && evidenceDrawerPinned && evidenceDockAvailable && selectedQuest && !knowledgeOpen);
+
   return (
     <main className="app-shell">
       <header className="app-toolbar">
@@ -666,7 +698,8 @@ export function App() {
         className="quest-workbench"
         style={
           {
-            "--sidebar-width": `${columnWidths.sidebar}px`
+            "--sidebar-width": `${columnWidths.sidebar}px`,
+            "--evidence-width": `${columnWidths.evidence}px`
           } as React.CSSProperties
         }
       >
@@ -735,7 +768,7 @@ export function App() {
             onClose={() => setKnowledgeOpen(false)}
           />
         ) : (
-          <>
+          <div className={evidenceDocked ? "quest-main-region evidence-docked" : "quest-main-region"}>
             <QuestStage
               agentBackendId={agentBackendId}
               agentBackends={agentBackends}
@@ -760,6 +793,14 @@ export function App() {
               onRejectPlan={rejectPlan}
               onRequirementChange={setQuestRequirement}
             />
+            {evidenceDocked ? (
+              <div
+                aria-label="调整证据面板宽度"
+                className="resize-handle evidence-resize-handle"
+                onPointerDown={(event) => startColumnResize("evidence", event)}
+                role="separator"
+              />
+            ) : null}
             {evidenceDrawerOpen && selectedQuest ? (
               <EvidenceDrawer
                 busy={busy}
@@ -767,7 +808,8 @@ export function App() {
                 changedFiles={changedFiles}
                 events={questEvents}
                 expertSession={expertSession}
-                pinned={evidenceDrawerPinned}
+                dockAvailable={evidenceDockAvailable}
+                docked={evidenceDocked}
                 projects={projects}
                 quest={selectedQuest}
                 selectedChangedFile={selectedChangedFile}
@@ -782,9 +824,10 @@ export function App() {
                 onRejectPlan={rejectPlan}
                 onTabChange={setInspectorTab}
                 onTogglePinned={() => setEvidenceDrawerPinned((current) => !current)}
+                onResizeStart={(event) => startColumnResize("evidence", event)}
               />
             ) : null}
-          </>
+          </div>
         )}
       </section>
 
@@ -1760,9 +1803,10 @@ function EvidenceDrawer({
   busy,
   capabilities,
   changedFiles,
+  dockAvailable,
+  docked,
   events,
   expertSession,
-  pinned,
   projects,
   quest,
   selectedChangedFile,
@@ -1772,15 +1816,17 @@ function EvidenceDrawer({
   onConfirmExpertSession,
   onFileSelect,
   onRejectPlan,
+  onResizeStart,
   onTabChange,
   onTogglePinned
 }: {
   busy: boolean;
   capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
+  dockAvailable: boolean;
+  docked: boolean;
   events: AgentEvent[];
   expertSession: ExpertSession | null;
-  pinned: boolean;
   projects: Project[];
   quest: Quest;
   selectedChangedFile?: ChangedFile;
@@ -1790,6 +1836,7 @@ function EvidenceDrawer({
   onConfirmExpertSession?: () => void;
   onFileSelect: (file: ChangedFile) => void;
   onRejectPlan: () => void;
+  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onTabChange: (tab: InspectorTab) => void;
   onTogglePinned: () => void;
 }) {
@@ -1805,11 +1852,16 @@ function EvidenceDrawer({
   const effectiveTab = resolveInspectorTab(tab, visibleTabs);
 
   useEffect(() => {
-    drawerRef.current?.focus();
-  }, [quest.id]);
+    if (!docked) {
+      drawerRef.current?.focus();
+    }
+  }, [docked, quest.id]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (docked) {
+        return;
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();
@@ -1842,17 +1894,25 @@ function EvidenceDrawer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [docked, onClose]);
 
   return (
     <aside
       aria-labelledby="evidence-drawer-title"
-      aria-modal="true"
-      className={`evidence-drawer${pinned ? " pinned" : ""}`}
+      aria-modal={docked ? undefined : "true"}
+      className={docked ? "evidence-drawer docked" : "evidence-drawer"}
       ref={drawerRef}
-      role="dialog"
+      role={docked ? "complementary" : "dialog"}
       tabIndex={-1}
     >
+      {!docked ? (
+        <div
+          aria-label="调整证据面板宽度"
+          className="evidence-drawer-resize-handle"
+          onPointerDown={onResizeStart}
+          role="separator"
+        />
+      ) : null}
       <header className="evidence-drawer-header">
         <div>
           <p className="eyebrow">Evidence</p>
@@ -1860,13 +1920,15 @@ function EvidenceDrawer({
         </div>
         <div className="evidence-drawer-actions">
           <button
-            aria-label={pinned ? "取消固定 Evidence Drawer" : "固定 Evidence Drawer"}
-            aria-pressed={pinned}
+            aria-label={docked ? "取消固定 Evidence Drawer" : "固定 Evidence Drawer"}
+            aria-pressed={docked}
             className="toolbar-icon-button"
+            disabled={!dockAvailable}
             onClick={onTogglePinned}
+            title={dockAvailable ? undefined : "窄屏下使用全屏 Drawer"}
             type="button"
           >
-            {pinned ? <PinOff size={15} /> : <Pin size={15} />}
+            {docked ? <PinOff size={15} /> : <Pin size={15} />}
           </button>
           <button aria-label="关闭 Evidence Drawer" className="toolbar-icon-button" onClick={onClose} type="button">
             <X size={15} />

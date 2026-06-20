@@ -328,13 +328,64 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   await expect(evidenceDrawer.getByText("完整事件回溯")).toBeVisible();
   await expect(evidenceDrawer.getByText("5 条事件")).toBeVisible();
   await expect(evidenceDrawer.getByText("Internal backend bootstrap token preserved for audit.")).toBeVisible();
+  const overlayBeforeResize = await evidenceDrawer.boundingBox();
+  const overlayResizeHandle = page.locator(".evidence-drawer-resize-handle");
+  const overlayResizeBox = await overlayResizeHandle.boundingBox();
+  expect(overlayBeforeResize).not.toBeNull();
+  expect(overlayResizeBox).not.toBeNull();
+  if (overlayBeforeResize && overlayResizeBox) {
+    await page.mouse.move(overlayResizeBox.x + overlayResizeBox.width / 2, overlayResizeBox.y + overlayResizeBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(overlayResizeBox.x - 70, overlayResizeBox.y + overlayResizeBox.height / 2);
+    await page.mouse.up();
+    const overlayAfterResize = await evidenceDrawer.boundingBox();
+    expect(overlayAfterResize?.width ?? 0).toBeGreaterThan(overlayBeforeResize.width + 30);
+  }
   await page.keyboard.press("Escape");
   await expect(page.locator(".evidence-drawer")).toHaveCount(0);
   await expect(openAuditDrawerButton).toBeFocused();
   await openAuditDrawerButton.click();
   await expect(evidenceDrawer).toBeVisible();
-  await evidenceDrawer.getByRole("button", { name: "关闭 Evidence Drawer" }).click();
+  await evidenceDrawer.getByRole("button", { name: "固定 Evidence Drawer" }).click();
+  const dockedEvidence = page.getByRole("complementary", { name: "Audit" });
+  await expect(dockedEvidence).toBeVisible();
+  await expect(dockedEvidence).not.toHaveAttribute("aria-modal", "true");
+  await expect(page.getByRole("dialog", { name: "Audit" })).toHaveCount(0);
+  await expect(page.locator(".quest-main-region.evidence-docked")).toBeVisible();
+  await dockedEvidence.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).focus();
+  let focusLeftDockedEvidence = false;
+  for (let i = 0; i < 12; i += 1) {
+    await page.keyboard.press("Tab");
+    focusLeftDockedEvidence = await dockedEvidence.evaluate((drawer) => !drawer.contains(document.activeElement));
+    if (focusLeftDockedEvidence) {
+      break;
+    }
+  }
+  expect(focusLeftDockedEvidence).toBe(true);
+  await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
+  const beforeResize = await dockedEvidence.boundingBox();
+  const resizeHandle = page.locator(".evidence-resize-handle");
+  const resizeBox = await resizeHandle.boundingBox();
+  expect(beforeResize).not.toBeNull();
+  expect(resizeBox).not.toBeNull();
+  if (beforeResize && resizeBox) {
+    await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(resizeBox.x - 80, resizeBox.y + resizeBox.height / 2);
+    await page.mouse.up();
+    const afterResize = await dockedEvidence.boundingBox();
+    expect(afterResize?.width ?? 0).toBeGreaterThan(beforeResize.width + 40);
+  }
+  await dockedEvidence.getByRole("button", { name: "关闭 Evidence Drawer" }).click();
   await expect(page.locator(".evidence-drawer")).toHaveCount(0);
+  await page.setViewportSize({ width: 1000, height: 720 });
+  await openAuditDrawerButton.click();
+  const compactEvidenceDrawer = page.getByRole("dialog", { name: "Audit" });
+  await expect(compactEvidenceDrawer).toBeVisible();
+  await expect(compactEvidenceDrawer.getByRole("button", { name: "固定 Evidence Drawer" })).toBeDisabled();
+  await expect(page.locator(".quest-main-region.evidence-docked")).toHaveCount(0);
+  await compactEvidenceDrawer.getByRole("button", { name: "关闭 Evidence Drawer" }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
   await rawAudit.getByRole("button", { name: "显示全部事件" }).click();
   await expect(rawAudit.getByText("Raw Audit Log 已展开")).toBeVisible();
   await expect(rawAudit.getByText("agent.backend.started")).toBeVisible();
@@ -446,7 +497,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Link the global docs repo into the workspace; this checks out a real worktree.
   await configDialog.getByRole("tab", { name: "关联仓库" }).click();
   await expect(configDialog.getByRole("heading", { name: "关联仓库" })).toBeVisible();
-  await expect(configDialog.getByRole("combobox", { name: "选择要关联的仓库" })).toBeEnabled();
+  const linkProjectSelect = configDialog.getByRole("combobox", { name: "选择要关联的仓库" });
+  await expect(linkProjectSelect).toBeEnabled();
+  await linkProjectSelect.click();
+  await page.getByRole("option", { name: /docs ·/ }).click();
   await configDialog.getByRole("button", { name: "关联并 checkout worktree" }).click();
   const linkedRepoRow = configDialog.locator(".worktree-row").filter({ hasText: boundRepoName });
   await expect(linkedRepoRow).toBeVisible();
