@@ -13,7 +13,10 @@ import {
   MessageSquare,
   Moon,
   MoreHorizontal,
+  PanelRightOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Route,
@@ -99,16 +102,40 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
-type ResizeDivider = "sidebar" | "inspector";
+type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "audit" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
+type ResizeDivider = "sidebar" | "evidence";
 type SettingsTab = "repositories" | "models" | "modelkits" | "subagents" | "security";
 
 const defaultColumnWidths = {
   sidebar: 280,
-  inspector: 440
+  evidence: 440
 };
+const minimumDockedQuestMainWidth = 420;
+const evidenceDockDividerWidth = 6;
+const compactWorkbenchBreakpoint = 1180;
+const compactSidebarWidth = 240;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+function dockableContentWidth(sidebarWidth: number) {
+  if (typeof window === "undefined") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const sidebarAndDivider =
+    window.innerWidth <= compactWorkbenchBreakpoint ? compactSidebarWidth : sidebarWidth + 6;
+  return window.innerWidth - sidebarAndDivider;
+}
+
+function maxDockedEvidenceWidth(sidebarWidth: number) {
+  return Math.min(720, Math.max(360, dockableContentWidth(sidebarWidth) - minimumDockedQuestMainWidth - evidenceDockDividerWidth));
+}
+
+function canDockEvidencePane(sidebarWidth: number, evidenceWidth: number) {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return dockableContentWidth(sidebarWidth) >= minimumDockedQuestMainWidth + evidenceDockDividerWidth + evidenceWidth;
+}
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
@@ -128,6 +155,9 @@ export function App() {
   const [workspaceConfigId, setWorkspaceConfigId] = useState("");
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false);
+  const [evidenceDrawerPinned, setEvidenceDrawerPinned] = useState(false);
+  const [evidenceDockAvailable, setEvidenceDockAvailable] = useState(() => canDockEvidencePane(defaultColumnWidths.sidebar, defaultColumnWidths.evidence));
   const [commandOpen, setCommandOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof document !== "undefined") {
@@ -142,10 +172,10 @@ export function App() {
     try {
       const saved = window.localStorage.getItem("repohelm:column-widths");
       if (saved) {
-        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths>;
+        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths> & { inspector?: number };
         return {
           sidebar: clamp(parsed.sidebar ?? defaultColumnWidths.sidebar, 220, 380),
-          inspector: clamp(parsed.inspector ?? defaultColumnWidths.inspector, 360, 560)
+          evidence: clamp(parsed.evidence ?? parsed.inspector ?? defaultColumnWidths.evidence, 360, 720)
         };
       }
     } catch {
@@ -180,8 +210,10 @@ export function App() {
     divider: ResizeDivider;
     pointerX: number;
     sidebar: number;
-    inspector: number;
+    evidence: number;
   } | null>(null);
+  const evidenceReturnFocusRef = useRef<HTMLElement | null>(null);
+  const evidenceReturnFocusTimeoutRef = useRef<number | null>(null);
 
   const load = async () => {
     const [nextState, nextBackends, nextReadiness] = await Promise.all([
@@ -202,8 +234,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+    try {
+      window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+    } catch {
+      // Ignore unavailable storage; column widths are a non-critical preference.
+    }
   }, [columnWidths]);
+
+  useEffect(() => {
+    const updateDockAvailability = () => setEvidenceDockAvailable(canDockEvidencePane(columnWidths.sidebar, columnWidths.evidence));
+    updateDockAvailability();
+    window.addEventListener("resize", updateDockAvailability);
+    return () => window.removeEventListener("resize", updateDockAvailability);
+  }, [columnWidths.evidence, columnWidths.sidebar]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -274,6 +317,33 @@ export function App() {
   const changedFiles = selectedQuest?.changedFiles.map((file) => normalizeChangedFile(file)) ?? [];
   const selectedChangedFile =
     changedFiles.find((file) => changedFileKey(file) === selectedChangedFileKey) ?? changedFiles[0];
+  const clearEvidenceReturnFocusTimeout = useCallback(() => {
+    if (evidenceReturnFocusTimeoutRef.current !== null) {
+      window.clearTimeout(evidenceReturnFocusTimeoutRef.current);
+      evidenceReturnFocusTimeoutRef.current = null;
+    }
+  }, []);
+  const openEvidenceDrawer = useCallback((tab: InspectorTab = "overview") => {
+    clearEvidenceReturnFocusTimeout();
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      evidenceReturnFocusRef.current = document.activeElement;
+    }
+    setInspectorTab(tab);
+    setEvidenceDrawerOpen(true);
+  }, [clearEvidenceReturnFocusTimeout]);
+  const closeEvidenceDrawer = useCallback(() => {
+    clearEvidenceReturnFocusTimeout();
+    setEvidenceDrawerOpen(false);
+    setEvidenceDrawerPinned(false);
+    evidenceReturnFocusTimeoutRef.current = window.setTimeout(() => {
+      evidenceReturnFocusTimeoutRef.current = null;
+      const target = evidenceReturnFocusRef.current;
+      if (target?.isConnected) {
+        target.focus({ preventScroll: true });
+      }
+    }, 0);
+  }, [clearEvidenceReturnFocusTimeout]);
+  useEffect(() => clearEvidenceReturnFocusTimeout, [clearEvidenceReturnFocusTimeout]);
   const activeBackend = agentBackends.find((backend) => backend.id === agentBackendId);
   // The pill should reflect what actually answers: the entry agent + its model.
   const activeEntryAgentGlobal = state?.entrySubAgentId ? state.subAgents[state.entrySubAgentId] : undefined;
@@ -464,7 +534,7 @@ export function App() {
       divider,
       pointerX: event.clientX,
       sidebar: columnWidths.sidebar,
-      inspector: columnWidths.inspector
+      evidence: columnWidths.evidence
     };
     document.body.classList.add("is-resizing-columns");
 
@@ -474,9 +544,10 @@ export function App() {
         return;
       }
       const delta = moveEvent.clientX - start.pointerX;
+      const evidenceMax = evidenceDrawerPinned && evidenceDockAvailable ? maxDockedEvidenceWidth(start.sidebar) : 720;
       setColumnWidths({
         sidebar: start.divider === "sidebar" ? clamp(start.sidebar + delta, 220, 380) : start.sidebar,
-        inspector: start.divider === "inspector" ? clamp(start.inspector - delta, 360, 560) : start.inspector
+        evidence: start.divider === "evidence" ? clamp(start.evidence - delta, 360, evidenceMax) : start.evidence
       });
     };
 
@@ -609,6 +680,8 @@ export function App() {
     );
   }
 
+  const evidenceDocked = Boolean(evidenceDrawerOpen && evidenceDrawerPinned && evidenceDockAvailable && selectedQuest && !knowledgeOpen);
+
   return (
     <main className="app-shell">
       <header className="app-toolbar">
@@ -650,7 +723,7 @@ export function App() {
         style={
           {
             "--sidebar-width": `${columnWidths.sidebar}px`,
-            "--inspector-width": `${columnWidths.inspector}px`
+            "--evidence-width": `${columnWidths.evidence}px`
           } as React.CSSProperties
         }
       >
@@ -667,7 +740,10 @@ export function App() {
             setWorkspaceConfigOpen(true);
           }}
           onCreateWorkspace={() => setWorkspaceCreateOpen(true)}
-          onKnowledgeOpen={() => setKnowledgeOpen(true)}
+          onKnowledgeOpen={() => {
+            setKnowledgeOpen(true);
+            setEvidenceDrawerOpen(false);
+          }}
           onNewQuest={(workspaceId) => {
             setKnowledgeOpen(false);
             setSelectedWorkspaceId(workspaceId);
@@ -676,6 +752,7 @@ export function App() {
             setQuestRequirement("");
             setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
             setInspectorTab("spec");
+            if (!evidenceDrawerPinned) setEvidenceDrawerOpen(false);
           }}
           onSelectQuest={(questId, workspaceId) => {
             setKnowledgeOpen(false);
@@ -683,6 +760,7 @@ export function App() {
             setSelectedQuestId(questId);
             setDraftWorkspaceId("");
             setInspectorTab("spec");
+            if (!evidenceDrawerPinned) setEvidenceDrawerOpen(false);
             setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
           }}
           onSelectWorkspace={(workspaceId) => {
@@ -692,6 +770,7 @@ export function App() {
             setDraftWorkspaceId("");
             setQuestRequirement("");
             setInspectorTab("spec");
+            if (!evidenceDrawerPinned) setEvidenceDrawerOpen(false);
           }}
           onToggleWorkspace={(workspaceId) => {
             setExpandedWorkspaceIds((current) =>
@@ -713,7 +792,7 @@ export function App() {
             onClose={() => setKnowledgeOpen(false)}
           />
         ) : (
-          <>
+          <div className={evidenceDocked ? "quest-main-region evidence-docked" : "quest-main-region"}>
             <QuestStage
               agentBackendId={agentBackendId}
               agentBackends={agentBackends}
@@ -733,36 +812,46 @@ export function App() {
               onEntrySubAgentChange={setSelectedEntrySubAgentId}
               onCreateQuest={createQuest}
               onDeliverQuest={deliverQuest}
-              onInspectorTabChange={setInspectorTab}
+              evidenceDrawerOpen={evidenceDrawerOpen}
+              onEvidenceOpen={openEvidenceDrawer}
               onRejectPlan={rejectPlan}
               onRequirementChange={setQuestRequirement}
             />
-            <div
-              aria-label="调整右侧栏宽度"
-              className="resize-handle resize-handle-right"
-              onPointerDown={(event) => startColumnResize("inspector", event)}
-              role="separator"
-            />
-            <Inspector
-              busy={busy}
-              capabilities={state.capabilities}
-              changedFiles={changedFiles}
-              events={questEvents}
-              expertSession={expertSession}
-              projects={projects}
-              quest={selectedQuest}
-              selectedChangedFile={selectedChangedFile}
-              tab={inspectorTab}
-              onApprovePlan={approvePlan}
-              onConfirmExpertSession={handleConfirmExpertSession}
-              onRejectPlan={rejectPlan}
-              onFileSelect={(file) => {
-                setSelectedChangedFileKey(changedFileKey(file));
-                setInspectorTab("diff");
-              }}
-              onTabChange={setInspectorTab}
-            />
-          </>
+            {evidenceDocked ? (
+              <div
+                aria-label="调整证据面板宽度"
+                className="resize-handle evidence-resize-handle"
+                onPointerDown={(event) => startColumnResize("evidence", event)}
+                role="separator"
+              />
+            ) : null}
+            {evidenceDrawerOpen && selectedQuest ? (
+              <EvidenceDrawer
+                busy={busy}
+                capabilities={state.capabilities}
+                changedFiles={changedFiles}
+                events={questEvents}
+                expertSession={expertSession}
+                dockAvailable={evidenceDockAvailable}
+                docked={evidenceDocked}
+                projects={projects}
+                quest={selectedQuest}
+                selectedChangedFile={selectedChangedFile}
+                tab={inspectorTab}
+                onApprovePlan={approvePlan}
+                onClose={closeEvidenceDrawer}
+                onConfirmExpertSession={handleConfirmExpertSession}
+                onFileSelect={(file) => {
+                  setSelectedChangedFileKey(changedFileKey(file));
+                  setInspectorTab("diff");
+                }}
+                onRejectPlan={rejectPlan}
+                onTabChange={setInspectorTab}
+                onTogglePinned={() => setEvidenceDrawerPinned((current) => !current)}
+                onResizeStart={(event) => startColumnResize("evidence", event)}
+              />
+            ) : null}
+          </div>
         )}
       </section>
 
@@ -1092,6 +1181,14 @@ function compactDetail(detail: string, max = 180) {
   return `${normalized.slice(0, max - 1)}…`;
 }
 
+function CompactText({ text, max }: { text: string; max?: number }) {
+  const value = max ? compactDetail(text, max) : text;
+  if (!value) {
+    return null;
+  }
+  return <>{value}</>;
+}
+
 function questResultTone(quest: Quest) {
   if (quest.status === "ready" || quest.status === "delivered") return "success";
   if (quest.status === "blocked" || quest.status === "cancelled") return "danger";
@@ -1138,18 +1235,120 @@ function changedProjectSummary(quest: Quest, projects: Project[]) {
     .join(" / ");
 }
 
+const evidenceTabLabels: Record<InspectorTab, string> = {
+  overview: "概要",
+  spec: "Spec",
+  plan: "Plan",
+  capabilities: "专家团",
+  files: "文件",
+  diff: "Diff",
+  audit: "Audit",
+  orchestration: "编排",
+  progress: "进展",
+  acceptance: "验收",
+  deliverables: "产物",
+  references: "引用",
+  research: "研究"
+};
+
+function evidenceTabIcon(tab: InspectorTab, size = 14) {
+  switch (tab) {
+    case "spec":
+      return <FileText size={size} />;
+    case "plan":
+      return <Route size={size} />;
+    case "files":
+      return <FolderOpen size={size} />;
+    case "diff":
+      return <Pencil size={size} />;
+    case "audit":
+      return <ShieldCheck size={size} />;
+    case "capabilities":
+      return <Sparkles size={size} />;
+    default:
+      return <PanelRightOpen size={size} />;
+  }
+}
+
+function uniqueEvidenceTabs(tabs: InspectorTab[]) {
+  return [...new Set(tabs)];
+}
+
+function evidenceTabsForQuest(quest: Quest, events: AgentEvent[]) {
+  const tabs: InspectorTab[] = ["overview"];
+  if (quest.spec) tabs.push("spec");
+  if (quest.planApproval) tabs.push("plan");
+  if (quest.capabilityRecommendations.length > 0) tabs.push("capabilities");
+  if (quest.changedFiles.length > 0) tabs.push("files", "diff");
+  if (events.length > 0) tabs.push("audit");
+  return uniqueEvidenceTabs(tabs);
+}
+
+function evidenceTabsForEvent(event: AgentEvent, quest: Quest) {
+  const tabs: InspectorTab[] = [];
+  if (quest.spec && (event.type === "quest.created" || event.type.startsWith("spec."))) {
+    tabs.push("spec");
+  }
+  if (
+    quest.planApproval &&
+    (event.type.startsWith("plan.") ||
+      event.type.startsWith("step.") ||
+      event.type.startsWith("orchestrator.") ||
+      event.type.startsWith("delegate.") ||
+      event.type.startsWith("worktree."))
+  ) {
+    tabs.push("plan");
+  }
+  if (
+    quest.changedFiles.length > 0 &&
+    (event.type === "agent.file_change" || event.type === "implementation.changed_files" || event.type.startsWith("delivery."))
+  ) {
+    tabs.push("files", "diff");
+  }
+  tabs.push("audit");
+  return uniqueEvidenceTabs(tabs);
+}
+
+function EvidenceQuickActions({
+  events,
+  quest,
+  onEvidenceOpen
+}: {
+  events: AgentEvent[];
+  quest: Quest;
+  onEvidenceOpen: (tab: InspectorTab) => void;
+}) {
+  return (
+    <div className="evidence-control-row" aria-label="证据入口">
+      {evidenceTabsForQuest(quest, events).map((tab) => (
+        <button
+          aria-label={`打开 ${evidenceTabLabels[tab]} 证据`}
+          className="evidence-chip"
+          data-evidence-trigger="true"
+          key={tab}
+          onClick={() => onEvidenceOpen(tab)}
+          type="button"
+        >
+          {evidenceTabIcon(tab)}
+          <span>{evidenceTabLabels[tab]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function QuestResultSummary({
   busy,
   events,
   onDeliverQuest,
-  onInspectorTabChange,
+  onEvidenceOpen,
   projects,
   quest
 }: {
   busy: boolean;
   events: AgentEvent[];
   onDeliverQuest: () => void;
-  onInspectorTabChange: (tab: InspectorTab) => void;
+  onEvidenceOpen: (tab: InspectorTab) => void;
   projects: Project[];
   quest: Quest;
 }) {
@@ -1185,15 +1384,15 @@ function QuestResultSummary({
         <p>{compactDetail(detail, 220)}</p>
         {projectSummary ? <span className="quest-result-subtle">{projectSummary}</span> : null}
         <div className="quest-result-metrics">
-          <button type="button" onClick={() => onInspectorTabChange("files")} disabled={changedCount === 0}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("files")} disabled={changedCount === 0}>
             <FileText size={14} />
             <span>{changedCount} 文件</span>
           </button>
-          <button type="button" onClick={() => onInspectorTabChange("plan")} disabled={!canOpenPlan}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("plan")} disabled={!canOpenPlan}>
             <Route size={14} />
             <span>{stepCount > 0 ? `${stepCount} 步骤` : "Plan"}</span>
           </button>
-          <button type="button" onClick={() => onInspectorTabChange("diff")} disabled={changedCount === 0}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("diff")} disabled={changedCount === 0}>
             <Pencil size={14} />
             <span>Diff</span>
           </button>
@@ -1209,9 +1408,11 @@ function QuestResultSummary({
 
 function QuestMilestones({
   events,
+  onEvidenceOpen,
   quest
 }: {
   events: AgentEvent[];
+  onEvidenceOpen: (tab: InspectorTab) => void;
   quest: Quest;
 }) {
   const includeFailureDetails = isFailedQuest(quest, events);
@@ -1236,6 +1437,21 @@ function QuestMilestones({
               <strong>{event.title}</strong>
               <span>{event.agent}</span>
               <p>{compactDetail(event.detail)}</p>
+              <div className="evidence-chip-row" aria-label={`${event.title} 的证据`}>
+                {evidenceTabsForEvent(event, quest).map((tab) => (
+                  <button
+                    aria-label={`打开 ${evidenceTabLabels[tab]} 证据: ${event.title}`}
+                    className="evidence-chip"
+                    data-evidence-trigger="true"
+                    key={tab}
+                    onClick={() => onEvidenceOpen(tab)}
+                    type="button"
+                  >
+                    {evidenceTabIcon(tab, 13)}
+                    <span>{evidenceTabLabels[tab]}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </article>
         ))}
@@ -1245,7 +1461,7 @@ function QuestMilestones({
   );
 }
 
-function RawAuditLog({ events }: { events: AgentEvent[] }) {
+function RawAuditLog({ events, onEvidenceOpen }: { events: AgentEvent[]; onEvidenceOpen: (tab: InspectorTab) => void }) {
   const [expanded, setExpanded] = useState(false);
   if (events.length === 0) {
     return null;
@@ -1265,9 +1481,15 @@ function RawAuditLog({ events }: { events: AgentEvent[] }) {
           {internalCount > 0 ? `，其中 ${internalCount} 条为 internal 事件` : ""}。
         </p>
       </div>
-      <button className="ghost-action" type="button" onClick={() => setExpanded((current) => !current)}>
-        {expanded ? "收起审计日志" : "显示全部事件"}
-      </button>
+      <div className="raw-audit-actions">
+        <button className="ghost-action" data-evidence-trigger="true" type="button" onClick={() => onEvidenceOpen("audit")}>
+          <PanelRightOpen size={14} />
+          <span>打开 Audit Drawer</span>
+        </button>
+        <button className="ghost-action" type="button" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "收起审计日志" : "显示全部事件"}
+        </button>
+      </div>
       {expanded ? (
         <div className="raw-audit-list">
           {shownEvents.map((event) => (
@@ -1305,7 +1527,8 @@ function QuestStage({
   onEntrySubAgentChange,
   onCreateQuest,
   onDeliverQuest,
-  onInspectorTabChange,
+  evidenceDrawerOpen,
+  onEvidenceOpen,
   onRejectPlan,
   onRequirementChange
 }: {
@@ -1327,7 +1550,8 @@ function QuestStage({
   onEntrySubAgentChange: (id: string) => void;
   onCreateQuest: (event: FormEvent) => void;
   onDeliverQuest: () => void;
-  onInspectorTabChange: (tab: InspectorTab) => void;
+  evidenceDrawerOpen: boolean;
+  onEvidenceOpen: (tab: InspectorTab) => void;
   onRejectPlan: () => void;
   onRequirementChange: (value: string) => void;
 }) {
@@ -1409,14 +1633,24 @@ function QuestStage({
           <h1>{quest ? quest.title : "把需求交给 Agent"}</h1>
           <div className="run-context">
             <span>{workspace.name}</span>
-            <ChevronDown size={14} />
+            <span className="run-context-separator" aria-hidden="true" />
             <span>{activeEntryAgent?.name ?? (questBackend?.name ?? "未选择 Agent")}</span>
-            <ChevronDown size={14} />
+            <span className="run-context-separator" aria-hidden="true" />
             <span>{affectedProjectCount} project{affectedProjectCount === 1 ? "" : "s"}</span>
           </div>
         </div>
         {quest ? (
           <div className="chat-header-actions">
+            <button
+              aria-expanded={evidenceDrawerOpen}
+              className="ghost-action"
+              data-evidence-trigger="true"
+              onClick={() => onEvidenceOpen("overview")}
+              type="button"
+            >
+              <PanelRightOpen size={15} />
+              <span>证据</span>
+            </button>
             {canCancel ? (
               <button
                 className="ghost-action"
@@ -1491,14 +1725,15 @@ function QuestStage({
                 <div className="chat-bubble">
                   <strong>{activeEntryAgent?.name ?? "RepoHelm Agent"}</strong>
                   <p>
-                    Request 已进入工作流。右侧会展示 Supervisor 分派进展、Spec、执行产物和 diff。
+                    Request 已进入工作流。证据抽屉会保留 Supervisor 分派进展、Spec、执行产物和 diff。
                   </p>
                 </div>
               </article>
             ) : null}
             {analysisBubble}
-            <QuestMilestones events={orderedEvents} quest={quest} />
-            <RawAuditLog events={auditEvents} />
+            <EvidenceQuickActions events={auditEvents} quest={quest} onEvidenceOpen={onEvidenceOpen} />
+            <QuestMilestones events={orderedEvents} onEvidenceOpen={onEvidenceOpen} quest={quest} />
+            <RawAuditLog events={auditEvents} onEvidenceOpen={onEvidenceOpen} />
             {pendingAction ? (
               <article className="chat-message assistant compact">
                 <div className="chat-avatar">
@@ -1516,7 +1751,7 @@ function QuestStage({
                 busy={busy}
                 events={orderedEvents}
                 onDeliverQuest={onDeliverQuest}
-                onInspectorTabChange={onInspectorTabChange}
+                onEvidenceOpen={onEvidenceOpen}
                 projects={projects}
                 quest={quest}
               />
@@ -1599,6 +1834,271 @@ function QuestStage({
   );
 }
 
+function EvidenceDrawer({
+  busy,
+  capabilities,
+  changedFiles,
+  dockAvailable,
+  docked,
+  events,
+  expertSession,
+  projects,
+  quest,
+  selectedChangedFile,
+  tab,
+  onApprovePlan,
+  onClose,
+  onConfirmExpertSession,
+  onFileSelect,
+  onRejectPlan,
+  onResizeStart,
+  onTabChange,
+  onTogglePinned
+}: {
+  busy: boolean;
+  capabilities: CapabilityDefinition[];
+  changedFiles: ChangedFile[];
+  dockAvailable: boolean;
+  docked: boolean;
+  events: AgentEvent[];
+  expertSession: ExpertSession | null;
+  projects: Project[];
+  quest: Quest;
+  selectedChangedFile?: ChangedFile;
+  tab: InspectorTab;
+  onApprovePlan: () => void;
+  onClose: () => void;
+  onConfirmExpertSession?: () => void;
+  onFileSelect: (file: ChangedFile) => void;
+  onRejectPlan: () => void;
+  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onTabChange: (tab: InspectorTab) => void;
+  onTogglePinned: () => void;
+}) {
+  const drawerRef = useRef<HTMLElement>(null);
+  const visibleTabs = getVisibleInspectorTabs({
+    capabilities,
+    changedFiles,
+    events,
+    expertSession,
+    quest,
+    selectedChangedFile
+  });
+  const effectiveTab = resolveInspectorTab(tab, visibleTabs);
+
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (!docked && drawer && !drawer.contains(document.activeElement)) {
+      drawer.focus();
+    }
+  }, [docked, effectiveTab, quest.id]);
+
+  useEffect(() => {
+    if (docked) {
+      return undefined;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const drawer = drawerRef.current;
+      if (!drawer || event.button !== 0) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && !drawer.contains(target)) {
+        if (target instanceof Element && target.closest("[data-evidence-trigger='true']")) {
+          return;
+        }
+        onClose();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [docked, onClose]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (docked) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") {
+        return;
+      }
+      const drawer = drawerRef.current;
+      if (!drawer) {
+        return;
+      }
+      const focusable = getFocusableElements(drawer);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        drawer.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      const focusIsOutsideDrawer = !(activeElement instanceof Node) || !drawer.contains(activeElement);
+      if (event.shiftKey && (focusIsOutsideDrawer || activeElement === first || activeElement === drawer)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (focusIsOutsideDrawer || activeElement === last || activeElement === drawer)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [docked, onClose]);
+
+  return (
+    <aside
+      aria-labelledby="evidence-drawer-title"
+      aria-modal={docked ? undefined : "true"}
+      className={docked ? "evidence-drawer docked" : "evidence-drawer"}
+      ref={drawerRef}
+      role={docked ? "complementary" : "dialog"}
+      tabIndex={-1}
+    >
+      {!docked ? (
+        <div
+          aria-label="调整证据面板宽度"
+          className="evidence-drawer-resize-handle"
+          onPointerDown={onResizeStart}
+          role="separator"
+        />
+      ) : null}
+      <header className="evidence-drawer-header">
+        <div>
+          <p className="eyebrow">Evidence</p>
+          <h2 id="evidence-drawer-title">{evidenceTabLabels[effectiveTab] ?? "证据"}</h2>
+        </div>
+        <div className="evidence-drawer-actions">
+          <button
+            aria-label={docked ? "取消固定 Evidence Drawer" : "固定 Evidence Drawer"}
+            aria-pressed={docked}
+            className="toolbar-icon-button"
+            disabled={!dockAvailable}
+            onClick={onTogglePinned}
+            title={dockAvailable ? undefined : "窄屏下使用全屏 Drawer"}
+            type="button"
+          >
+            {docked ? <PinOff size={15} /> : <Pin size={15} />}
+          </button>
+          <button aria-label="关闭 Evidence Drawer" className="toolbar-icon-button" onClick={onClose} type="button">
+            <X size={15} />
+          </button>
+        </div>
+      </header>
+      <Inspector
+        busy={busy}
+        capabilities={capabilities}
+        changedFiles={changedFiles}
+        events={events}
+        expertSession={expertSession}
+        projects={projects}
+        quest={quest}
+        selectedChangedFile={selectedChangedFile}
+        tab={effectiveTab}
+        onApprovePlan={onApprovePlan}
+        onConfirmExpertSession={onConfirmExpertSession}
+        onFileSelect={onFileSelect}
+        onRejectPlan={onRejectPlan}
+        onTabChange={onTabChange}
+      />
+    </aside>
+  );
+}
+
+const inspectorTabItems: Array<{ id: InspectorTab; label: string }> = [
+  { id: "overview", label: "概要" },
+  { id: "spec", label: "Spec" },
+  { id: "plan", label: "Plan" },
+  { id: "capabilities", label: "专家团" },
+  { id: "files", label: "文件" },
+  { id: "diff", label: "Diff" },
+  { id: "audit", label: "Audit" },
+  { id: "orchestration", label: "编排" },
+  { id: "progress", label: "进展" },
+  { id: "acceptance", label: "验收" },
+  { id: "deliverables", label: "产物" },
+  { id: "references", label: "引用" },
+  { id: "research", label: "研究" }
+];
+
+function getVisibleInspectorTabs({
+  capabilities,
+  changedFiles,
+  events,
+  expertSession,
+  quest,
+  selectedChangedFile
+}: {
+  capabilities: CapabilityDefinition[];
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  expertSession: ExpertSession | null;
+  quest?: Quest;
+  selectedChangedFile?: ChangedFile;
+}) {
+  const hasSpec = !!quest?.spec;
+  const hasPlan = !!quest?.planApproval;
+  const hasCapabilities = capabilities.length > 0;
+  const hasFiles = changedFiles.length > 0;
+  const hasDiff = !!selectedChangedFile;
+  const hasAudit = events.length > 0;
+
+  return inspectorTabItems.filter((tabItem) => {
+    switch (tabItem.id) {
+      case "overview":
+        return true;
+      case "spec":
+        return hasSpec;
+      case "plan":
+        return hasPlan;
+      case "capabilities":
+        return hasCapabilities;
+      case "files":
+        return hasFiles;
+      case "diff":
+        return hasDiff;
+      case "audit":
+        return hasAudit;
+      case "orchestration":
+      case "progress":
+      case "acceptance":
+      case "deliverables":
+      case "references":
+      case "research":
+        return !!expertSession;
+      default:
+        return false;
+    }
+  });
+}
+
+function resolveInspectorTab(tab: InspectorTab, visibleTabs: Array<{ id: InspectorTab; label: string }>) {
+  return visibleTabs.some((item) => item.id === tab) ? tab : visibleTabs[0]?.id || "overview";
+}
+
+function getFocusableElements(container: HTMLElement) {
+  const selector = [
+    "a[href]",
+    "button:not([disabled])",
+    "summary",
+    "textarea:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])"
+  ].join(",");
+  return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
 function Inspector({
   busy,
   capabilities,
@@ -1632,60 +2132,24 @@ function Inspector({
 }) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
 
-  // Determine which tabs have content
   const hasSpec = !!quest?.spec;
   const hasPlan = !!quest?.planApproval;
   const hasCapabilities = capabilities.length > 0;
   const hasFiles = changedFiles.length > 0;
   const hasDiff = !!selectedChangedFile;
-
-  // Build visible tabs list (dynamic display)
-  const allTabs: Array<{ id: InspectorTab; label: string }> = [
-    { id: "overview", label: "概要" },
-    { id: "spec", label: "Spec" },
-    { id: "plan", label: "Plan" },
-    { id: "capabilities", label: "能力" },
-    { id: "files", label: "文件" },
-    { id: "diff", label: "Diff" },
-    { id: "orchestration", label: "编排" },
-    { id: "progress", label: "进展" },
-    { id: "acceptance", label: "验收" },
-    { id: "deliverables", label: "产物" },
-    { id: "references", label: "引用" },
-    { id: "research", label: "研究" }
-  ];
-
-  const visibleTabs = allTabs.filter((tabItem) => {
-    switch (tabItem.id) {
-      case "overview":
-        return true; // Always visible
-      case "spec":
-        return hasSpec;
-      case "plan":
-        return hasPlan;
-      case "capabilities":
-        return hasCapabilities;
-      case "files":
-        return hasFiles;
-      case "diff":
-        return hasDiff;
-      case "orchestration":
-      case "progress":
-      case "acceptance":
-      case "deliverables":
-      case "references":
-      case "research":
-        return !!expertSession; // Expert tabs only visible when expert session exists
-      default:
-        return false;
-    }
+  const hasAudit = events.length > 0;
+  const visibleTabs = getVisibleInspectorTabs({
+    capabilities,
+    changedFiles,
+    events,
+    expertSession,
+    quest,
+    selectedChangedFile
   });
-
-  // Auto-select first visible tab if current tab has no content
-  const effectiveTab = visibleTabs.some((t) => t.id === tab) ? tab : visibleTabs[0]?.id || "overview";
+  const effectiveTab = resolveInspectorTab(tab, visibleTabs);
 
   return (
-    <aside className="inspector">
+    <div className="inspector">
       <div className="inspector-tabs">
         {visibleTabs.map((item) => (
           <button
@@ -1705,7 +2169,7 @@ function Inspector({
         ) : null}
         {effectiveTab === "spec" && hasSpec ? <SpecPanel quest={quest} /> : null}
         {effectiveTab === "plan" && hasPlan ? (
-          <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
+          <PlanPanel busy={busy} projects={projects} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
         ) : null}
         {effectiveTab === "capabilities" && hasCapabilities ? (
           <CapabilitiesPanel capabilities={capabilities} quest={quest} />
@@ -1715,6 +2179,9 @@ function Inspector({
         ) : null}
         {effectiveTab === "diff" && hasDiff ? (
           <DiffPanel file={selectedChangedFile} projectById={projectById} quest={quest} />
+        ) : null}
+        {effectiveTab === "audit" && hasAudit ? (
+          <AuditPanel events={orderedQuestEvents(events, { includeInternal: true })} />
         ) : null}
         {effectiveTab === "orchestration" && expertSession ? (
           <OrchestrationPanel session={expertSession} />
@@ -1735,7 +2202,48 @@ function Inspector({
           <ResearchPanel research={expertSession.research} />
         ) : null}
       </div>
-    </aside>
+    </div>
+  );
+}
+
+function AuditPanel({ events }: { events: AgentEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <div className="inspector-empty">
+        <ShieldCheck size={16} />
+        <p>暂无事件可回溯。</p>
+      </div>
+    );
+  }
+
+  const internalCount = events.filter((event) => INTERNAL_EVENT_TYPES.has(event.type)).length;
+  const auditCount = events.filter((event) => isAuditEvent(event)).length;
+
+  return (
+    <div className="inspector-stack">
+      <section className="inspector-section audit-summary">
+        <h3>完整事件回溯</h3>
+        <p>
+          {events.length} 条事件 · {auditCount} 条 audit 记录
+          {internalCount > 0 ? ` · ${internalCount} 条 internal` : ""}
+        </p>
+      </section>
+      <div className="raw-audit-list drawer-audit-list">
+        {events.map((event) => (
+          <article className={`raw-audit-row ${event.severity ?? "info"}`} key={event.id}>
+            <div className="raw-audit-row-header">
+              <strong>{event.title}</strong>
+              <span>{event.type}</span>
+            </div>
+            <p><CompactText text={event.detail} /></p>
+            <em>
+              {event.agent}
+              {event.phase ? ` · ${event.phase}` : ""}
+            </em>
+          </article>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1752,7 +2260,21 @@ function SpecPanel({ quest }: { quest?: Quest }) {
   return (
     <div className="inspector-stack">
       <InspectorSection title="Agent Spec">
-        <SpecBlock title="用户目标" items={[quest.spec.userGoal]} />
+        <div className="spec-overview-card">
+          <span>用户目标</span>
+          <p><CompactText text={quest.spec.userGoal} max={220} /></p>
+          {compactDetail(quest.spec.userGoal, 220) !== quest.spec.userGoal ? (
+            <details className="evidence-inline-details">
+              <summary>完整目标</summary>
+              <p><CompactText text={quest.spec.userGoal} /></p>
+            </details>
+          ) : null}
+          <div className="spec-overview-meta">
+            <em>{quest.spec.functionalRequirements.length} 功能</em>
+            <em>{quest.spec.nonFunctionalRequirements.length} 非功能</em>
+            <em>{quest.spec.acceptanceCriteria.length} 验收</em>
+          </div>
+        </div>
         <SpecBlock title="功能需求" items={quest.spec.functionalRequirements} />
         <SpecBlock title="非功能需求" items={quest.spec.nonFunctionalRequirements} />
         <SpecBlock title="验收标准" items={quest.spec.acceptanceCriteria} />
@@ -1762,7 +2284,19 @@ function SpecPanel({ quest }: { quest?: Quest }) {
   );
 }
 
-function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean; quest?: Quest; onApprovePlan: () => void; onRejectPlan: () => void }) {
+function PlanPanel({
+  busy,
+  projects,
+  quest,
+  onApprovePlan,
+  onRejectPlan
+}: {
+  busy: boolean;
+  projects: Project[];
+  quest?: Quest;
+  onApprovePlan: () => void;
+  onRejectPlan: () => void;
+}) {
   const [plan, setPlan] = useState<OrchestrationPlan | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1809,44 +2343,76 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
   }
 
   const isPending = quest.planApproval?.status === "pending";
+  const stepLabel = `${plan.steps.length} 步骤`;
+  const summaryIsCompacted = compactDetail(plan.summary, 220) !== plan.summary;
 
   return (
     <div className="inspector-stack">
       <InspectorSection title="编排计划">
-        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>{plan.summary}</p>
-        {plan.steps.map((step, index) => (
-          <div key={step.id} style={{ padding: "8px 0", borderBottom: index < plan.steps.length - 1 ? "1px solid var(--border)" : undefined }}>
-            <div style={{ fontWeight: 500, fontSize: 13 }}>
-              {index + 1}. {step.description}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Agent: {step.agentName}
-              {step.dependencies.length > 0 ? ` · 依赖: ${step.dependencies.join(", ")}` : ""}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-              预期输出: {step.contract?.outputFormat || step.expectedOutput}
-            </div>
-            {step.contract?.boundaries ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                边界: {step.contract.boundaries}
+        <div className="plan-summary">
+          <p>{compactDetail(plan.summary, 220)}</p>
+          <span>{stepLabel}</span>
+        </div>
+        {summaryIsCompacted ? (
+          <details className="plan-summary-details">
+            <summary>完整摘要</summary>
+            <p>{plan.summary}</p>
+          </details>
+        ) : null}
+        <div className="plan-flow" aria-label="编排计划流程">
+          {plan.steps.map((step, index) => {
+            const targetProject = step.targetProjectId ? projectName(projects, step.targetProjectId) : "";
+            const visibleDescription = compactDetail(step.description, 150);
+            const detailRows = [
+              visibleDescription !== step.description ? { label: "完整描述", value: step.description } : undefined,
+              { label: "预期输出", value: step.expectedOutput },
+              { label: "输出格式", value: step.contract?.outputFormat },
+              { label: "边界", value: step.contract?.boundaries },
+              { label: "信息源", value: step.contract?.sourcesGuidance },
+              { label: "完成判据", value: step.contract?.doneCriteria }
+            ].filter((row): row is { label: string; value: string } => Boolean(row?.value));
+
+            return (
+              <div className="plan-flow-item" key={step.id}>
+                <div className="plan-step-connector" aria-hidden="true">
+                  <span className="plan-step-index">{index + 1}</span>
+                  {index < plan.steps.length - 1 ? <span className="plan-step-line" /> : null}
+                </div>
+                <article className="plan-step-card">
+                  <div className="plan-step-heading">
+                    <span>步骤 {index + 1}</span>
+                    <h4>{visibleDescription}</h4>
+                  </div>
+                  <div className="plan-step-meta">
+                    <span>Agent: {step.agentName}</span>
+                    {targetProject ? <span>项目: {targetProject}</span> : null}
+                    {step.dependencies.map((dependency) => (
+                      <span key={dependency}>依赖: {dependency}</span>
+                    ))}
+                  </div>
+                  {detailRows.length > 0 ? (
+                    <details className="plan-step-details">
+                      <summary>查看详情</summary>
+                      <dl className="plan-step-detail-grid">
+                        {detailRows.map((row) => (
+                          <div key={row.label}>
+                            <dt>{row.label}</dt>
+                            <dd>{row.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </details>
+                  ) : null}
+                </article>
               </div>
-            ) : null}
-            {step.contract?.sourcesGuidance ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                信息源: {step.contract.sourcesGuidance}
-              </div>
-            ) : null}
-            {step.contract?.doneCriteria ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                完成判据: {step.contract.doneCriteria}
-              </div>
-            ) : null}
-          </div>
-        ))}
+            );
+          })}
+        </div>
         {plan.notes ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
-            <strong>备注:</strong> {plan.notes}
-          </div>
+          <details className="plan-notes-details">
+            <summary>备注</summary>
+            <p>{plan.notes}</p>
+          </details>
         ) : null}
       </InspectorSection>
       {isPending ? (
@@ -1908,9 +2474,32 @@ function OverviewPanel({
     project: projects.find((p) => p.id === pid),
     worktree: quest.worktrees.find((w) => w.projectId === pid)
   })) ?? [];
+  const validationCount = quest?.validationResults.length ?? 0;
+  const riskCount = quest?.reviewNotes.length ?? 0;
+  const deliveryCount = quest?.deliveryResults.length ?? 0;
 
   return (
     <div className="inspector-stack">
+      <InspectorSection title="状态摘要">
+        <div className="overview-metrics">
+          <div className="overview-metric">
+            <strong>{affectedProjects.length}</strong>
+            <span>项目</span>
+          </div>
+          <div className="overview-metric">
+            <strong>{validationCount}</strong>
+            <span>验证</span>
+          </div>
+          <div className={riskCount > 0 ? "overview-metric warning" : "overview-metric"}>
+            <strong>{riskCount}</strong>
+            <span>风险</span>
+          </div>
+          <div className="overview-metric success">
+            <strong>{deliveryCount}</strong>
+            <span>交付</span>
+          </div>
+        </div>
+      </InspectorSection>
       <InspectorSection title="受影响项目">
         {affectedProjects.length === 0 ? (
           <p className="muted">暂未关联项目。</p>
@@ -1938,7 +2527,7 @@ function OverviewPanel({
                 <div className="worktree-title">
                   <strong>{page.title}</strong>
                 </div>
-                <span className="muted">{summary || "(无摘要)"}</span>
+                <span className="muted"><CompactText text={summary || "(无摘要)"} /></span>
               </div>
             );
           })
@@ -1952,17 +2541,45 @@ function OverviewPanel({
       ) : null}
       {quest?.deliveryResults?.length ? (
         <InspectorSection title="交付">
-          {quest.deliveryResults.map((delivery) => (
-            <div className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
-              <div className="worktree-title">
-                <strong>{projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId}</strong>
-                <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
-              </div>
-              {delivery.commitMessage ? <p>{delivery.commitMessage}</p> : null}
-              {delivery.prUrl ? <span>{delivery.prUrl}</span> : null}
-              {delivery.note ? <p>{delivery.note}</p> : null}
-            </div>
-          ))}
+          {quest.deliveryResults.map((delivery) => {
+            const projectLabel = projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId;
+            const summary = delivery.prUrl || delivery.note || delivery.commitMessage || delivery.validationOutput || "交付记录已生成。";
+            const commitIsReady = Boolean(delivery.commitSha || delivery.status === "committed" || delivery.status === "pr_ready" || delivery.status === "pr_created");
+            const detailRows = [
+              { label: "Commit SHA", value: delivery.commitSha },
+              { label: "Commit Message", value: delivery.commitMessage },
+              { label: "PR", value: delivery.prUrl },
+              { label: "验证输出", value: delivery.validationOutput },
+              { label: "交付说明", value: delivery.note }
+            ].filter((row): row is { label: string; value: string } => Boolean(row.value));
+            return (
+              <article className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
+                <div className="worktree-title">
+                  <strong>{projectLabel}</strong>
+                  <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
+                </div>
+                <p className="delivery-summary"><CompactText text={summary} max={150} /></p>
+                <div className="delivery-chips">
+                  {commitIsReady ? <span>commit ready</span> : null}
+                  {delivery.prUrl || delivery.status === "pr_ready" || delivery.status === "pr_created" ? <span>PR handoff</span> : null}
+                  <span>{delivery.createdAt.slice(0, 10)}</span>
+                </div>
+                {detailRows.length > 0 ? (
+                  <details className="evidence-inline-details">
+                    <summary>交付详情</summary>
+                    <dl className="evidence-detail-grid">
+                      {detailRows.map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd><CompactText text={row.value} /></dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
+                ) : null}
+              </article>
+            );
+          })}
         </InspectorSection>
       ) : null}
     </div>
@@ -1978,25 +2595,38 @@ function CapabilitiesPanel({
 }) {
   const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
   const recommendations = quest?.capabilityRecommendations ?? [];
+  const statusLabel = {
+    accepted: "已启用",
+    dismissed: "已忽略",
+    pending: "建议启用"
+  } as const;
 
   return (
     <div className="inspector-stack">
-      <InspectorSection title="本 Quest 使用的能力">
+      <InspectorSection title="本次匹配的专家">
+        <p className="section-hint">这些专家根据当前 request 被匹配出来；建议启用表示系统认为它适合本次任务，但还未确认参与。</p>
         {recommendations.length === 0 ? (
-          <p className="muted">本 Quest 暂未匹配到额外能力，将使用默认能力执行。</p>
+          <p className="muted">本次 request 暂未匹配到额外专家，将由默认 Agent 执行。</p>
         ) : null}
         {recommendations.map((recommendation) => {
           const capability = capabilityById.get(recommendation.capabilityId);
           if (!capability) {
             return null;
           }
+          const recommendationStatusClass =
+            recommendation.status === "accepted"
+              ? "badge green"
+              : recommendation.status === "dismissed"
+                ? "badge red"
+                : "badge blue";
           return (
             <article className="capability-row" key={recommendation.capabilityId}>
               <div className="worktree-title">
                 <strong>{capability.name}</strong>
+                <em className={recommendationStatusClass}>{statusLabel[recommendation.status]}</em>
               </div>
-              <p>{capability.description}</p>
-              <span>{recommendation.reason}</span>
+              <p><CompactText text={capability.description} /></p>
+              <span><CompactText text={recommendation.reason} /></span>
               <code>{capability.kind} · {capability.source} · 匹配度 {Math.round(recommendation.confidence * 100)}%</code>
               <div className="capability-permissions">
                 {recommendation.requiredPermissions.map((permission) => (
@@ -2007,7 +2637,8 @@ function CapabilitiesPanel({
           );
         })}
       </InspectorSection>
-      <InspectorSection title="Manifest">
+      <InspectorSection title="专家库">
+        <p className="section-hint">这里是系统已注册的可用专家，不代表全部都会在本次 request 中参与。</p>
         {capabilities.map((capability) => (
           <div className="manifest-row" key={capability.id}>
             <strong>{capability.name}</strong>
@@ -2043,12 +2674,30 @@ function FilesPanel({
   quest?: Quest;
   onFileSelect: (file: ChangedFile) => void;
 }) {
+  const projectCount = new Set(changedFiles.map((file) => file.projectId)).size;
+  const statusCounts = Array.from(
+    changedFiles.reduce((counts, file) => {
+      counts.set(file.status, (counts.get(file.status) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>())
+  );
+
   return (
     <div className="changed-file-list">
       {changedFiles.length === 0 ? (
         <p className="muted">
           {questHasExecuted(quest) ? "本次执行没有产生文件变更。" : "运行 Quest 后会展示变更文件。"}
         </p>
+      ) : null}
+      {changedFiles.length > 0 ? (
+        <div className="changed-file-summary" aria-label="文件变更摘要">
+          <strong>{changedFiles.length}</strong>
+          <span>文件变更</span>
+          <em>{projectCount} 项目</em>
+          {statusCounts.map(([status, count]) => (
+            <em key={status}>{count} {status}</em>
+          ))}
+        </div>
       ) : null}
       {changedFiles.map((file, index) => (
         <motion.button
@@ -2061,7 +2710,7 @@ function FilesPanel({
           transition={{ duration: 0.26, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
         >
           <span>{projectById.get(file.projectId)?.name ?? file.projectId}</span>
-          <code>{file.path}</code>
+          <code><CompactText text={file.path} /></code>
           <em>{file.status}</em>
         </motion.button>
       ))}
@@ -2081,7 +2730,8 @@ function DiffPanel({ file, projectById, quest }: { file?: ChangedFile; projectBy
     <div className="diff-review">
       <div className="diff-meta">
         <strong>{projectById.get(file.projectId)?.name ?? file.projectId}</strong>
-        <code>{file.path}</code>
+        <code><CompactText text={file.path} /></code>
+        <em>{file.status}</em>
       </div>
       <pre>{file.diff || "No diff content."}</pre>
     </div>
@@ -3942,11 +4592,13 @@ function SpecBlock({ title, items, empty }: { title: string; items: string[]; em
     <div className="spec-block">
       <h4>{title}</h4>
       {items.length === 0 ? <p className="muted">{empty ?? "暂无内容。"}</p> : null}
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
+      {items.length > 0 ? (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${title}-${index}-${item}`}><CompactText text={item} /></li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }
