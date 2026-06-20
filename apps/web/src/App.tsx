@@ -1599,9 +1599,9 @@ function QuestStage({
           <h1>{quest ? quest.title : "把需求交给 Agent"}</h1>
           <div className="run-context">
             <span>{workspace.name}</span>
-            <ChevronDown size={14} />
+            <span className="run-context-separator" aria-hidden="true" />
             <span>{activeEntryAgent?.name ?? (questBackend?.name ?? "未选择 Agent")}</span>
-            <ChevronDown size={14} />
+            <span className="run-context-separator" aria-hidden="true" />
             <span>{affectedProjectCount} project{affectedProjectCount === 1 ? "" : "s"}</span>
           </div>
         </div>

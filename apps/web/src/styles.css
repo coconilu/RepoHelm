@@ -854,7 +854,7 @@ kbd {
   flex-direction: column;
   gap: 18px;
   overflow: hidden;
-  padding: 28px 36px 22px;
+  padding: 18px 36px 22px;
 }
 
 .chat-header {
@@ -1358,6 +1358,15 @@ kbd {
   flex-wrap: wrap;
   font-size: 13px;
   gap: 7px;
+}
+
+.run-context-separator {
+  background: var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 auto;
+  height: 3px;
+  opacity: 0.9;
+  width: 3px;
 }
 
 .quest-composer {
@@ -3380,7 +3389,7 @@ code {
   }
 
   .chat-stage {
-    padding: 20px 28px 14px;
+    padding: 16px 28px 14px;
   }
 
   .chat-stage textarea {
@@ -3450,7 +3459,7 @@ code {
   }
 
   .chat-stage {
-    padding: 22px 14px;
+    padding: 16px 14px;
   }
 
   .chat-header {

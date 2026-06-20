@@ -519,6 +519,8 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.getByRole("button", { name: new RegExp(questTitle) }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
   await expect(page.locator(".chat-header").getByRole("button", { name: "交付" })).toBeVisible();
+  await expect(page.locator(".run-context .lucide-chevron-down")).toHaveCount(0);
+  await expect(page.locator(".run-context-separator")).toHaveCount(2);
 
   // Capability recommendation surfaced during the streaming creation flow.
   await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
