@@ -536,7 +536,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
     capabilityRecommendations: [
       {
         capabilityId: capability.id,
-        reason: "Use PR handoff validation before commit.",
+        reason: "Use PR handoff validation during planning before commit.",
         confidence: 0.91,
         requiredPermissions: ["read:changed-files"],
         status: "pending",
@@ -648,15 +648,17 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
   await expect(capabilitiesDrawer).toBeVisible();
   await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("这些专家根据当前 request 被匹配出来；状态会显示它们是否已启用、待确认或已忽略。", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("这些专家根据当前 request 被匹配出来；建议启用表示系统认为它适合本次任务，但还未确认参与。", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.getByText("专家库", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.getByText("这里是系统已注册的可用专家，不代表全部都会在本次 request 中参与。", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.getByText("Manifest", { exact: true })).toHaveCount(0);
   const capabilityRow = capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Delivery Review Skill" });
   await expect(capabilityRow).toBeVisible();
-  await expect(capabilityRow.getByText("待确认", { exact: true })).toBeVisible();
+  await expect(capabilityRow.getByText("建议启用", { exact: true })).toBeVisible();
   await expect(capabilityRow.locator(".evidence-highlight").getByText("PR handoff", { exact: true }).first()).toBeVisible();
   await expect(capabilityRow.locator(".evidence-highlight").getByText("validation", { exact: true }).first()).toBeVisible();
+  await expect(capabilityRow.locator(".evidence-highlight").getByText("planning", { exact: true })).toBeVisible();
+  await expect(capabilityRow.locator(".evidence-highlight").getByText("plan", { exact: true })).toHaveCount(0);
   await expect(capabilityRow.locator(".capability-permissions").getByText("read:changed-files", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Accepted Expert" }).getByText("已启用", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Dismissed Expert" }).getByText("已忽略", { exact: true })).toBeVisible();

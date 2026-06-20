@@ -1159,25 +1159,26 @@ function compactDetail(detail: string, max = 180) {
 
 const evidenceHighlightExpression = [
   "REPOHELM_ENABLE_GH_PR=1",
-  "golden-api-repo",
-  "golden-web-repo",
+  "\\bgolden-api-repo\\b",
+  "\\bgolden-web-repo\\b",
   "src\\/[A-Za-z0-9_./-]+",
-  "README(?:\\.md)?",
-  "(?:findItem|renderItemDetail|listItems|renderCatalog)(?:\\(sku\\)|\\(\\))?",
+  "\\bREADME(?:\\.md)?\\b",
+  "\\b(?:findItem|renderItemDetail|listItems|renderCatalog)(?:\\(sku\\)|\\(\\))?",
   "\"sku: label\"",
   "\"not found\"",
-  "undefined",
-  "pr_ready",
-  "worktree",
-  "PR handoff",
-  "PR",
-  "commit",
-  "Diff",
-  "Spec",
-  "Plan",
-  "Audit",
-  "internal",
-  "validation"
+  "\\bundefined\\b",
+  "\\bpr_ready\\b",
+  "\\bworktree\\b",
+  "\\bPR handoff\\b",
+  "\\bPR\\b",
+  "\\bcommit\\b",
+  "\\bDiff\\b",
+  "\\bSpec\\b",
+  "\\bplanning\\b",
+  "\\bPlan\\b",
+  "\\bAudit\\b",
+  "\\binternal\\b",
+  "\\bvalidation\\b"
 ].join("|");
 
 const evidenceHighlightPattern = new RegExp(`(${evidenceHighlightExpression})`, "gi");
@@ -2603,13 +2604,13 @@ function CapabilitiesPanel({
   const statusLabel = {
     accepted: "已启用",
     dismissed: "已忽略",
-    pending: "待确认"
+    pending: "建议启用"
   } as const;
 
   return (
     <div className="inspector-stack">
       <InspectorSection title="本次匹配的专家">
-        <p className="section-hint">这些专家根据当前 request 被匹配出来；状态会显示它们是否已启用、待确认或已忽略。</p>
+        <p className="section-hint">这些专家根据当前 request 被匹配出来；建议启用表示系统认为它适合本次任务，但还未确认参与。</p>
         {recommendations.length === 0 ? (
           <p className="muted">本次 request 暂未匹配到额外专家，将由默认 Agent 执行。</p>
         ) : null}
