@@ -1251,7 +1251,7 @@ const evidenceTabLabels: Record<InspectorTab, string> = {
   overview: "概要",
   spec: "Spec",
   plan: "Plan",
-  capabilities: "能力",
+  capabilities: "专家团",
   files: "文件",
   diff: "Diff",
   audit: "Audit",
@@ -2021,7 +2021,7 @@ const inspectorTabItems: Array<{ id: InspectorTab; label: string }> = [
   { id: "overview", label: "概要" },
   { id: "spec", label: "Spec" },
   { id: "plan", label: "Plan" },
-  { id: "capabilities", label: "能力" },
+  { id: "capabilities", label: "专家团" },
   { id: "files", label: "文件" },
   { id: "diff", label: "Diff" },
   { id: "audit", label: "Audit" },
@@ -2600,22 +2600,35 @@ function CapabilitiesPanel({
 }) {
   const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
   const recommendations = quest?.capabilityRecommendations ?? [];
+  const statusLabel = {
+    accepted: "已启用",
+    dismissed: "已忽略",
+    pending: "待确认"
+  } as const;
 
   return (
     <div className="inspector-stack">
-      <InspectorSection title="本 Quest 使用的能力">
+      <InspectorSection title="本次匹配的专家">
+        <p className="section-hint">这些专家根据当前 request 被匹配出来；状态会显示它们是否已启用、待确认或已忽略。</p>
         {recommendations.length === 0 ? (
-          <p className="muted">本 Quest 暂未匹配到额外能力，将使用默认能力执行。</p>
+          <p className="muted">本次 request 暂未匹配到额外专家，将由默认 Agent 执行。</p>
         ) : null}
         {recommendations.map((recommendation) => {
           const capability = capabilityById.get(recommendation.capabilityId);
           if (!capability) {
             return null;
           }
+          const recommendationStatusClass =
+            recommendation.status === "accepted"
+              ? "badge green"
+              : recommendation.status === "dismissed"
+                ? "badge red"
+                : "badge blue";
           return (
             <article className="capability-row" key={recommendation.capabilityId}>
               <div className="worktree-title">
                 <strong>{capability.name}</strong>
+                <em className={recommendationStatusClass}>{statusLabel[recommendation.status]}</em>
               </div>
               <p><HighlightedText text={capability.description} /></p>
               <span><HighlightedText text={recommendation.reason} /></span>
@@ -2629,7 +2642,8 @@ function CapabilitiesPanel({
           );
         })}
       </InspectorSection>
-      <InspectorSection title="Manifest">
+      <InspectorSection title="专家库">
+        <p className="section-hint">这里是系统已注册的可用专家，不代表全部都会在本次 request 中参与。</p>
         {capabilities.map((capability) => (
           <div className="manifest-row" key={capability.id}>
             <strong>{capability.name}</strong>

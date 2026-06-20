@@ -651,6 +651,13 @@ kbd {
   padding: 0 3px;
 }
 
+.section-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+}
+
 .capability-row {
   background: var(--surface-2);
   border: 1px solid var(--border);

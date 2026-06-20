@@ -465,6 +465,18 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
     createdAt,
     updatedAt: createdAt
   };
+  const acceptedCapability = {
+    ...capability,
+    id: `cap-accepted-${runId}`,
+    name: "Accepted Expert",
+    description: "Runs enabled validation checks."
+  };
+  const dismissedCapability = {
+    ...capability,
+    id: `cap-dismissed-${runId}`,
+    name: "Dismissed Expert",
+    description: "Suggests optional cleanup checks."
+  };
   const events = [
     {
       id: `event-audit-${runId}`,
@@ -529,6 +541,22 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
         requiredPermissions: ["read:changed-files"],
         status: "pending",
         createdAt
+      },
+      {
+        capabilityId: acceptedCapability.id,
+        reason: "Already enabled for delivery validation.",
+        confidence: 0.84,
+        requiredPermissions: ["read:changed-files"],
+        status: "accepted",
+        createdAt
+      },
+      {
+        capabilityId: dismissedCapability.id,
+        reason: "Optional cleanup review was ignored for this request.",
+        confidence: 0.64,
+        requiredPermissions: ["read:changed-files"],
+        status: "dismissed",
+        createdAt
       }
     ],
     autoApprovePlan: false,
@@ -543,7 +571,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       quests: [quest],
       events,
       knowledge: [],
-      capabilities: [capability],
+      capabilities: [capability, acceptedCapability, dismissedCapability],
       securityPolicy: {
         commandApprovalMode: "allowlist",
         allowedCommands: [],
@@ -616,14 +644,22 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
     specDrawer.locator(".spec-block").filter({ hasText: "功能需求" }).locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })
   ).toBeVisible();
 
-  await specDrawer.locator(".inspector-tabs").getByRole("button", { name: "能力" }).click();
-  const capabilitiesDrawer = page.getByRole("dialog", { name: "能力" });
+  await specDrawer.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
+  const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
   await expect(capabilitiesDrawer).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("这些专家根据当前 request 被匹配出来；状态会显示它们是否已启用、待确认或已忽略。", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("专家库", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("这里是系统已注册的可用专家，不代表全部都会在本次 request 中参与。", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("Manifest", { exact: true })).toHaveCount(0);
   const capabilityRow = capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Delivery Review Skill" });
   await expect(capabilityRow).toBeVisible();
+  await expect(capabilityRow.getByText("待确认", { exact: true })).toBeVisible();
   await expect(capabilityRow.locator(".evidence-highlight").getByText("PR handoff", { exact: true }).first()).toBeVisible();
   await expect(capabilityRow.locator(".evidence-highlight").getByText("validation", { exact: true }).first()).toBeVisible();
   await expect(capabilityRow.locator(".capability-permissions").getByText("read:changed-files", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Accepted Expert" }).getByText("已启用", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Dismissed Expert" }).getByText("已忽略", { exact: true })).toBeVisible();
 
   await capabilitiesDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).click();
   const auditDrawer = page.getByRole("dialog", { name: "Audit" });
@@ -803,8 +839,8 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(specMeta.getByText("1 非功能", { exact: true })).toBeVisible();
   await expect(specMeta.getByText("3 验收", { exact: true })).toBeVisible();
   await expect(page.locator(".spec-block").filter({ hasText: "功能需求" }).getByText("功能一", { exact: true })).toBeVisible();
-  await page.locator(".inspector-tabs").getByRole("button", { name: "能力" }).click();
-  await expect(page.getByRole("dialog", { name: "能力" })).toBeVisible();
+  await page.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
+  await expect(page.getByRole("dialog", { name: "专家团" })).toBeVisible();
   const securityCapability = page.locator(".capability-row").filter({ hasText: "Security Review Skill" });
   await expect(securityCapability).toBeVisible();
   await expect(securityCapability.getByText("read:changed-files")).toBeVisible();
