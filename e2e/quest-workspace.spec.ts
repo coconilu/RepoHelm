@@ -339,6 +339,18 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   await expect(evidenceDrawer.getByText("完整事件回溯")).toBeVisible();
   await expect(evidenceDrawer.getByText("5 条事件")).toBeVisible();
   await expect(evidenceDrawer.getByText("Internal backend bootstrap token preserved for audit.")).toBeVisible();
+  const auditDrawerElement = await evidenceDrawer.elementHandle();
+  expect(auditDrawerElement).not.toBeNull();
+  const outsideSpecEvidenceButton = page.getByLabel("证据入口").getByRole("button", { name: "打开 Spec 证据" });
+  await outsideSpecEvidenceButton.click();
+  const specEvidenceDrawer = page.getByRole("dialog", { name: "Spec" });
+  await expect(specEvidenceDrawer).toBeVisible();
+  await expect(page.locator(".evidence-drawer")).toHaveCount(1);
+  expect(await auditDrawerElement?.evaluate((drawer) => drawer.isConnected)).toBe(true);
+  await page.waitForTimeout(25);
+  expect(await specEvidenceDrawer.evaluate((drawer) => drawer.contains(document.activeElement))).toBe(true);
+  await specEvidenceDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).click();
+  await expect(evidenceDrawer).toBeVisible();
   await pointerDownAtCenter(page, questHeading);
   try {
     await expect(page.locator(".evidence-drawer")).toHaveCount(0);
@@ -403,7 +415,7 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   }
   await dockedEvidence.getByRole("button", { name: "关闭 Evidence Drawer" }).click();
   await expect(page.locator(".evidence-drawer")).toHaveCount(0);
-  await page.setViewportSize({ width: 1000, height: 720 });
+  await page.setViewportSize({ width: 1260, height: 720 });
   await openAuditDrawerButton.click();
   const compactEvidenceDrawer = page.getByRole("dialog", { name: "Audit" });
   await expect(compactEvidenceDrawer).toBeVisible();

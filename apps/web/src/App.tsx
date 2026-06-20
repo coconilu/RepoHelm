@@ -110,19 +110,31 @@ const defaultColumnWidths = {
   sidebar: 280,
   evidence: 440
 };
-const minimumEvidenceDockMainWidth = 786;
+const minimumDockedQuestMainWidth = 420;
+const evidenceDockDividerWidth = 6;
 const compactWorkbenchBreakpoint = 1180;
 const compactSidebarWidth = 240;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-function canDockEvidencePane(sidebarWidth: number) {
+function dockableContentWidth(sidebarWidth: number) {
   if (typeof window === "undefined") {
-    return true;
+    return Number.POSITIVE_INFINITY;
   }
   const sidebarAndDivider =
     window.innerWidth <= compactWorkbenchBreakpoint ? compactSidebarWidth : sidebarWidth + 6;
-  return window.innerWidth - sidebarAndDivider >= minimumEvidenceDockMainWidth;
+  return window.innerWidth - sidebarAndDivider;
+}
+
+function maxDockedEvidenceWidth(sidebarWidth: number) {
+  return Math.min(720, Math.max(360, dockableContentWidth(sidebarWidth) - minimumDockedQuestMainWidth - evidenceDockDividerWidth));
+}
+
+function canDockEvidencePane(sidebarWidth: number, evidenceWidth: number) {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return dockableContentWidth(sidebarWidth) >= minimumDockedQuestMainWidth + evidenceDockDividerWidth + evidenceWidth;
 }
 
 export function App() {
@@ -145,7 +157,7 @@ export function App() {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false);
   const [evidenceDrawerPinned, setEvidenceDrawerPinned] = useState(false);
-  const [evidenceDockAvailable, setEvidenceDockAvailable] = useState(() => canDockEvidencePane(defaultColumnWidths.sidebar));
+  const [evidenceDockAvailable, setEvidenceDockAvailable] = useState(() => canDockEvidencePane(defaultColumnWidths.sidebar, defaultColumnWidths.evidence));
   const [commandOpen, setCommandOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof document !== "undefined") {
@@ -201,6 +213,7 @@ export function App() {
     evidence: number;
   } | null>(null);
   const evidenceReturnFocusRef = useRef<HTMLElement | null>(null);
+  const evidenceReturnFocusTimeoutRef = useRef<number | null>(null);
 
   const load = async () => {
     const [nextState, nextBackends, nextReadiness] = await Promise.all([
@@ -229,11 +242,11 @@ export function App() {
   }, [columnWidths]);
 
   useEffect(() => {
-    const updateDockAvailability = () => setEvidenceDockAvailable(canDockEvidencePane(columnWidths.sidebar));
+    const updateDockAvailability = () => setEvidenceDockAvailable(canDockEvidencePane(columnWidths.sidebar, columnWidths.evidence));
     updateDockAvailability();
     window.addEventListener("resize", updateDockAvailability);
     return () => window.removeEventListener("resize", updateDockAvailability);
-  }, [columnWidths.sidebar]);
+  }, [columnWidths.evidence, columnWidths.sidebar]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -304,23 +317,33 @@ export function App() {
   const changedFiles = selectedQuest?.changedFiles.map((file) => normalizeChangedFile(file)) ?? [];
   const selectedChangedFile =
     changedFiles.find((file) => changedFileKey(file) === selectedChangedFileKey) ?? changedFiles[0];
+  const clearEvidenceReturnFocusTimeout = useCallback(() => {
+    if (evidenceReturnFocusTimeoutRef.current !== null) {
+      window.clearTimeout(evidenceReturnFocusTimeoutRef.current);
+      evidenceReturnFocusTimeoutRef.current = null;
+    }
+  }, []);
   const openEvidenceDrawer = useCallback((tab: InspectorTab = "overview") => {
+    clearEvidenceReturnFocusTimeout();
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
       evidenceReturnFocusRef.current = document.activeElement;
     }
     setInspectorTab(tab);
     setEvidenceDrawerOpen(true);
-  }, []);
+  }, [clearEvidenceReturnFocusTimeout]);
   const closeEvidenceDrawer = useCallback(() => {
+    clearEvidenceReturnFocusTimeout();
     setEvidenceDrawerOpen(false);
     setEvidenceDrawerPinned(false);
-    window.setTimeout(() => {
+    evidenceReturnFocusTimeoutRef.current = window.setTimeout(() => {
+      evidenceReturnFocusTimeoutRef.current = null;
       const target = evidenceReturnFocusRef.current;
       if (target?.isConnected) {
         target.focus({ preventScroll: true });
       }
     }, 0);
-  }, []);
+  }, [clearEvidenceReturnFocusTimeout]);
+  useEffect(() => clearEvidenceReturnFocusTimeout, [clearEvidenceReturnFocusTimeout]);
   const activeBackend = agentBackends.find((backend) => backend.id === agentBackendId);
   // The pill should reflect what actually answers: the entry agent + its model.
   const activeEntryAgentGlobal = state?.entrySubAgentId ? state.subAgents[state.entrySubAgentId] : undefined;
@@ -521,9 +544,10 @@ export function App() {
         return;
       }
       const delta = moveEvent.clientX - start.pointerX;
+      const evidenceMax = evidenceDrawerPinned && evidenceDockAvailable ? maxDockedEvidenceWidth(start.sidebar) : 720;
       setColumnWidths({
         sidebar: start.divider === "sidebar" ? clamp(start.sidebar + delta, 220, 380) : start.sidebar,
-        evidence: start.divider === "evidence" ? clamp(start.evidence - delta, 360, 720) : start.evidence
+        evidence: start.divider === "evidence" ? clamp(start.evidence - delta, 360, evidenceMax) : start.evidence
       });
     };
 
@@ -1300,6 +1324,7 @@ function EvidenceQuickActions({
         <button
           aria-label={`打开 ${evidenceTabLabels[tab]} 证据`}
           className="evidence-chip"
+          data-evidence-trigger="true"
           key={tab}
           onClick={() => onEvidenceOpen(tab)}
           type="button"
@@ -1359,15 +1384,15 @@ function QuestResultSummary({
         <p>{compactDetail(detail, 220)}</p>
         {projectSummary ? <span className="quest-result-subtle">{projectSummary}</span> : null}
         <div className="quest-result-metrics">
-          <button type="button" onClick={() => onEvidenceOpen("files")} disabled={changedCount === 0}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("files")} disabled={changedCount === 0}>
             <FileText size={14} />
             <span>{changedCount} 文件</span>
           </button>
-          <button type="button" onClick={() => onEvidenceOpen("plan")} disabled={!canOpenPlan}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("plan")} disabled={!canOpenPlan}>
             <Route size={14} />
             <span>{stepCount > 0 ? `${stepCount} 步骤` : "Plan"}</span>
           </button>
-          <button type="button" onClick={() => onEvidenceOpen("diff")} disabled={changedCount === 0}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("diff")} disabled={changedCount === 0}>
             <Pencil size={14} />
             <span>Diff</span>
           </button>
@@ -1417,6 +1442,7 @@ function QuestMilestones({
                   <button
                     aria-label={`打开 ${evidenceTabLabels[tab]} 证据: ${event.title}`}
                     className="evidence-chip"
+                    data-evidence-trigger="true"
                     key={tab}
                     onClick={() => onEvidenceOpen(tab)}
                     type="button"
@@ -1456,7 +1482,7 @@ function RawAuditLog({ events, onEvidenceOpen }: { events: AgentEvent[]; onEvide
         </p>
       </div>
       <div className="raw-audit-actions">
-        <button className="ghost-action" type="button" onClick={() => onEvidenceOpen("audit")}>
+        <button className="ghost-action" data-evidence-trigger="true" type="button" onClick={() => onEvidenceOpen("audit")}>
           <PanelRightOpen size={14} />
           <span>打开 Audit Drawer</span>
         </button>
@@ -1618,6 +1644,7 @@ function QuestStage({
             <button
               aria-expanded={evidenceDrawerOpen}
               className="ghost-action"
+              data-evidence-trigger="true"
               onClick={() => onEvidenceOpen("overview")}
               type="button"
             >
@@ -1863,7 +1890,7 @@ function EvidenceDrawer({
     if (!docked) {
       drawerRef.current?.focus();
     }
-  }, [docked, quest.id]);
+  }, [docked, effectiveTab, quest.id]);
 
   useEffect(() => {
     if (docked) {
@@ -1876,6 +1903,9 @@ function EvidenceDrawer({
       }
       const target = event.target;
       if (target instanceof Node && !drawer.contains(target)) {
+        if (target instanceof Element && target.closest("[data-evidence-trigger='true']")) {
+          return;
+        }
         onClose();
       }
     };
