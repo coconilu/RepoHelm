@@ -1157,6 +1157,50 @@ function compactDetail(detail: string, max = 180) {
   return `${normalized.slice(0, max - 1)}…`;
 }
 
+const evidenceHighlightExpression = [
+  "REPOHELM_ENABLE_GH_PR=1",
+  "golden-api-repo",
+  "golden-web-repo",
+  "src\\/[A-Za-z0-9_./-]+",
+  "README(?:\\.md)?",
+  "(?:findItem|renderItemDetail|listItems|renderCatalog)(?:\\(sku\\)|\\(\\))?",
+  "\"sku: label\"",
+  "\"not found\"",
+  "undefined",
+  "pr_ready",
+  "worktree",
+  "PR handoff",
+  "PR",
+  "commit",
+  "Diff",
+  "Spec",
+  "Plan",
+  "Audit",
+  "internal",
+  "validation"
+].join("|");
+
+const evidenceHighlightPattern = new RegExp(`(${evidenceHighlightExpression})`, "gi");
+const evidenceHighlightExactPattern = new RegExp(`^(?:${evidenceHighlightExpression})$`, "i");
+
+function HighlightedText({ text, max }: { text: string; max?: number }) {
+  const value = max ? compactDetail(text, max) : text;
+  if (!value) {
+    return null;
+  }
+  return (
+    <>
+      {value.split(evidenceHighlightPattern).map((part, index) =>
+        evidenceHighlightExactPattern.test(part) ? (
+          <mark className="evidence-highlight" key={`${part}-${index}`}>{part}</mark>
+        ) : (
+          <span key={`${part}-${index}`}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
+
 function questResultTone(quest: Quest) {
   if (quest.status === "ready" || quest.status === "delivered") return "success";
   if (quest.status === "blocked" || quest.status === "cancelled") return "danger";
@@ -2196,7 +2240,7 @@ function AuditPanel({ events }: { events: AgentEvent[] }) {
               <strong>{event.title}</strong>
               <span>{event.type}</span>
             </div>
-            <p>{event.detail}</p>
+            <p><HighlightedText text={event.detail} /></p>
             <em>
               {event.agent}
               {event.phase ? ` · ${event.phase}` : ""}
@@ -2221,7 +2265,21 @@ function SpecPanel({ quest }: { quest?: Quest }) {
   return (
     <div className="inspector-stack">
       <InspectorSection title="Agent Spec">
-        <SpecBlock title="用户目标" items={[quest.spec.userGoal]} />
+        <div className="spec-overview-card">
+          <span>用户目标</span>
+          <p><HighlightedText text={quest.spec.userGoal} max={220} /></p>
+          {compactDetail(quest.spec.userGoal, 220) !== quest.spec.userGoal ? (
+            <details className="evidence-inline-details">
+              <summary>完整目标</summary>
+              <p><HighlightedText text={quest.spec.userGoal} /></p>
+            </details>
+          ) : null}
+          <div className="spec-overview-meta">
+            <em>{quest.spec.functionalRequirements.length} 功能</em>
+            <em>{quest.spec.nonFunctionalRequirements.length} 非功能</em>
+            <em>{quest.spec.acceptanceCriteria.length} 验收</em>
+          </div>
+        </div>
         <SpecBlock title="功能需求" items={quest.spec.functionalRequirements} />
         <SpecBlock title="非功能需求" items={quest.spec.nonFunctionalRequirements} />
         <SpecBlock title="验收标准" items={quest.spec.acceptanceCriteria} />
@@ -2421,9 +2479,32 @@ function OverviewPanel({
     project: projects.find((p) => p.id === pid),
     worktree: quest.worktrees.find((w) => w.projectId === pid)
   })) ?? [];
+  const validationCount = quest?.validationResults.length ?? 0;
+  const riskCount = quest?.reviewNotes.length ?? 0;
+  const deliveryCount = quest?.deliveryResults.length ?? 0;
 
   return (
     <div className="inspector-stack">
+      <InspectorSection title="状态摘要">
+        <div className="overview-metrics">
+          <div className="overview-metric">
+            <strong>{affectedProjects.length}</strong>
+            <span>项目</span>
+          </div>
+          <div className="overview-metric">
+            <strong>{validationCount}</strong>
+            <span>验证</span>
+          </div>
+          <div className={riskCount > 0 ? "overview-metric warning" : "overview-metric"}>
+            <strong>{riskCount}</strong>
+            <span>风险</span>
+          </div>
+          <div className="overview-metric success">
+            <strong>{deliveryCount}</strong>
+            <span>交付</span>
+          </div>
+        </div>
+      </InspectorSection>
       <InspectorSection title="受影响项目">
         {affectedProjects.length === 0 ? (
           <p className="muted">暂未关联项目。</p>
@@ -2451,7 +2532,7 @@ function OverviewPanel({
                 <div className="worktree-title">
                   <strong>{page.title}</strong>
                 </div>
-                <span className="muted">{summary || "(无摘要)"}</span>
+                <span className="muted"><HighlightedText text={summary || "(无摘要)"} /></span>
               </div>
             );
           })
@@ -2465,17 +2546,45 @@ function OverviewPanel({
       ) : null}
       {quest?.deliveryResults?.length ? (
         <InspectorSection title="交付">
-          {quest.deliveryResults.map((delivery) => (
-            <div className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
-              <div className="worktree-title">
-                <strong>{projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId}</strong>
-                <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
-              </div>
-              {delivery.commitMessage ? <p>{delivery.commitMessage}</p> : null}
-              {delivery.prUrl ? <span>{delivery.prUrl}</span> : null}
-              {delivery.note ? <p>{delivery.note}</p> : null}
-            </div>
-          ))}
+          {quest.deliveryResults.map((delivery) => {
+            const projectLabel = projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId;
+            const summary = delivery.prUrl || delivery.note || delivery.commitMessage || delivery.validationOutput || "交付记录已生成。";
+            const commitIsReady = Boolean(delivery.commitSha || delivery.status === "committed" || delivery.status === "pr_ready" || delivery.status === "pr_created");
+            const detailRows = [
+              { label: "Commit SHA", value: delivery.commitSha },
+              { label: "Commit Message", value: delivery.commitMessage },
+              { label: "PR", value: delivery.prUrl },
+              { label: "验证输出", value: delivery.validationOutput },
+              { label: "交付说明", value: delivery.note }
+            ].filter((row): row is { label: string; value: string } => Boolean(row.value));
+            return (
+              <article className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
+                <div className="worktree-title">
+                  <strong>{projectLabel}</strong>
+                  <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
+                </div>
+                <p className="delivery-summary"><HighlightedText text={summary} max={150} /></p>
+                <div className="delivery-chips">
+                  {commitIsReady ? <span>commit ready</span> : null}
+                  {delivery.prUrl || delivery.status === "pr_ready" || delivery.status === "pr_created" ? <span>PR handoff</span> : null}
+                  <span>{delivery.createdAt.slice(0, 10)}</span>
+                </div>
+                {detailRows.length > 0 ? (
+                  <details className="evidence-inline-details">
+                    <summary>交付详情</summary>
+                    <dl className="evidence-detail-grid">
+                      {detailRows.map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd><HighlightedText text={row.value} /></dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
+                ) : null}
+              </article>
+            );
+          })}
         </InspectorSection>
       ) : null}
     </div>
@@ -2508,8 +2617,8 @@ function CapabilitiesPanel({
               <div className="worktree-title">
                 <strong>{capability.name}</strong>
               </div>
-              <p>{capability.description}</p>
-              <span>{recommendation.reason}</span>
+              <p><HighlightedText text={capability.description} /></p>
+              <span><HighlightedText text={recommendation.reason} /></span>
               <code>{capability.kind} · {capability.source} · 匹配度 {Math.round(recommendation.confidence * 100)}%</code>
               <div className="capability-permissions">
                 {recommendation.requiredPermissions.map((permission) => (
@@ -2556,12 +2665,30 @@ function FilesPanel({
   quest?: Quest;
   onFileSelect: (file: ChangedFile) => void;
 }) {
+  const projectCount = new Set(changedFiles.map((file) => file.projectId)).size;
+  const statusCounts = Array.from(
+    changedFiles.reduce((counts, file) => {
+      counts.set(file.status, (counts.get(file.status) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>())
+  );
+
   return (
     <div className="changed-file-list">
       {changedFiles.length === 0 ? (
         <p className="muted">
           {questHasExecuted(quest) ? "本次执行没有产生文件变更。" : "运行 Quest 后会展示变更文件。"}
         </p>
+      ) : null}
+      {changedFiles.length > 0 ? (
+        <div className="changed-file-summary" aria-label="文件变更摘要">
+          <strong>{changedFiles.length}</strong>
+          <span>文件变更</span>
+          <em>{projectCount} 项目</em>
+          {statusCounts.map(([status, count]) => (
+            <em key={status}>{count} {status}</em>
+          ))}
+        </div>
       ) : null}
       {changedFiles.map((file, index) => (
         <motion.button
@@ -2574,7 +2701,7 @@ function FilesPanel({
           transition={{ duration: 0.26, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
         >
           <span>{projectById.get(file.projectId)?.name ?? file.projectId}</span>
-          <code>{file.path}</code>
+          <code><HighlightedText text={file.path} /></code>
           <em>{file.status}</em>
         </motion.button>
       ))}
@@ -2594,7 +2721,8 @@ function DiffPanel({ file, projectById, quest }: { file?: ChangedFile; projectBy
     <div className="diff-review">
       <div className="diff-meta">
         <strong>{projectById.get(file.projectId)?.name ?? file.projectId}</strong>
-        <code>{file.path}</code>
+        <code><HighlightedText text={file.path} /></code>
+        <em>{file.status}</em>
       </div>
       <pre>{file.diff || "No diff content."}</pre>
     </div>
@@ -4455,11 +4583,13 @@ function SpecBlock({ title, items, empty }: { title: string; items: string[]; em
     <div className="spec-block">
       <h4>{title}</h4>
       {items.length === 0 ? <p className="muted">{empty ?? "暂无内容。"}</p> : null}
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
+      {items.length > 0 ? (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${title}-${index}-${item}`}><HighlightedText text={item} /></li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

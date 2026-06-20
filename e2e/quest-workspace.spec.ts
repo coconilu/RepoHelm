@@ -417,6 +417,239 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   await expect(rawAudit.getByText("Internal backend bootstrap token preserved for audit.")).toBeVisible();
 });
 
+test("renders delivery evidence chips in the overview drawer", async ({ page }) => {
+  const runId = Date.now().toString(36);
+  const workspaceName = `Delivery Evidence ${runId}`;
+  const questTitle = `Delivered Quest ${runId}`;
+  const createdAt = "2026-06-20T08:30:00.000Z";
+  const workspace = {
+    id: `ws-delivery-${runId}`,
+    name: workspaceName,
+    description: "Delivery evidence regression workspace",
+    projectIds: [`project-delivery-${runId}`],
+    worktrees: [],
+    worktreeRoot: "",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const project = {
+    id: `project-delivery-${runId}`,
+    name: "Delivery Docs",
+    path: docsPath,
+    role: "documentation",
+    defaultBranch: "main",
+    validationCommand: "pnpm test",
+    health: { status: "ok", message: "Ready", checkedAt: createdAt },
+    createdAt,
+    updatedAt: createdAt
+  };
+  const spec = {
+    background: "Delivery evidence regression",
+    userGoal: "Show delivery readiness and PR handoff evidence",
+    functionalRequirements: ["Surface delivery chips for src/storefront.js in the overview panel."],
+    nonFunctionalRequirements: [],
+    affectedSurfaces: ["Evidence drawer"],
+    outOfScope: [],
+    acceptanceCriteria: ["commit ready appears for committed work", "PR handoff appears for PR-ready work"],
+    openQuestions: []
+  };
+  const capability = {
+    id: `cap-delivery-${runId}`,
+    kind: "skill",
+    name: "Delivery Review Skill",
+    description: "Review PR handoff and validation evidence before commit.",
+    source: "workspace",
+    permissions: ["read:changed-files"],
+    installed: true,
+    tags: ["delivery"],
+    createdAt,
+    updatedAt: createdAt
+  };
+  const events = [
+    {
+      id: `event-audit-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "delivery.audit",
+      title: "Audit trail captured",
+      detail: "Audit validation checked PR handoff and internal trace for src/storefront.js file.",
+      agent: "Delivery Agent",
+      phase: "review",
+      visibility: "audit",
+      severity: "info",
+      createdAt
+    }
+  ];
+  const quest = {
+    id: `quest-delivery-${runId}`,
+    workspaceId: workspace.id,
+    title: questTitle,
+    requirement: "Render delivery evidence chips.",
+    status: "delivered",
+    spec,
+    agentBackendId: "mock",
+    affectedProjectIds: [project.id],
+    worktrees: [],
+    changedFiles: [
+      {
+        projectId: project.id,
+        path: "src/storefront.js",
+        status: "modified",
+        diff: "diff --git a/src/storefront.js b/src/storefront.js",
+        worktreePath: docsPath
+      }
+    ],
+    validationResults: ["pnpm test passed"],
+    reviewNotes: [],
+    deliveryResults: [
+      {
+        projectId: project.id,
+        worktreePath: docsPath,
+        status: "committed",
+        commitMessage: "Add delivery notes",
+        note: "Commit prepared without PR handoff.",
+        validationOutput: "pnpm test passed",
+        commitSha: "abc1234",
+        createdAt
+      },
+      {
+        projectId: project.id,
+        worktreePath: docsPath,
+        status: "pr_ready",
+        commitMessage: "Prepare PR handoff",
+        note: "PR handoff ready.",
+        validationOutput: "pnpm test passed",
+        createdAt: "2026-06-20T09:15:00.000Z"
+      }
+    ],
+    capabilityRecommendations: [
+      {
+        capabilityId: capability.id,
+        reason: "Use PR handoff validation before commit.",
+        confidence: 0.91,
+        requiredPermissions: ["read:changed-files"],
+        status: "pending",
+        createdAt
+      }
+    ],
+    autoApprovePlan: false,
+    createdAt,
+    updatedAt: createdAt
+  };
+
+  await page.route("**/api/state", (route) => route.fulfill({
+    json: {
+      workspaces: [workspace],
+      projects: [project],
+      quests: [quest],
+      events,
+      knowledge: [],
+      capabilities: [capability],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: [],
+        commandTemplates: [],
+        fileScopes: [],
+        networkScopes: [],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local-worktree",
+        updatedAt: createdAt
+      },
+      auditLog: [],
+      commandApprovals: [],
+      engine: {
+        mode: "cli",
+        cliId: "mock",
+        cliModels: {},
+        byokProviders: {},
+        activeByokProviderId: "openai",
+        modelKits: {},
+        updatedAt: createdAt
+      },
+      subAgents: {},
+      userPreferences: {},
+      failurePatterns: {}
+    }
+  }));
+  await page.route("**/api/agent-backends", (route) => route.fulfill({
+    json: [{ id: "mock", name: "Mock Agent", available: true, configured: true, detail: "Mock backend" }]
+  }));
+  await page.route("**/api/product-readiness", (route) => route.fulfill({
+    json: {
+      version: "test",
+      status: "prototype-ready",
+      milestones: [],
+      workspaceTemplates: [],
+      dependencyMap: { nodes: [], edges: [] },
+      governance: []
+    }
+  }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
+  await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
+
+  const overviewDrawer = page.getByRole("dialog", { name: "概要" });
+  await expect(overviewDrawer).toBeVisible();
+  const deliveryMetric = overviewDrawer.locator(".overview-metric").filter({ hasText: "交付" });
+  await expect(deliveryMetric.locator("strong")).toHaveText("2");
+  const committedDelivery = overviewDrawer.locator(".delivery-row").filter({ hasText: "committed" });
+  await expect(committedDelivery).toBeVisible();
+  await expect(committedDelivery.locator(".delivery-chips").getByText("commit ready", { exact: true })).toBeVisible();
+  await expect(committedDelivery.locator(".delivery-chips").getByText("PR handoff", { exact: true })).toHaveCount(0);
+
+  const prReadyDelivery = overviewDrawer.locator(".delivery-row").filter({ hasText: "pr_ready" });
+  await expect(prReadyDelivery).toBeVisible();
+  await expect(prReadyDelivery.locator(".delivery-summary .evidence-highlight").getByText("PR handoff", { exact: true })).toBeVisible();
+  await expect(prReadyDelivery.locator(".delivery-chips").getByText("commit ready", { exact: true })).toBeVisible();
+  await expect(prReadyDelivery.locator(".delivery-chips").getByText("PR handoff", { exact: true })).toBeVisible();
+  await expect(prReadyDelivery.locator(".delivery-chips").getByText("2026-06-20", { exact: true })).toBeVisible();
+  await prReadyDelivery.getByText("交付详情", { exact: true }).click();
+  await expect(prReadyDelivery.getByText("Commit Message", { exact: true })).toBeVisible();
+  await expect(prReadyDelivery.getByText("验证输出", { exact: true })).toBeVisible();
+  await expect(prReadyDelivery.getByText("交付说明", { exact: true })).toBeVisible();
+
+  await overviewDrawer.locator(".inspector-tabs").getByRole("button", { name: "Spec" }).click();
+  const specDrawer = page.getByRole("dialog", { name: "Spec" });
+  await expect(specDrawer).toBeVisible();
+  await expect(specDrawer.locator(".spec-overview-card .evidence-highlight").getByText("PR handoff", { exact: true })).toBeVisible();
+  await expect(
+    specDrawer.locator(".spec-block").filter({ hasText: "功能需求" }).locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })
+  ).toBeVisible();
+
+  await specDrawer.locator(".inspector-tabs").getByRole("button", { name: "能力" }).click();
+  const capabilitiesDrawer = page.getByRole("dialog", { name: "能力" });
+  await expect(capabilitiesDrawer).toBeVisible();
+  const capabilityRow = capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Delivery Review Skill" });
+  await expect(capabilityRow).toBeVisible();
+  await expect(capabilityRow.locator(".evidence-highlight").getByText("PR handoff", { exact: true }).first()).toBeVisible();
+  await expect(capabilityRow.locator(".evidence-highlight").getByText("validation", { exact: true }).first()).toBeVisible();
+  await expect(capabilityRow.locator(".capability-permissions").getByText("read:changed-files", { exact: true })).toBeVisible();
+
+  await capabilitiesDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).click();
+  const auditDrawer = page.getByRole("dialog", { name: "Audit" });
+  await expect(auditDrawer).toBeVisible();
+  await expect(auditDrawer.locator(".raw-audit-row .evidence-highlight").getByText("Audit", { exact: true }).first()).toBeVisible();
+  await expect(auditDrawer.locator(".raw-audit-row .evidence-highlight").getByText("src/storefront.js", { exact: true }).first()).toBeVisible();
+
+  await auditDrawer.locator(".inspector-tabs").getByRole("button", { name: "文件" }).click();
+  await expect(page.getByRole("dialog", { name: "文件" })).toBeVisible();
+  const fileSummary = page.locator(".changed-file-summary");
+  await expect(fileSummary.locator("strong")).toHaveText("1");
+  await expect(fileSummary.getByText("文件变更", { exact: true })).toBeVisible();
+  await expect(fileSummary.getByText("1 项目", { exact: true })).toBeVisible();
+  await expect(fileSummary.getByText("1 modified", { exact: true })).toBeVisible();
+  const changedFile = page.locator(".changed-file-row").filter({ hasText: "src/storefront.js" });
+  await expect(changedFile.getByText("Delivery Docs", { exact: true })).toBeVisible();
+  await expect(changedFile.locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })).toBeVisible();
+  await expect(changedFile.getByText("modified", { exact: true })).toBeVisible();
+  await changedFile.click();
+  await expect(page.getByRole("dialog", { name: "Diff" })).toBeVisible();
+  const diffMeta = page.locator(".diff-meta");
+  await expect(diffMeta.getByText("Delivery Docs", { exact: true })).toBeVisible();
+  await expect(diffMeta.locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })).toBeVisible();
+  await expect(diffMeta.getByText("modified", { exact: true })).toBeVisible();
+});
+
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Heavy end-to-end flow: settings + real git worktree checkout + streamed spec + delivery.
   test.setTimeout(120_000);
@@ -550,6 +783,26 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Capability recommendation surfaced during the streaming creation flow.
   await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
   await expect(page.getByRole("dialog", { name: "概要" })).toBeVisible();
+  const overviewMetrics = page.locator(".overview-metrics");
+  await expect(overviewMetrics).toBeVisible();
+  await expect(overviewMetrics.locator(".overview-metric")).toHaveCount(4);
+  for (const label of ["项目", "验证", "风险", "交付"]) {
+    const metric = overviewMetrics.locator(".overview-metric").filter({ hasText: label });
+    await expect(metric).toBeVisible();
+    await expect(metric.locator("strong")).toHaveText(/^\d+$/);
+  }
+  await page.locator(".inspector-tabs").getByRole("button", { name: "Spec" }).click();
+  await expect(page.getByRole("dialog", { name: "Spec" })).toBeVisible();
+  const specOverview = page.locator(".spec-overview-card");
+  await expect(specOverview).toBeVisible();
+  await expect(specOverview.getByText("用户目标", { exact: true })).toBeVisible();
+  await expect(specOverview).toContainText("测试目标");
+  const specMeta = specOverview.locator(".spec-overview-meta");
+  await expect(specMeta).toBeVisible();
+  await expect(specMeta.getByText("1 功能", { exact: true })).toBeVisible();
+  await expect(specMeta.getByText("1 非功能", { exact: true })).toBeVisible();
+  await expect(specMeta.getByText("3 验收", { exact: true })).toBeVisible();
+  await expect(page.locator(".spec-block").filter({ hasText: "功能需求" }).getByText("功能一", { exact: true })).toBeVisible();
   await page.locator(".inspector-tabs").getByRole("button", { name: "能力" }).click();
   await expect(page.getByRole("dialog", { name: "能力" })).toBeVisible();
   const securityCapability = page.locator(".capability-row").filter({ hasText: "Security Review Skill" });
