@@ -1157,49 +1157,12 @@ function compactDetail(detail: string, max = 180) {
   return `${normalized.slice(0, max - 1)}…`;
 }
 
-const evidenceHighlightExpression = [
-  "REPOHELM_ENABLE_GH_PR=1",
-  "\\bgolden-api-repo\\b",
-  "\\bgolden-web-repo\\b",
-  "src\\/[A-Za-z0-9_./-]+",
-  "\\bREADME(?:\\.md)?\\b",
-  "\\b(?:findItem|renderItemDetail|listItems|renderCatalog)(?:\\(sku\\)|\\(\\))?",
-  "\"sku: label\"",
-  "\"not found\"",
-  "\\bundefined\\b",
-  "\\bpr_ready\\b",
-  "\\bworktree\\b",
-  "\\bPR handoff\\b",
-  "\\bPR\\b",
-  "\\bcommit\\b",
-  "\\bDiff\\b",
-  "\\bSpec\\b",
-  "\\bplanning\\b",
-  "\\bPlan\\b",
-  "\\bAudit\\b",
-  "\\binternal\\b",
-  "\\bvalidation\\b"
-].join("|");
-
-const evidenceHighlightPattern = new RegExp(`(${evidenceHighlightExpression})`, "gi");
-const evidenceHighlightExactPattern = new RegExp(`^(?:${evidenceHighlightExpression})$`, "i");
-
-function HighlightedText({ text, max }: { text: string; max?: number }) {
+function CompactText({ text, max }: { text: string; max?: number }) {
   const value = max ? compactDetail(text, max) : text;
   if (!value) {
     return null;
   }
-  return (
-    <>
-      {value.split(evidenceHighlightPattern).map((part, index) =>
-        evidenceHighlightExactPattern.test(part) ? (
-          <mark className="evidence-highlight" key={`${part}-${index}`}>{part}</mark>
-        ) : (
-          <span key={`${part}-${index}`}>{part}</span>
-        )
-      )}
-    </>
-  );
+  return <>{value}</>;
 }
 
 function questResultTone(quest: Quest) {
@@ -2241,7 +2204,7 @@ function AuditPanel({ events }: { events: AgentEvent[] }) {
               <strong>{event.title}</strong>
               <span>{event.type}</span>
             </div>
-            <p><HighlightedText text={event.detail} /></p>
+            <p><CompactText text={event.detail} /></p>
             <em>
               {event.agent}
               {event.phase ? ` · ${event.phase}` : ""}
@@ -2268,11 +2231,11 @@ function SpecPanel({ quest }: { quest?: Quest }) {
       <InspectorSection title="Agent Spec">
         <div className="spec-overview-card">
           <span>用户目标</span>
-          <p><HighlightedText text={quest.spec.userGoal} max={220} /></p>
+          <p><CompactText text={quest.spec.userGoal} max={220} /></p>
           {compactDetail(quest.spec.userGoal, 220) !== quest.spec.userGoal ? (
             <details className="evidence-inline-details">
               <summary>完整目标</summary>
-              <p><HighlightedText text={quest.spec.userGoal} /></p>
+              <p><CompactText text={quest.spec.userGoal} /></p>
             </details>
           ) : null}
           <div className="spec-overview-meta">
@@ -2533,7 +2496,7 @@ function OverviewPanel({
                 <div className="worktree-title">
                   <strong>{page.title}</strong>
                 </div>
-                <span className="muted"><HighlightedText text={summary || "(无摘要)"} /></span>
+                <span className="muted"><CompactText text={summary || "(无摘要)"} /></span>
               </div>
             );
           })
@@ -2564,7 +2527,7 @@ function OverviewPanel({
                   <strong>{projectLabel}</strong>
                   <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
                 </div>
-                <p className="delivery-summary"><HighlightedText text={summary} max={150} /></p>
+                <p className="delivery-summary"><CompactText text={summary} max={150} /></p>
                 <div className="delivery-chips">
                   {commitIsReady ? <span>commit ready</span> : null}
                   {delivery.prUrl || delivery.status === "pr_ready" || delivery.status === "pr_created" ? <span>PR handoff</span> : null}
@@ -2577,7 +2540,7 @@ function OverviewPanel({
                       {detailRows.map((row) => (
                         <div key={row.label}>
                           <dt>{row.label}</dt>
-                          <dd><HighlightedText text={row.value} /></dd>
+                          <dd><CompactText text={row.value} /></dd>
                         </div>
                       ))}
                     </dl>
@@ -2631,8 +2594,8 @@ function CapabilitiesPanel({
                 <strong>{capability.name}</strong>
                 <em className={recommendationStatusClass}>{statusLabel[recommendation.status]}</em>
               </div>
-              <p><HighlightedText text={capability.description} /></p>
-              <span><HighlightedText text={recommendation.reason} /></span>
+              <p><CompactText text={capability.description} /></p>
+              <span><CompactText text={recommendation.reason} /></span>
               <code>{capability.kind} · {capability.source} · 匹配度 {Math.round(recommendation.confidence * 100)}%</code>
               <div className="capability-permissions">
                 {recommendation.requiredPermissions.map((permission) => (
@@ -2716,7 +2679,7 @@ function FilesPanel({
           transition={{ duration: 0.26, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
         >
           <span>{projectById.get(file.projectId)?.name ?? file.projectId}</span>
-          <code><HighlightedText text={file.path} /></code>
+          <code><CompactText text={file.path} /></code>
           <em>{file.status}</em>
         </motion.button>
       ))}
@@ -2736,7 +2699,7 @@ function DiffPanel({ file, projectById, quest }: { file?: ChangedFile; projectBy
     <div className="diff-review">
       <div className="diff-meta">
         <strong>{projectById.get(file.projectId)?.name ?? file.projectId}</strong>
-        <code><HighlightedText text={file.path} /></code>
+        <code><CompactText text={file.path} /></code>
         <em>{file.status}</em>
       </div>
       <pre>{file.diff || "No diff content."}</pre>
@@ -4601,7 +4564,7 @@ function SpecBlock({ title, items, empty }: { title: string; items: string[]; em
       {items.length > 0 ? (
         <ul>
           {items.map((item, index) => (
-            <li key={`${title}-${index}-${item}`}><HighlightedText text={item} /></li>
+            <li key={`${title}-${index}-${item}`}><CompactText text={item} /></li>
           ))}
         </ul>
       ) : null}

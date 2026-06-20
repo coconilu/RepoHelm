@@ -627,7 +627,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
 
   const prReadyDelivery = overviewDrawer.locator(".delivery-row").filter({ hasText: "pr_ready" });
   await expect(prReadyDelivery).toBeVisible();
-  await expect(prReadyDelivery.locator(".delivery-summary .evidence-highlight").getByText("PR handoff", { exact: true })).toBeVisible();
+  await expect(prReadyDelivery.locator(".delivery-summary")).toContainText("PR handoff");
   await expect(prReadyDelivery.locator(".delivery-chips").getByText("commit ready", { exact: true })).toBeVisible();
   await expect(prReadyDelivery.locator(".delivery-chips").getByText("PR handoff", { exact: true })).toBeVisible();
   await expect(prReadyDelivery.locator(".delivery-chips").getByText("2026-06-20", { exact: true })).toBeVisible();
@@ -639,10 +639,8 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await overviewDrawer.locator(".inspector-tabs").getByRole("button", { name: "Spec" }).click();
   const specDrawer = page.getByRole("dialog", { name: "Spec" });
   await expect(specDrawer).toBeVisible();
-  await expect(specDrawer.locator(".spec-overview-card .evidence-highlight").getByText("PR handoff", { exact: true })).toBeVisible();
-  await expect(
-    specDrawer.locator(".spec-block").filter({ hasText: "功能需求" }).locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })
-  ).toBeVisible();
+  await expect(specDrawer.locator(".spec-overview-card")).toContainText("PR handoff");
+  await expect(specDrawer.locator(".spec-block").filter({ hasText: "Surface delivery chips" })).toContainText("src/storefront.js");
 
   await specDrawer.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
   const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
@@ -655,10 +653,9 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   const capabilityRow = capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Delivery Review Skill" });
   await expect(capabilityRow).toBeVisible();
   await expect(capabilityRow.getByText("建议启用", { exact: true })).toBeVisible();
-  await expect(capabilityRow.locator(".evidence-highlight").getByText("PR handoff", { exact: true }).first()).toBeVisible();
-  await expect(capabilityRow.locator(".evidence-highlight").getByText("validation", { exact: true }).first()).toBeVisible();
-  await expect(capabilityRow.locator(".evidence-highlight").getByText("planning", { exact: true })).toBeVisible();
-  await expect(capabilityRow.locator(".evidence-highlight").getByText("plan", { exact: true })).toHaveCount(0);
+  await expect(capabilityRow).toContainText("PR handoff");
+  await expect(capabilityRow).toContainText("validation");
+  await expect(capabilityRow).toContainText("planning");
   await expect(capabilityRow.locator(".capability-permissions").getByText("read:changed-files", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Accepted Expert" }).getByText("已启用", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Dismissed Expert" }).getByText("已忽略", { exact: true })).toBeVisible();
@@ -666,8 +663,8 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await capabilitiesDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).click();
   const auditDrawer = page.getByRole("dialog", { name: "Audit" });
   await expect(auditDrawer).toBeVisible();
-  await expect(auditDrawer.locator(".raw-audit-row .evidence-highlight").getByText("Audit", { exact: true }).first()).toBeVisible();
-  await expect(auditDrawer.locator(".raw-audit-row .evidence-highlight").getByText("src/storefront.js", { exact: true }).first()).toBeVisible();
+  await expect(auditDrawer.locator(".raw-audit-row").first()).toContainText("Audit");
+  await expect(auditDrawer.locator(".raw-audit-row").first()).toContainText("src/storefront.js");
 
   await auditDrawer.locator(".inspector-tabs").getByRole("button", { name: "文件" }).click();
   await expect(page.getByRole("dialog", { name: "文件" })).toBeVisible();
@@ -678,14 +675,15 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(fileSummary.getByText("1 modified", { exact: true })).toBeVisible();
   const changedFile = page.locator(".changed-file-row").filter({ hasText: "src/storefront.js" });
   await expect(changedFile.getByText("Delivery Docs", { exact: true })).toBeVisible();
-  await expect(changedFile.locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })).toBeVisible();
+  await expect(changedFile.getByText("src/storefront.js", { exact: true })).toBeVisible();
   await expect(changedFile.getByText("modified", { exact: true })).toBeVisible();
   await changedFile.click();
   await expect(page.getByRole("dialog", { name: "Diff" })).toBeVisible();
   const diffMeta = page.locator(".diff-meta");
   await expect(diffMeta.getByText("Delivery Docs", { exact: true })).toBeVisible();
-  await expect(diffMeta.locator(".evidence-highlight").getByText("src/storefront.js", { exact: true })).toBeVisible();
+  await expect(diffMeta.getByText("src/storefront.js", { exact: true })).toBeVisible();
   await expect(diffMeta.getByText("modified", { exact: true })).toBeVisible();
+  await expect(page.locator(".evidence-highlight")).toHaveCount(0);
 });
 
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {

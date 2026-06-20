@@ -642,15 +642,6 @@ kbd {
   padding: 3px 7px;
 }
 
-.evidence-highlight {
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-radius: 5px;
-  color: var(--text);
-  font-weight: 850;
-  padding: 0 3px;
-}
-
 .section-hint {
   color: var(--text-muted);
   font-size: 12px;
