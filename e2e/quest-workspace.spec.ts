@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,16 @@ const e2eWorktreeRoot = join(repoRoot, ".repohelm", "e2e", "configured-worktrees
 const docsPath = join(repoRoot, "docs");
 // Repos are now added by directory; the name is auto-derived from the basename.
 const boundRepoName = "docs";
+
+async function pointerDownAtCenter(page: Page, locator: Locator) {
+  await expect(locator).toBeVisible();
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error("Expected pointerdown target to have a bounding box");
+  }
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+}
 
 test.afterAll(async () => {
   const response = await fetch(`${apiBase}/api/state`);
@@ -305,7 +315,8 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   }));
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
+  const questHeading = page.getByRole("heading", { name: questTitle });
+  await expect(questHeading).toBeVisible();
   await expect(page.locator(".evidence-drawer")).toHaveCount(0);
   const rawAudit = page.getByLabel("原始审计日志");
   await expect(rawAudit.getByText("Raw Audit Log 已折叠")).toBeVisible();
@@ -328,6 +339,14 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   await expect(evidenceDrawer.getByText("完整事件回溯")).toBeVisible();
   await expect(evidenceDrawer.getByText("5 条事件")).toBeVisible();
   await expect(evidenceDrawer.getByText("Internal backend bootstrap token preserved for audit.")).toBeVisible();
+  await pointerDownAtCenter(page, questHeading);
+  try {
+    await expect(page.locator(".evidence-drawer")).toHaveCount(0);
+  } finally {
+    await page.mouse.up();
+  }
+  await openAuditDrawerButton.click();
+  await expect(evidenceDrawer).toBeVisible();
   const overlayBeforeResize = await evidenceDrawer.boundingBox();
   const overlayResizeHandle = page.locator(".evidence-drawer-resize-handle");
   const overlayResizeBox = await overlayResizeHandle.boundingBox();
@@ -352,6 +371,12 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   await expect(dockedEvidence).not.toHaveAttribute("aria-modal", "true");
   await expect(page.getByRole("dialog", { name: "Audit" })).toHaveCount(0);
   await expect(page.locator(".quest-main-region.evidence-docked")).toBeVisible();
+  await pointerDownAtCenter(page, questHeading);
+  try {
+    await expect(dockedEvidence).toBeVisible();
+  } finally {
+    await page.mouse.up();
+  }
   await dockedEvidence.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).focus();
   let focusLeftDockedEvidence = false;
   for (let i = 0; i < 12; i += 1) {

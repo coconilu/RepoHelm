@@ -1858,6 +1858,24 @@ function EvidenceDrawer({
   }, [docked, quest.id]);
 
   useEffect(() => {
+    if (docked) {
+      return undefined;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const drawer = drawerRef.current;
+      if (!drawer || event.button !== 0) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && !drawer.contains(target)) {
+        onClose();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [docked, onClose]);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (docked) {
         return;
