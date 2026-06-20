@@ -306,6 +306,7 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
+  await expect(page.locator(".evidence-drawer")).toHaveCount(0);
   const rawAudit = page.getByLabel("原始审计日志");
   await expect(rawAudit.getByText("Raw Audit Log 已折叠")).toBeVisible();
   await expect(rawAudit.getByText("5 条原始事件完整保留")).toBeVisible();
@@ -313,6 +314,27 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   await expect(rawAudit.getByText("Internal backend bootstrap token preserved for audit.")).toHaveCount(0);
   await expect(page.getByText("stderr: missing findItem export")).toBeVisible();
   await expect(page.getByText("CLI failed before completion: model overloaded")).toBeVisible();
+  const openAuditDrawerButton = rawAudit.getByRole("button", { name: "打开 Audit Drawer" });
+  await openAuditDrawerButton.click();
+  const evidenceDrawer = page.getByRole("dialog", { name: "Audit" });
+  await expect(evidenceDrawer).toBeVisible();
+  await expect(evidenceDrawer).toHaveAttribute("aria-modal", "true");
+  await expect(evidenceDrawer).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  expect(await evidenceDrawer.evaluate((drawer) => drawer.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press("Tab");
+  expect(await evidenceDrawer.evaluate((drawer) => drawer.contains(document.activeElement))).toBe(true);
+  await expect(evidenceDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(evidenceDrawer.getByText("完整事件回溯")).toBeVisible();
+  await expect(evidenceDrawer.getByText("5 条事件")).toBeVisible();
+  await expect(evidenceDrawer.getByText("Internal backend bootstrap token preserved for audit.")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".evidence-drawer")).toHaveCount(0);
+  await expect(openAuditDrawerButton).toBeFocused();
+  await openAuditDrawerButton.click();
+  await expect(evidenceDrawer).toBeVisible();
+  await evidenceDrawer.getByRole("button", { name: "关闭 Evidence Drawer" }).click();
+  await expect(page.locator(".evidence-drawer")).toHaveCount(0);
   await rawAudit.getByRole("button", { name: "显示全部事件" }).click();
   await expect(rawAudit.getByText("Raw Audit Log 已展开")).toBeVisible();
   await expect(rawAudit.getByText("agent.backend.started")).toBeVisible();
@@ -445,7 +467,10 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.locator(".chat-header").getByRole("button", { name: "交付" })).toBeVisible();
 
   // Capability recommendation surfaced during the streaming creation flow.
+  await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
+  await expect(page.getByRole("dialog", { name: "概要" })).toBeVisible();
   await page.locator(".inspector-tabs").getByRole("button", { name: "能力" }).click();
+  await expect(page.getByRole("dialog", { name: "能力" })).toBeVisible();
   const securityCapability = page.locator(".capability-row").filter({ hasText: "Security Review Skill" });
   await expect(securityCapability).toBeVisible();
   await expect(securityCapability.getByText("read:changed-files")).toBeVisible();
@@ -460,6 +485,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // falls back to a single step with minimalContract("Implementation code and artifacts"),
   // which sets doneCriteria = "Implementation code and artifacts". This path is deterministic.
   await page.locator(".inspector-tabs").getByRole("button", { name: "Plan" }).click();
+  await expect(page.getByRole("dialog", { name: "Plan" })).toBeVisible();
   await expect(page.getByText("完成判据:").first()).toBeVisible();
   await expect(page.getByText(/完成判据:.*Implementation code and artifacts/).first()).toBeVisible();
 });
