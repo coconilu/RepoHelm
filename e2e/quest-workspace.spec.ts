@@ -349,8 +349,10 @@ test("surfaces failed command details in the default Quest timeline", async ({ p
   expect(await auditDrawerElement?.evaluate((drawer) => drawer.isConnected)).toBe(true);
   await page.waitForTimeout(25);
   expect(await specEvidenceDrawer.evaluate((drawer) => drawer.contains(document.activeElement))).toBe(true);
-  await specEvidenceDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).click();
+  const internalAuditTab = specEvidenceDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" });
+  await internalAuditTab.click();
   await expect(evidenceDrawer).toBeVisible();
+  await expect(evidenceDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" })).toBeFocused();
   await pointerDownAtCenter(page, questHeading);
   try {
     await expect(page.locator(".evidence-drawer")).toHaveCount(0);

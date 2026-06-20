@@ -1887,8 +1887,9 @@ function EvidenceDrawer({
   const effectiveTab = resolveInspectorTab(tab, visibleTabs);
 
   useEffect(() => {
-    if (!docked) {
-      drawerRef.current?.focus();
+    const drawer = drawerRef.current;
+    if (!docked && drawer && !drawer.contains(document.activeElement)) {
+      drawer.focus();
     }
   }, [docked, effectiveTab, quest.id]);
 
