@@ -649,6 +649,99 @@ kbd {
   margin: 0;
 }
 
+.participant-agent-list,
+.capability-list,
+.manifest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.participant-agent-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px;
+}
+
+.participant-agent-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.participant-agent-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.participant-agent-heading strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.participant-agent-heading span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.participant-agent-meta,
+.participant-agent-outputs,
+.participant-agent-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.participant-agent-meta span,
+.participant-agent-outputs em {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.2;
+  padding: 3px 7px;
+}
+
+.participant-agent-responsibilities {
+  color: var(--text-muted);
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  padding-left: 17px;
+}
+
+.participant-agent-responsibilities li {
+  overflow-wrap: anywhere;
+}
+
+.participant-agent-event {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.participant-agent-links .ghost-action {
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
 .capability-row {
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -701,6 +794,25 @@ kbd {
 .manifest-row strong,
 .manifest-row span {
   min-width: 0;
+}
+
+.evidence-details-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+}
+
+.evidence-details-panel summary {
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 850;
+  list-style-position: inside;
+}
+
+.evidence-details-panel[open] summary {
+  margin-bottom: 10px;
 }
 
 .security-policy-grid {
