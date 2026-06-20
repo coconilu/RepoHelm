@@ -2048,6 +2048,7 @@ function getFocusableElements(container: HTMLElement) {
   const selector = [
     "a[href]",
     "button:not([disabled])",
+    "summary",
     "textarea:not([disabled])",
     "input:not([disabled])",
     "select:not([disabled])",
@@ -2129,7 +2130,7 @@ function Inspector({
         ) : null}
         {effectiveTab === "spec" && hasSpec ? <SpecPanel quest={quest} /> : null}
         {effectiveTab === "plan" && hasPlan ? (
-          <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
+          <PlanPanel busy={busy} projects={projects} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
         ) : null}
         {effectiveTab === "capabilities" && hasCapabilities ? (
           <CapabilitiesPanel capabilities={capabilities} quest={quest} />
@@ -2230,7 +2231,19 @@ function SpecPanel({ quest }: { quest?: Quest }) {
   );
 }
 
-function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean; quest?: Quest; onApprovePlan: () => void; onRejectPlan: () => void }) {
+function PlanPanel({
+  busy,
+  projects,
+  quest,
+  onApprovePlan,
+  onRejectPlan
+}: {
+  busy: boolean;
+  projects: Project[];
+  quest?: Quest;
+  onApprovePlan: () => void;
+  onRejectPlan: () => void;
+}) {
   const [plan, setPlan] = useState<OrchestrationPlan | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2277,44 +2290,76 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
   }
 
   const isPending = quest.planApproval?.status === "pending";
+  const stepLabel = `${plan.steps.length} 步骤`;
+  const summaryIsCompacted = compactDetail(plan.summary, 220) !== plan.summary;
 
   return (
     <div className="inspector-stack">
       <InspectorSection title="编排计划">
-        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>{plan.summary}</p>
-        {plan.steps.map((step, index) => (
-          <div key={step.id} style={{ padding: "8px 0", borderBottom: index < plan.steps.length - 1 ? "1px solid var(--border)" : undefined }}>
-            <div style={{ fontWeight: 500, fontSize: 13 }}>
-              {index + 1}. {step.description}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Agent: {step.agentName}
-              {step.dependencies.length > 0 ? ` · 依赖: ${step.dependencies.join(", ")}` : ""}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-              预期输出: {step.contract?.outputFormat || step.expectedOutput}
-            </div>
-            {step.contract?.boundaries ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                边界: {step.contract.boundaries}
+        <div className="plan-summary">
+          <p>{compactDetail(plan.summary, 220)}</p>
+          <span>{stepLabel}</span>
+        </div>
+        {summaryIsCompacted ? (
+          <details className="plan-summary-details">
+            <summary>完整摘要</summary>
+            <p>{plan.summary}</p>
+          </details>
+        ) : null}
+        <div className="plan-flow" aria-label="编排计划流程">
+          {plan.steps.map((step, index) => {
+            const targetProject = step.targetProjectId ? projectName(projects, step.targetProjectId) : "";
+            const visibleDescription = compactDetail(step.description, 150);
+            const detailRows = [
+              visibleDescription !== step.description ? { label: "完整描述", value: step.description } : undefined,
+              { label: "预期输出", value: step.expectedOutput },
+              { label: "输出格式", value: step.contract?.outputFormat },
+              { label: "边界", value: step.contract?.boundaries },
+              { label: "信息源", value: step.contract?.sourcesGuidance },
+              { label: "完成判据", value: step.contract?.doneCriteria }
+            ].filter((row): row is { label: string; value: string } => Boolean(row?.value));
+
+            return (
+              <div className="plan-flow-item" key={step.id}>
+                <div className="plan-step-connector" aria-hidden="true">
+                  <span className="plan-step-index">{index + 1}</span>
+                  {index < plan.steps.length - 1 ? <span className="plan-step-line" /> : null}
+                </div>
+                <article className="plan-step-card">
+                  <div className="plan-step-heading">
+                    <span>步骤 {index + 1}</span>
+                    <h4>{visibleDescription}</h4>
+                  </div>
+                  <div className="plan-step-meta">
+                    <span>Agent: {step.agentName}</span>
+                    {targetProject ? <span>项目: {targetProject}</span> : null}
+                    {step.dependencies.map((dependency) => (
+                      <span key={dependency}>依赖: {dependency}</span>
+                    ))}
+                  </div>
+                  {detailRows.length > 0 ? (
+                    <details className="plan-step-details">
+                      <summary>查看详情</summary>
+                      <dl className="plan-step-detail-grid">
+                        {detailRows.map((row) => (
+                          <div key={row.label}>
+                            <dt>{row.label}</dt>
+                            <dd>{row.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </details>
+                  ) : null}
+                </article>
               </div>
-            ) : null}
-            {step.contract?.sourcesGuidance ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                信息源: {step.contract.sourcesGuidance}
-              </div>
-            ) : null}
-            {step.contract?.doneCriteria ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                完成判据: {step.contract.doneCriteria}
-              </div>
-            ) : null}
-          </div>
-        ))}
+            );
+          })}
+        </div>
         {plan.notes ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
-            <strong>备注:</strong> {plan.notes}
-          </div>
+          <details className="plan-notes-details">
+            <summary>备注</summary>
+            <p>{plan.notes}</p>
+          </details>
         ) : null}
       </InspectorSection>
       {isPending ? (

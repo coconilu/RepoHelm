@@ -567,6 +567,20 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // which sets doneCriteria = "Implementation code and artifacts". This path is deterministic.
   await page.locator(".inspector-tabs").getByRole("button", { name: "Plan" }).click();
   await expect(page.getByRole("dialog", { name: "Plan" })).toBeVisible();
-  await expect(page.getByText("完成判据:").first()).toBeVisible();
-  await expect(page.getByText(/完成判据:.*Implementation code and artifacts/).first()).toBeVisible();
+  const planSummary = page.locator(".plan-summary");
+  await expect(planSummary).toBeVisible();
+  await expect(planSummary.locator("p")).toContainText(/\S/);
+  await expect(planSummary.getByText("1 步骤")).toBeVisible();
+  await expect(page.locator(".plan-flow")).toBeVisible();
+  await expect(page.locator(".plan-step-card")).toHaveCount(1);
+  await expect(page.getByText("步骤 1")).toBeVisible();
+  const planDetails = page.locator(".plan-step-details").first();
+  await expect(planDetails).not.toHaveAttribute("open", "");
+  await expect(planDetails.getByText("完成判据")).toBeHidden();
+  await planDetails.locator("summary").focus();
+  await expect(planDetails.locator("summary")).toBeFocused();
+  await page.keyboard.press("Enter");
+  const expandedPlanDetails = page.locator(".plan-step-details[open]").first();
+  await expect(expandedPlanDetails.getByText("完成判据")).toBeVisible();
+  await expect(expandedPlanDetails.getByText("Implementation code and artifacts").first()).toBeVisible();
 });

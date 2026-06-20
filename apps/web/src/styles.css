@@ -2018,6 +2018,172 @@ textarea {
   margin: 0 0 10px;
 }
 
+.plan-summary {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.plan-summary p {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-summary span {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  color: var(--accent);
+  flex: none;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 3px 8px;
+}
+
+.plan-flow {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+}
+
+.plan-flow-item {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.plan-step-connector {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-step-index {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  color: var(--accent);
+  display: flex;
+  font-size: 12px;
+  font-weight: 900;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.plan-step-line {
+  background: var(--border);
+  flex: 1 1 auto;
+  min-height: 18px;
+  width: 1px;
+}
+
+.plan-step-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  min-width: 0;
+  padding: 10px 11px;
+}
+
+.plan-step-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-step-heading span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.plan-step-heading h4 {
+  font-size: 13px;
+  line-height: 1.42;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.plan-step-meta span {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  padding: 3px 7px;
+}
+
+.plan-step-details,
+.plan-summary-details,
+.plan-notes-details {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.plan-step-details summary,
+.plan-summary-details summary,
+.plan-notes-details summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+
+.plan-step-detail-grid {
+  display: grid;
+  gap: 8px;
+  margin: 9px 0 0;
+}
+
+.plan-step-detail-grid div {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.plan-step-detail-grid dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 850;
+  margin-bottom: 3px;
+}
+
+.plan-step-detail-grid dd,
+.plan-summary-details p,
+.plan-notes-details p {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-summary-details p,
+.plan-notes-details p {
+  margin-top: 8px;
+}
+
 .progress-row {
   color: var(--text-muted);
   gap: 8px;
