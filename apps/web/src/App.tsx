@@ -109,6 +109,9 @@ type SettingsTab = "repositories" | "models" | "modelkits" | "subagents" | "secu
 type ParticipantAgentRole = "Spec" | "Planner" | "Coder" | "Reviewer" | "Delivery";
 type ParticipantAgentStatus = "planned" | "running" | "completed" | "blocked";
 type ParticipantAgentSource = "planned" | "runtime";
+type OrchestrationFlowPhase = "spec" | "plan" | "prepare" | "execute" | "review" | "deliver";
+type OrchestrationFlowKind = "phase" | "parallel" | "loop";
+type OrchestrationFlowStatus = ParticipantAgentStatus | "attention";
 
 interface ParticipantAgent {
   id: string;
@@ -123,6 +126,52 @@ interface ParticipantAgent {
   dependencies: string[];
   events: AgentEvent[];
   order: number;
+}
+
+interface OrchestrationFlowTask {
+  id: string;
+  title: string;
+  agentId?: string;
+  agentName: string;
+  role?: ParticipantAgentRole;
+  status: ParticipantAgentStatus;
+  source?: ParticipantAgentSource;
+  description?: string;
+  expectedOutput?: string;
+  targetProjectIds: string[];
+  stepIds: string[];
+  events: AgentEvent[];
+  files: ChangedFile[];
+}
+
+interface OrchestrationLoopRound {
+  id: string;
+  label: string;
+  status: OrchestrationFlowStatus;
+  agentName: string;
+  detail: string;
+  event: AgentEvent;
+}
+
+interface OrchestrationFlowNode {
+  id: string;
+  phase: OrchestrationFlowPhase;
+  kind: OrchestrationFlowKind;
+  title: string;
+  summary: string;
+  status: OrchestrationFlowStatus;
+  tasks: OrchestrationFlowTask[];
+  events: AgentEvent[];
+  rounds: OrchestrationLoopRound[];
+}
+
+interface OrchestrationFlow {
+  nodes: OrchestrationFlowNode[];
+  nodeCount: number;
+  parallelCount: number;
+  retryCount: number;
+  stageLabels: Array<{ phase: OrchestrationFlowPhase; label: string; status: OrchestrationFlowStatus; retryCount?: number }>;
+  currentLabel: string;
 }
 
 const defaultColumnWidths = {
@@ -1298,7 +1347,7 @@ function evidenceTabsForQuest(quest: Quest, events: AgentEvent[], capabilities: 
   const tabs: InspectorTab[] = ["overview"];
   if (quest.spec) tabs.push("spec");
   if (quest.planApproval) tabs.push("plan");
-  if (hasExpertPanelEvidence(quest, events, capabilities)) tabs.push("capabilities");
+  if (hasExpertPanelEvidence(quest, events)) tabs.push("capabilities");
   if (quest.changedFiles.length > 0) tabs.push("files", "diff");
   if (events.length > 0) tabs.push("audit");
   return uniqueEvidenceTabs(tabs);
@@ -2069,7 +2118,7 @@ function getVisibleInspectorTabs({
 }) {
   const hasSpec = !!quest?.spec;
   const hasPlan = !!quest?.planApproval;
-  const hasCapabilities = hasExpertPanelEvidence(quest, events, capabilities);
+  const hasCapabilities = hasExpertPanelEvidence(quest, events);
   const hasFiles = changedFiles.length > 0;
   const hasDiff = !!selectedChangedFile;
   const hasAudit = events.length > 0;
@@ -2158,7 +2207,7 @@ function Inspector({
 
   const hasSpec = !!quest?.spec;
   const hasPlan = !!quest?.planApproval;
-  const hasCapabilities = hasExpertPanelEvidence(quest, events, capabilities);
+  const hasCapabilities = hasExpertPanelEvidence(quest, events);
   const hasFiles = changedFiles.length > 0;
   const hasDiff = !!selectedChangedFile;
   const hasAudit = events.length > 0;
@@ -2197,7 +2246,6 @@ function Inspector({
         ) : null}
         {effectiveTab === "capabilities" && hasCapabilities ? (
           <CapabilitiesPanel
-            capabilities={capabilities}
             changedFiles={changedFiles}
             events={events}
             projects={projects}
@@ -2625,11 +2673,31 @@ const participantStatusMeta: Record<ParticipantAgentStatus, { label: string; cla
   blocked: { label: "blocked", className: "badge red" }
 };
 
-const recommendationStatusLabel = {
-  accepted: "已启用",
-  dismissed: "已忽略",
-  pending: "建议启用"
-} as const;
+const flowStatusMeta: Record<OrchestrationFlowStatus, { label: string; className: string }> = {
+  planned: { label: "planned", className: "badge blue" },
+  running: { label: "running", className: "badge blue" },
+  completed: { label: "completed", className: "badge green" },
+  blocked: { label: "blocked", className: "badge red" },
+  attention: { label: "attention", className: "badge warning" }
+};
+
+const flowPhaseLabels: Record<OrchestrationFlowPhase, string> = {
+  spec: "Spec",
+  plan: "Plan",
+  prepare: "Prepare",
+  execute: "Execute",
+  review: "Review",
+  deliver: "Delivery"
+};
+
+const flowPhaseOrder: Record<OrchestrationFlowPhase, number> = {
+  spec: 0,
+  plan: 1,
+  prepare: 2,
+  execute: 3,
+  review: 4,
+  deliver: 5
+};
 
 const eventRoleByPhase: Record<string, ParticipantAgentRole> = {
   spec: "Spec",
@@ -2693,13 +2761,11 @@ const completedParticipantEventTypes = new Set([
   "validation.completed"
 ]);
 
-function hasExpertPanelEvidence(quest?: Quest, events: AgentEvent[] = [], capabilities: CapabilityDefinition[] = []) {
+function hasExpertPanelEvidence(quest?: Quest, events: AgentEvent[] = []) {
   return Boolean(
     quest?.planPath ||
       quest?.planApproval ||
-      (quest?.capabilityRecommendations.length ?? 0) > 0 ||
-      getRuntimeParticipantEvents(events).length > 0 ||
-      capabilities.length > 0
+      getRuntimeParticipantEvents(events).length > 0
   );
 }
 
@@ -2743,12 +2809,19 @@ function inferParticipantRole(input: {
     return eventRoleByPhase[input.phase];
   }
 
+  const agentName = input.agentName.toLowerCase();
+  if (/coder|developer|implementer|frontend|backend|工程师|开发/.test(agentName)) return "Coder";
+  if (/planner|orchestrator|supervisor|规划|编排/.test(agentName)) return "Planner";
+  if (/reviewer|qa|test|validator|audit|审查|审核|验证/.test(agentName)) return "Reviewer";
+  if (/delivery|handoff|release|交付|发布/.test(agentName)) return "Delivery";
+  if (/spec|requirement|需求|规格/.test(agentName)) return "Spec";
+
   const text = `${input.agentName} ${input.text ?? ""}`.toLowerCase();
   if (/spec|requirement|需求|规格/.test(text)) return "Spec";
   if (/plan|planner|orchestrat|supervisor|规划|编排/.test(text)) return "Planner";
   if (/review|qa|test|validat|audit|验收|验证|审查|审核/.test(text)) return "Reviewer";
-  if (/deliver|handoff|commit|pull request|pr|交付|发布/.test(text)) return "Delivery";
   if (/code|coder|implement|build|fix|frontend|backend|实现|开发|修复/.test(text)) return "Coder";
+  if (/deliver|handoff|commit|pull request|pr|交付|发布/.test(text)) return "Delivery";
   return input.fallback ?? "Coder";
 }
 
@@ -2764,12 +2837,15 @@ function deriveParticipantStatus(quest: Quest | undefined, events: AgentEvent[],
   return "planned";
 }
 
-function stepEventsForAgent(step: OrchestrationPlanStep, events: AgentEvent[]) {
+function stepEventsForAgent(step: OrchestrationPlanStep, events: AgentEvent[], siblingSteps: OrchestrationPlanStep[] = [step]) {
   const stepAgentKey = normalizedAgentKey(step.agentName);
+  const agentStepCount = siblingSteps.filter((candidate) => normalizedAgentKey(candidate.agentName) === stepAgentKey).length;
   return getRuntimeParticipantEvents(events).filter((event) => {
-    if (event.stepId && event.stepId === step.id) return true;
-    if (normalizedAgentKey(event.agent) === stepAgentKey) return true;
-    return Boolean(step.targetProjectId && event.projectId === step.targetProjectId && normalizedAgentKey(event.agent) === stepAgentKey);
+    if (event.stepId) return event.stepId === step.id;
+    if (agentStepCount > 1) return false;
+    if (normalizedAgentKey(event.agent) !== stepAgentKey) return false;
+    if (event.projectId && step.targetProjectId && event.projectId !== step.targetProjectId) return false;
+    return true;
   });
 }
 
@@ -2819,7 +2895,7 @@ function buildParticipantAgents({
   };
 
   plan?.steps.forEach((step, index) => {
-    const relatedEvents = stepEventsForAgent(step, events);
+    const relatedEvents = stepEventsForAgent(step, events, plan.steps);
     const role = inferParticipantRole({
       agentName: step.agentName,
       text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
@@ -2885,8 +2961,619 @@ function relatedFilesForAgent(agent: ParticipantAgent, changedFiles: ChangedFile
   return changedFiles.filter((file) => targetProjects.has(file.projectId));
 }
 
+function combineFlowStatuses(statuses: OrchestrationFlowStatus[], fallback: OrchestrationFlowStatus = "planned") {
+  if (statuses.includes("blocked")) return "blocked";
+  if (statuses.includes("attention")) return "attention";
+  if (statuses.includes("running")) return "running";
+  if (statuses.length > 0 && statuses.every((status) => status === "completed")) return "completed";
+  if (statuses.includes("completed")) return "running";
+  return fallback;
+}
+
+function stepPhase(step: OrchestrationPlanStep, index: number): OrchestrationFlowPhase {
+  const role = inferParticipantRole({
+    agentName: step.agentName,
+    text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
+    fallback: index === 0 ? "Planner" : "Coder"
+  });
+  const text = `${step.agentName} ${step.id} ${step.description} ${step.expectedOutput}`.toLowerCase();
+  if (role === "Spec") return "spec";
+  if (role === "Planner") return /coder|code|implement|build|fix|test|review|validate|实现|开发|修复|验证|审查/.test(text)
+    ? "execute"
+    : "plan";
+  if (role === "Delivery") return "deliver";
+  if (/review|reviewer|audit|审查|审核/.test(text)) return "review";
+  return "execute";
+}
+
+function eventPhase(event: AgentEvent): OrchestrationFlowPhase {
+  if (event.phase === "validate" || event.phase === "audit") return "review";
+  return event.phase ?? "execute";
+}
+
+function phaseEvents(events: AgentEvent[], phase: OrchestrationFlowPhase) {
+  return orderedQuestEvents(events, { includeInternal: true }).filter((event) => eventPhase(event) === phase);
+}
+
+function agentForStep(step: OrchestrationPlanStep, agents: ParticipantAgent[]) {
+  return agents.find((agent) => agent.stepIds.includes(step.id)) ??
+    agents.find((agent) => agent.id === step.agentId || normalizedAgentKey(agent.name) === normalizedAgentKey(step.agentName));
+}
+
+function taskFromStep({
+  agent,
+  allSteps,
+  changedFiles,
+  events,
+  index,
+  quest,
+  step
+}: {
+  agent?: ParticipantAgent;
+  allSteps: OrchestrationPlanStep[];
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  index: number;
+  quest?: Quest;
+  step: OrchestrationPlanStep;
+}): OrchestrationFlowTask {
+  const relatedEvents = stepEventsForAgent(step, events, allSteps);
+  const role = agent?.role ?? inferParticipantRole({
+    agentName: step.agentName,
+    text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
+    fallback: index === 0 ? "Planner" : "Coder"
+  });
+  const targetProjectIds = uniqueStrings([step.targetProjectId, ...relatedEvents.map((event) => event.projectId)]);
+  const files = changedFiles.filter((file) => targetProjectIds.includes(file.projectId));
+  return {
+    id: `step-${step.id}`,
+    title: step.description,
+    agentId: agent?.id ?? step.agentId,
+    agentName: agent?.name ?? step.agentName,
+    role,
+    status: deriveParticipantStatus(quest, relatedEvents, true),
+    source: agent?.source ?? "planned",
+    description: step.description,
+    expectedOutput: step.expectedOutput || step.contract?.outputFormat,
+    targetProjectIds,
+    stepIds: [step.id],
+    events: relatedEvents,
+    files
+  };
+}
+
+function taskFromAgent(agent: ParticipantAgent, changedFiles: ChangedFile[]): OrchestrationFlowTask {
+  const latestEvent = agent.events[agent.events.length - 1];
+  return {
+    id: `agent-${agent.id}`,
+    title: latestEvent?.title ?? agent.responsibilities[0] ?? agent.name,
+    agentId: agent.id,
+    agentName: agent.name,
+    role: agent.role,
+    status: agent.status,
+    source: agent.source,
+    description: latestEvent?.detail ?? agent.responsibilities[0],
+    expectedOutput: agent.expectedOutputs[0],
+    targetProjectIds: agent.targetProjectIds,
+    stepIds: agent.stepIds,
+    events: agent.events,
+    files: relatedFilesForAgent(agent, changedFiles)
+  };
+}
+
+function uniqueEvents(events: AgentEvent[]) {
+  return orderedQuestEvents(
+    events.filter((event, index, all) => all.findIndex((item) => item.id === event.id) === index),
+    { includeInternal: true }
+  );
+}
+
+function buildLoopRounds(events: AgentEvent[]): OrchestrationLoopRound[] {
+  return uniqueEvents(events)
+    .filter((event) => isBlockedParticipantEvent(event) || isCompletedParticipantEvent(event))
+    .map((event, index) => {
+      const status = isBlockedParticipantEvent(event) ? "blocked" : "completed";
+      return {
+        id: event.id,
+        label: `Round ${index + 1}`,
+        status,
+        agentName: event.agent,
+        detail: `${event.title}: ${event.detail}`,
+        event
+      };
+    });
+}
+
+function createFlowNode(input: {
+  id: string;
+  phase: OrchestrationFlowPhase;
+  kind?: OrchestrationFlowKind;
+  title: string;
+  summary: string;
+  status?: OrchestrationFlowStatus;
+  tasks?: OrchestrationFlowTask[];
+  events?: AgentEvent[];
+  rounds?: OrchestrationLoopRound[];
+}): OrchestrationFlowNode {
+  const tasks = input.tasks ?? [];
+  const events = uniqueEvents([...(input.events ?? []), ...tasks.flatMap((task) => task.events)]);
+  const rounds = input.rounds ?? [];
+  const status = input.status ?? combineFlowStatuses([...tasks.map((task) => task.status), ...rounds.map((round) => round.status)]);
+  return {
+    id: input.id,
+    phase: input.phase,
+    kind: input.kind ?? "phase",
+    title: input.title,
+    summary: input.summary,
+    status,
+    tasks,
+    events,
+    rounds
+  };
+}
+
+function buildOrchestrationFlow({
+  changedFiles,
+  events,
+  participantAgents,
+  plan,
+  quest
+}: {
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  participantAgents: ParticipantAgent[];
+  plan: OrchestrationPlan | null;
+  quest?: Quest;
+}): OrchestrationFlow {
+  const nodes: OrchestrationFlowNode[] = [];
+  const allEvents = orderedQuestEvents(events, { includeInternal: true });
+  const stepTasks = (plan?.steps ?? []).map((step, index) => ({
+    phase: stepPhase(step, index),
+    dependenciesKey: step.dependencies.slice().sort().join("|"),
+    order: index,
+    task: taskFromStep({
+      agent: agentForStep(step, participantAgents),
+      allSteps: plan?.steps ?? [],
+      changedFiles,
+      events,
+      index,
+      quest,
+      step
+    })
+  }));
+  const runtimeTasks = participantAgents
+    .filter((agent) => agent.stepIds.length === 0 || agent.source === "runtime")
+    .map((agent) => ({
+      phase: eventPhase(agent.events[agent.events.length - 1] ?? ({ phase: undefined } as AgentEvent)),
+      dependenciesKey: `runtime-${agent.id}`,
+      order: agent.order,
+      task: taskFromAgent(agent, changedFiles)
+    }));
+
+  if (quest?.spec) {
+    nodes.push(createFlowNode({
+      id: "flow-spec",
+      phase: "spec",
+      title: "明确请求",
+      summary: quest.spec.userGoal || quest.requirement || "已生成 request brief。",
+      status: "completed",
+      events: phaseEvents(allEvents, "spec")
+    }));
+  }
+
+  if (plan || quest?.planApproval) {
+    const planTasks = stepTasks.filter((item) => item.phase === "plan").map((item) => item.task);
+    const planStatus: OrchestrationFlowStatus =
+      quest?.planApproval?.status === "approved" || quest?.status === "delivered" || quest?.status === "ready"
+        ? "completed"
+        : quest?.planApproval?.status === "rejected"
+          ? "blocked"
+          : planTasks.length > 0
+            ? combineFlowStatuses(planTasks.map((task) => task.status))
+            : "planned";
+    nodes.push(createFlowNode({
+      id: "flow-plan",
+      phase: "plan",
+      title: "规划拆解",
+      summary: plan?.summary ?? "等待 orchestration plan。",
+      status: planStatus,
+      tasks: planTasks,
+      events: phaseEvents(allEvents, "plan")
+    }));
+  }
+
+  const prepareEvents = phaseEvents(allEvents, "prepare");
+  if (prepareEvents.length > 0 || (quest?.worktrees.length ?? 0) > 0) {
+    nodes.push(createFlowNode({
+      id: "flow-prepare",
+      phase: "prepare",
+      title: "准备环境",
+      summary: quest?.worktrees.length ? `${quest.worktrees.length} 个 worktree 已关联。` : "执行环境和上下文已准备。",
+      status: prepareEvents.some((event) => event.severity === "error") ? "blocked" : "completed",
+      events: prepareEvents
+    }));
+  }
+
+  const executeItems = [
+    ...stepTasks.filter((item) => item.phase === "execute"),
+    ...runtimeTasks.filter((item) => item.phase === "execute")
+  ].sort((a, b) => a.order - b.order);
+  const executeGroups = new Map<string, typeof executeItems>();
+  executeItems.forEach((item) => {
+    const key = item.dependenciesKey ?? `runtime-${item.order}`;
+    executeGroups.set(key, [...(executeGroups.get(key) ?? []), item]);
+  });
+  [...executeGroups.entries()].forEach(([key, group], index) => {
+    const tasks = group.map((item) => item.task);
+    const parallel = tasks.length > 1;
+    nodes.push(createFlowNode({
+      id: `flow-execute-${key || index}`,
+      phase: "execute",
+      kind: parallel ? "parallel" : "phase",
+      title: parallel ? "并行执行" : "执行",
+      summary: parallel ? `${tasks.length} 个 agent 在同一依赖后并行推进。` : tasks[0]?.title ?? "执行计划步骤。",
+      tasks,
+      events: phaseEvents(allEvents, "execute").filter((event) => tasks.some((task) => task.events.some((taskEvent) => taskEvent.id === event.id)))
+    }));
+  });
+
+  const reviewTasks = [
+    ...stepTasks.filter((item) => item.phase === "review").map((item) => item.task),
+    ...runtimeTasks.filter((item) => item.phase === "review").map((item) => item.task)
+  ];
+  const reviewEvents = uniqueEvents([...phaseEvents(allEvents, "review"), ...reviewTasks.flatMap((task) => task.events)]);
+  if (reviewTasks.length > 0 || reviewEvents.length > 0) {
+    const rounds = buildLoopRounds(reviewEvents);
+    const hasRetry = rounds.some((round) => round.status === "blocked") && rounds.some((round) => round.status === "completed");
+    const latestRound = rounds[rounds.length - 1];
+    const reviewStatus: OrchestrationFlowStatus | undefined = latestRound?.status === "blocked"
+      ? "blocked"
+      : hasRetry
+        ? "attention"
+        : undefined;
+    nodes.push(createFlowNode({
+      id: "flow-review",
+      phase: "review",
+      kind: hasRetry ? "loop" : "phase",
+      title: hasRetry ? "Review Loop" : "Review / Validate",
+      summary: hasRetry ? `${Math.max(1, rounds.length)} 轮 review，问题修复后继续验收。` : "审查和验证本次改动。",
+      status: reviewStatus,
+      tasks: reviewTasks,
+      events: reviewEvents,
+      rounds
+    }));
+  }
+
+  const deliveryTasks = [
+    ...stepTasks.filter((item) => item.phase === "deliver").map((item) => item.task),
+    ...runtimeTasks.filter((item) => item.phase === "deliver").map((item) => item.task)
+  ];
+  const deliveryEvents = uniqueEvents([...phaseEvents(allEvents, "deliver"), ...deliveryTasks.flatMap((task) => task.events)]);
+  if (deliveryTasks.length > 0 || deliveryEvents.length > 0 || (quest?.deliveryResults.length ?? 0) > 0) {
+    const deliveryStatus = quest?.deliveryResults.some((delivery) => delivery.status === "failed")
+      ? "blocked"
+      : combineFlowStatuses(deliveryTasks.map((task) => task.status), quest?.status === "delivered" ? "completed" : "planned");
+    nodes.push(createFlowNode({
+      id: "flow-delivery",
+      phase: "deliver",
+      title: "Delivery",
+      summary: quest?.deliveryResults.length ? `${quest.deliveryResults.length} 条交付记录。` : "PR / comment / evidence summary。",
+      status: deliveryStatus,
+      tasks: deliveryTasks,
+      events: deliveryEvents
+    }));
+  }
+
+  const retryCount = nodes.reduce((count, node) => {
+    if (node.kind !== "loop") return count;
+    const blockedRounds = node.rounds.filter((round) => round.status === "blocked").length;
+    return count + blockedRounds;
+  }, 0);
+  const stageLabels = [...nodes.reduce((groups, node) => {
+    groups.set(node.phase, [...(groups.get(node.phase) ?? []), node]);
+    return groups;
+  }, new Map<OrchestrationFlowPhase, OrchestrationFlowNode[]>()).entries()]
+    .sort(([phaseA], [phaseB]) => flowPhaseOrder[phaseA] - flowPhaseOrder[phaseB])
+    .map(([phase, phaseNodes]) => ({
+      phase,
+      label: flowPhaseLabels[phase],
+      status: combineFlowStatuses(phaseNodes.map((node) => node.status)),
+      retryCount: phase === "review" ? retryCount : undefined
+    }));
+  const blockedNode = nodes.find((node) => node.status === "blocked");
+  const runningNode = nodes.find((node) => node.status === "running");
+  const currentNode = blockedNode ?? runningNode ?? nodes[nodes.length - 1];
+  const currentLabel = blockedNode
+    ? `当前阻塞在 ${blockedNode.title}`
+    : quest?.status === "delivered"
+      ? "已交付"
+      : currentNode
+        ? `当前在 ${currentNode.title}`
+        : "等待编排";
+
+  return {
+    nodes,
+    nodeCount: nodes.length,
+    parallelCount: nodes.filter((node) => node.kind === "parallel").length,
+    retryCount,
+    stageLabels,
+    currentLabel
+  };
+}
+
+function flowStageSuffix(stage: OrchestrationFlow["stageLabels"][number]) {
+  if (stage.phase === "review" && stage.retryCount) return ` ↻${stage.retryCount}`;
+  if (stage.status === "completed") return " ✓";
+  if (stage.status === "blocked") return " !";
+  if (stage.status === "running" || stage.status === "planned") return " …";
+  return "";
+}
+
+function taskMatchesAgent(task: OrchestrationFlowTask, agentId: string) {
+  return task.agentId === agentId;
+}
+
+function nodeMatchesAgent(node: OrchestrationFlowNode, agentId: string) {
+  return node.tasks.some((task) => taskMatchesAgent(task, agentId));
+}
+
+function OrchestrationEvidenceLinks({
+  files,
+  showAudit,
+  showPlan,
+  showSpec,
+  onFileSelect,
+  onTabChange
+}: {
+  files: ChangedFile[];
+  showAudit?: boolean;
+  showPlan?: boolean;
+  showSpec?: boolean;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  if (!showSpec && !showPlan && !showAudit && files.length === 0) {
+    return null;
+  }
+  return (
+    <div className="orchestration-evidence-links" aria-label="流程节点证据">
+      {showSpec ? (
+        <button className="ghost-action" onClick={() => onTabChange("spec")} type="button">
+          <FileText size={13} /> Spec
+        </button>
+      ) : null}
+      {showPlan ? (
+        <button className="ghost-action" onClick={() => onTabChange("plan")} type="button">
+          <Route size={13} /> Plan
+        </button>
+      ) : null}
+      {showAudit ? (
+        <button className="ghost-action" onClick={() => onTabChange("audit")} type="button">
+          <ShieldCheck size={13} /> Audit
+        </button>
+      ) : null}
+      {files.length > 0 ? (
+        <button className="ghost-action" onClick={() => onTabChange("files")} type="button">
+          <FolderOpen size={13} /> Files
+        </button>
+      ) : null}
+      {files[0] ? (
+        <button
+          className="ghost-action"
+          onClick={() => {
+            onFileSelect(files[0]!);
+            onTabChange("diff");
+          }}
+          type="button"
+        >
+          <Pencil size={13} /> Diff
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function OrchestrationTaskRow({
+  plan,
+  projects,
+  task,
+  onFileSelect,
+  onTabChange
+}: {
+  plan: OrchestrationPlan | null;
+  projects: Project[];
+  task: OrchestrationFlowTask;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const status = participantStatusMeta[task.status];
+  const projectLabels = task.targetProjectIds.map((projectId) => projectName(projects, projectId));
+  return (
+    <div className="orchestration-task-row">
+      <div className="orchestration-task-heading">
+        <div>
+          <strong>{task.agentName}</strong>
+          <span>{task.role ?? "Agent"} · {task.source === "runtime" ? "运行时加入" : "计划参与"}</span>
+        </div>
+        <em className={status.className}>{status.label}</em>
+      </div>
+      {task.description ? <p><CompactText text={task.description} max={150} /></p> : null}
+      <div className="orchestration-task-meta">
+        {projectLabels.map((label) => <span key={label}>项目: {label}</span>)}
+        {task.stepIds.map((stepId) => <span key={stepId}>步骤: {stepId}</span>)}
+        {task.expectedOutput ? <span>产物: <CompactText text={task.expectedOutput} max={70} /></span> : null}
+      </div>
+      <OrchestrationEvidenceLinks
+        files={task.files}
+        showAudit={task.events.length > 0}
+        showPlan={Boolean(plan && task.stepIds.length > 0)}
+        onFileSelect={onFileSelect}
+        onTabChange={onTabChange}
+      />
+    </div>
+  );
+}
+
+function OrchestrationTimeline({
+  flow,
+  plan,
+  projects,
+  quest,
+  selectedAgentId,
+  onFileSelect,
+  onTabChange
+}: {
+  flow: OrchestrationFlow;
+  plan: OrchestrationPlan | null;
+  projects: Project[];
+  quest?: Quest;
+  selectedAgentId: string | null;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const visibleNodes = selectedAgentId ? flow.nodes.filter((node) => nodeMatchesAgent(node, selectedAgentId)) : flow.nodes;
+  return (
+    <div className="orchestration-flow">
+      <div className="orchestration-flow-summary">
+        <div className="orchestration-stage-strip" aria-label="流程摘要">
+          {flow.stageLabels.map((stage) => (
+            <span className={`orchestration-stage-chip ${stage.status}`} key={stage.phase}>
+              {stage.label}{flowStageSuffix(stage)}
+            </span>
+          ))}
+        </div>
+        <p>
+          {flow.nodeCount} 个节点 · {flow.parallelCount} 组并行 · {flow.retryCount} 次返工 · {flow.currentLabel}
+        </p>
+      </div>
+      {selectedAgentId && visibleNodes.length === 0 ? <p className="muted">这个专家暂未关联到流程节点。</p> : null}
+      <div className="orchestration-timeline">
+        {visibleNodes.map((node, index) => {
+          const status = flowStatusMeta[node.status];
+          const taskRows = selectedAgentId ? node.tasks.filter((task) => taskMatchesAgent(task, selectedAgentId)) : node.tasks;
+          const nodeFiles = taskRows.flatMap((task) => task.files);
+          const showNodeEvidence = taskRows.length === 0 || node.phase === "spec" || node.phase === "prepare";
+          return (
+            <article className={`orchestration-flow-node ${node.kind}`} key={node.id}>
+              <div className="orchestration-node-marker">
+                <span>{String(index + 1).padStart(2, "0")}</span>
+              </div>
+              <div className="orchestration-node-body">
+                <div className="orchestration-node-heading">
+                  <div>
+                    <strong>{node.title}</strong>
+                    <span>{flowPhaseLabels[node.phase]}</span>
+                  </div>
+                  <em className={status.className}>{status.label}</em>
+                </div>
+                <p className="orchestration-node-summary"><CompactText text={node.summary} max={160} /></p>
+                {node.kind === "parallel" ? (
+                  <div className="orchestration-branch-list" aria-label="并行执行分支">
+                    {taskRows.map((task) => (
+                      <OrchestrationTaskRow
+                        key={task.id}
+                        plan={plan}
+                        projects={projects}
+                        task={task}
+                        onFileSelect={onFileSelect}
+                        onTabChange={onTabChange}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {node.kind === "loop" && node.rounds.length > 0 ? (
+                  <div className="orchestration-loop-rounds" aria-label="Review loop 轮次">
+                    {node.rounds.map((round) => {
+                      const roundStatus = flowStatusMeta[round.status];
+                      return (
+                        <div className="orchestration-loop-round" key={round.id}>
+                          <div>
+                            <strong>{round.label} · {round.agentName}</strong>
+                            <span><CompactText text={round.detail} max={150} /></span>
+                          </div>
+                          <em className={roundStatus.className}>{roundStatus.label}</em>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {node.kind !== "parallel" && taskRows.length > 0 ? (
+                  <div className="orchestration-task-list">
+                    {taskRows.map((task) => (
+                      <OrchestrationTaskRow
+                        key={task.id}
+                        plan={plan}
+                        projects={projects}
+                        task={task}
+                        onFileSelect={onFileSelect}
+                        onTabChange={onTabChange}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {showNodeEvidence ? (
+                  <OrchestrationEvidenceLinks
+                    files={nodeFiles}
+                    showAudit={node.events.length > 0}
+                    showPlan={Boolean(plan && node.phase === "plan")}
+                    showSpec={Boolean(quest?.spec && node.phase === "spec")}
+                    onFileSelect={onFileSelect}
+                    onTabChange={onTabChange}
+                  />
+                ) : null}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ParticipantAgentIndex({
+  agents,
+  selectedAgentId,
+  onSelectAgent
+}: {
+  agents: ParticipantAgent[];
+  selectedAgentId: string | null;
+  onSelectAgent: (agentId: string | null) => void;
+}) {
+  if (agents.length === 0) {
+    return null;
+  }
+  return (
+    <details className="evidence-details-panel participant-agent-index">
+      <summary>本次参与专家 ({agents.length})</summary>
+      <div className="participant-agent-filter-row" aria-label="按专家过滤流程">
+        <button
+          className={selectedAgentId === null ? "ghost-action active" : "ghost-action"}
+          onClick={() => onSelectAgent(null)}
+          type="button"
+        >
+          全部
+        </button>
+        {agents.map((agent) => {
+          const status = participantStatusMeta[agent.status];
+          return (
+            <button
+              className={selectedAgentId === agent.id ? "ghost-action active" : "ghost-action"}
+              key={agent.id}
+              onClick={() => onSelectAgent(agent.id)}
+              type="button"
+            >
+              <Bot size={13} />
+              <span>{agent.name}</span>
+              <em className={status.className}>{status.label}</em>
+            </button>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 function CapabilitiesPanel({
-  capabilities,
   changedFiles,
   events,
   projects,
@@ -2894,7 +3581,6 @@ function CapabilitiesPanel({
   onFileSelect,
   onTabChange
 }: {
-  capabilities: CapabilityDefinition[];
   changedFiles: ChangedFile[];
   events: AgentEvent[];
   projects: Project[];
@@ -2905,9 +3591,13 @@ function CapabilitiesPanel({
   const [plan, setPlan] = useState<OrchestrationPlan | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
-  const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
-  const recommendations = quest?.capabilityRecommendations ?? [];
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const participantAgents = buildParticipantAgents({ events, plan, quest });
+  const flow = buildOrchestrationFlow({ changedFiles, events, participantAgents, plan, quest });
+
+  useEffect(() => {
+    setSelectedAgentId(null);
+  }, [quest?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2940,164 +3630,30 @@ function CapabilitiesPanel({
 
   return (
     <div className="inspector-stack">
-      <InspectorSection title="本次参与的专家">
-        <p className="section-hint">按本次 request 的计划步骤和执行事件汇总。</p>
-        {loadingPlan ? <p className="muted">加载参与专家中...</p> : null}
+      <InspectorSection title="本次协作流程">
+        <p className="section-hint">按本次 request 的实际计划、运行事件和交付证据生成。</p>
+        {loadingPlan ? <p className="muted">加载编排流程中...</p> : null}
         {planError ? <p className="muted">计划加载失败：{planError}</p> : null}
-        {!loadingPlan && participantAgents.length === 0 ? (
-          <p className="muted">暂无计划或运行事件显示具体参与专家。</p>
+        {!loadingPlan && flow.nodes.length === 0 ? (
+          <p className="muted">暂无计划或运行事件显示协作流程。</p>
         ) : null}
-        {participantAgents.length > 0 ? (
-          <div className="participant-agent-list">
-            {participantAgents.map((agent) => {
-              const status = participantStatusMeta[agent.status];
-              const targetProjects = agent.targetProjectIds.map((projectId) => ({
-                id: projectId,
-                name: projectName(projects, projectId)
-              }));
-              const files = relatedFilesForAgent(agent, changedFiles);
-              const latestEvent = agent.events[agent.events.length - 1];
-              const visibleResponsibilities = agent.responsibilities.slice(0, 3);
-              return (
-                <article className="participant-agent-card" key={agent.id}>
-                  <div className="participant-agent-heading">
-                    <div>
-                      <strong>{agent.name}</strong>
-                      <span>{agent.role}</span>
-                    </div>
-                    <em className={status.className}>{status.label}</em>
-                  </div>
-                  <div className="participant-agent-meta">
-                    <span>{agent.source === "planned" ? "计划参与" : "运行时加入"}</span>
-                    {targetProjects.map((project) => (
-                      <span key={project.id}>项目: {project.name}</span>
-                    ))}
-                    {agent.stepIds.map((stepId) => (
-                      <span key={stepId}>步骤: {stepId}</span>
-                    ))}
-                    {agent.dependencies.map((dependency) => (
-                      <span key={dependency}>依赖: {dependency}</span>
-                    ))}
-                  </div>
-                  {visibleResponsibilities.length > 0 ? (
-                    <ul className="participant-agent-responsibilities">
-                      {visibleResponsibilities.map((responsibility, index) => (
-                        <li key={`${agent.id}-responsibility-${index}`}>
-                          <CompactText text={responsibility} max={150} />
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {agent.responsibilities.length > visibleResponsibilities.length ? (
-                    <details className="evidence-inline-details">
-                      <summary>更多职责</summary>
-                      <ul className="participant-agent-responsibilities">
-                        {agent.responsibilities.slice(visibleResponsibilities.length).map((responsibility, index) => (
-                          <li key={`${agent.id}-extra-responsibility-${index}`}>
-                            <CompactText text={responsibility} />
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  ) : null}
-                  {agent.expectedOutputs.length > 0 ? (
-                    <div className="participant-agent-outputs">
-                      {agent.expectedOutputs.map((output) => (
-                        <em key={output}><CompactText text={output} max={80} /></em>
-                      ))}
-                    </div>
-                  ) : null}
-                  {latestEvent ? (
-                    <p className="participant-agent-event">
-                      <CompactText text={`${latestEvent.title}: ${latestEvent.detail}`} max={180} />
-                    </p>
-                  ) : null}
-                  <div className="participant-agent-links" aria-label={`${agent.name} 相关证据`}>
-                    {plan ? (
-                      <button className="ghost-action" onClick={() => onTabChange("plan")} type="button">
-                        <Route size={13} /> Plan
-                      </button>
-                    ) : null}
-                    {agent.events.length > 0 ? (
-                      <button className="ghost-action" onClick={() => onTabChange("audit")} type="button">
-                        <ShieldCheck size={13} /> Audit
-                      </button>
-                    ) : null}
-                    {files.length > 0 ? (
-                      <button className="ghost-action" onClick={() => onTabChange("files")} type="button">
-                        <FolderOpen size={13} /> Files
-                      </button>
-                    ) : null}
-                    {files[0] ? (
-                      <button
-                        className="ghost-action"
-                        onClick={() => {
-                          onFileSelect(files[0]!);
-                          onTabChange("diff");
-                        }}
-                        type="button"
-                      >
-                        <Pencil size={13} /> Diff
-                      </button>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+        {flow.nodes.length > 0 ? (
+          <OrchestrationTimeline
+            flow={flow}
+            plan={plan}
+            projects={projects}
+            quest={quest}
+            selectedAgentId={selectedAgentId}
+            onFileSelect={onFileSelect}
+            onTabChange={onTabChange}
+          />
         ) : null}
       </InspectorSection>
-
-      {recommendations.length > 0 ? (
-        <details className="evidence-details-panel">
-          <summary>建议的额外专家 ({recommendations.length})</summary>
-          <div className="capability-list">
-            {recommendations.map((recommendation) => {
-              const capability = capabilityById.get(recommendation.capabilityId);
-              if (!capability) {
-                return null;
-              }
-              const recommendationStatusClass =
-                recommendation.status === "accepted"
-                  ? "badge green"
-                  : recommendation.status === "dismissed"
-                    ? "badge red"
-                    : "badge blue";
-              return (
-                <article className="capability-row" key={recommendation.capabilityId}>
-                  <div className="worktree-title">
-                    <strong>{capability.name}</strong>
-                    <em className={recommendationStatusClass}>{recommendationStatusLabel[recommendation.status]}</em>
-                  </div>
-                  <p><CompactText text={capability.description} /></p>
-                  <span><CompactText text={recommendation.reason} /></span>
-                  <code>{capability.kind} · {capability.source} · 匹配度 {Math.round(recommendation.confidence * 100)}%</code>
-                  <div className="capability-permissions">
-                    {recommendation.requiredPermissions.map((permission) => (
-                      <em key={permission}>{permission}</em>
-                    ))}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </details>
-      ) : null}
-
-      {capabilities.length > 0 ? (
-        <details className="evidence-details-panel">
-          <summary>专家库 ({capabilities.length})</summary>
-          <div className="manifest-list">
-            {capabilities.map((capability) => (
-              <div className="manifest-row" key={capability.id}>
-                <strong>{capability.name}</strong>
-                <span>{capability.kind} · {capability.source}</span>
-                <em className={capability.installed ? "badge green" : "badge"}>{capability.installed ? "enabled" : "available"}</em>
-              </div>
-            ))}
-          </div>
-        </details>
-      ) : null}
+      <ParticipantAgentIndex
+        agents={participantAgents}
+        selectedAgentId={selectedAgentId}
+        onSelectAgent={setSelectedAgentId}
+      />
     </div>
   );
 }
