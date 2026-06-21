@@ -546,6 +546,18 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       createdAt
     },
     {
+      id: `event-runtime-execute-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "agent.message",
+      title: "Runtime execute observer joined",
+      detail: "Runtime Execute Observer joined during execution without a planned step.",
+      agent: "Runtime Execute Observer",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      createdAt
+    },
+    {
       id: `event-code-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "step.completed",
@@ -844,19 +856,28 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toHaveCount(0);
   await expect(capabilitiesDrawer.getByText("Manifest", { exact: true })).toHaveCount(0);
   const flow = capabilitiesDrawer.locator(".orchestration-flow");
-  await expect(flow).toContainText("6 个节点");
+  await expect(flow).toContainText("4 个工作节点");
   await expect(flow).toContainText("1 组并行");
   await expect(flow).toContainText("1 次返工");
-  await expect(flow.getByText("Spec ✓", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Request ✓", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Plan 4 steps", { exact: true })).toBeVisible();
   await expect(flow.getByText("Plan ✓", { exact: true })).toBeVisible();
   await expect(flow.getByText("Execute ✓", { exact: true })).toBeVisible();
   await expect(flow.getByText("Review ↻1", { exact: true })).toBeVisible();
   await expect(flow.getByText("Delivery !", { exact: true })).toBeVisible();
+  await expect(flow).toContainText("主线按计划依赖排序");
   await expect(flow.getByText("Delivery Review Skill")).toHaveCount(0);
   await expect(flow.getByText("User", { exact: true })).toHaveCount(0);
   await expect(flow.getByText("Worktree Manager", { exact: true })).toHaveCount(0);
+  await expect(flow.getByText("Runtime Execute Observer", { exact: true })).toHaveCount(0);
+  await expect(flow.locator(".orchestration-node-heading strong")).toHaveText([
+    "规划 · plan-step",
+    "并行执行",
+    "Review Loop",
+    "Delivery"
+  ]);
 
-  const planNode = capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "规划拆解" });
+  const planNode = capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "规划 · plan-step" });
   await expect(planNode).toBeVisible();
   await expect(planNode).toContainText("Planner Agent");
   await expect(planNode).toContainText("Plan delivery evidence responsibilities");
@@ -866,6 +887,8 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(planNode.getByRole("button", { name: "Plan" })).toBeVisible();
   await expect(planNode.getByRole("button", { name: "Audit" })).toBeVisible();
   await expect(planNode.getByRole("button", { name: "Files" })).toBeVisible();
+  await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "明确请求" })).toHaveCount(0);
+  await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "准备环境" })).toHaveCount(0);
 
   const parallelNode = capabilitiesDrawer.locator(".orchestration-flow-node.parallel");
   await expect(parallelNode).toBeVisible();
@@ -1166,10 +1189,11 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(settingsDialog.getByRole("button", { name: /刷新模型/ })).toBeVisible();
   await page.getByRole("button", { name: "关闭设置" }).click();
 
-  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
-  await expect(page.locator(".request-list")).toBeHidden();
-  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
-  await expect(page.locator(".request-list")).toBeVisible();
+  const demoWorkspaceNode = page.locator(".workspace-node").filter({ hasText: "RepoHelm Demo Workspace" });
+  await demoWorkspaceNode.locator(".workspace-title-button").click();
+  await expect(demoWorkspaceNode.locator(".request-list")).toBeHidden();
+  await demoWorkspaceNode.locator(".workspace-title-button").click();
+  await expect(demoWorkspaceNode.locator(".request-list")).toBeVisible();
   await page.getByRole("button", { name: "创建 Workspace" }).click();
   const workspaceCreateDialog = page.getByRole("dialog", { name: "创建 Workspace" });
   await expect(workspaceCreateDialog).toBeVisible();

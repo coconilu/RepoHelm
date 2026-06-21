@@ -754,8 +754,8 @@ kbd {
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 10px;
+  padding: 12px;
 }
 
 .orchestration-flow-summary p {
@@ -767,12 +767,28 @@ kbd {
 }
 
 .orchestration-stage-strip,
+.orchestration-setup-row,
 .orchestration-evidence-links,
 .orchestration-task-meta,
 .participant-agent-filter-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.orchestration-setup-row {
+  align-items: center;
+}
+
+.orchestration-setup-row > span {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.2;
+  padding: 4px 7px;
 }
 
 .orchestration-stage-chip,
@@ -808,12 +824,13 @@ kbd {
 .orchestration-timeline {
   display: flex;
   flex-direction: column;
+  gap: 4px;
 }
 
 .orchestration-flow-node {
   display: grid;
-  gap: 10px;
-  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  grid-template-columns: 30px minmax(0, 1fr);
   position: relative;
 }
 
@@ -821,7 +838,7 @@ kbd {
   background: var(--border);
   bottom: -4px;
   content: "";
-  left: 16px;
+  left: 14px;
   position: absolute;
   top: 32px;
   width: 1px;
@@ -847,9 +864,9 @@ kbd {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   font-weight: 900;
-  height: 30px;
+  height: 28px;
   justify-content: center;
-  width: 30px;
+  width: 28px;
 }
 
 .orchestration-flow-node.parallel .orchestration-node-marker span,
@@ -862,9 +879,9 @@ kbd {
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 10px;
   min-width: 0;
-  padding: 0 0 14px;
+  padding: 0 0 18px;
 }
 
 .orchestration-flow-node:last-child .orchestration-node-body {
@@ -895,7 +912,7 @@ kbd {
 .orchestration-task-heading strong,
 .orchestration-loop-round strong {
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
@@ -924,7 +941,7 @@ kbd {
 .orchestration-loop-rounds {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .orchestration-branch-list,
@@ -943,6 +960,44 @@ kbd {
   gap: 8px;
   min-width: 0;
   padding: 9px;
+}
+
+.orchestration-task-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.orchestration-task-inline-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.orchestration-task-inline-heading span,
+.orchestration-task-inline-heading em {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 850;
+  gap: 5px;
+  min-width: 0;
+}
+
+.orchestration-task-inline-heading span {
+  color: var(--text);
+}
+
+.orchestration-flow-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: -2px;
 }
 
 .orchestration-loop-round {

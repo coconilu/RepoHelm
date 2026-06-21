@@ -165,8 +165,17 @@ interface OrchestrationFlowNode {
   rounds: OrchestrationLoopRound[];
 }
 
+interface OrchestrationFlowSetup {
+  hasSpec: boolean;
+  hasPlan: boolean;
+  planStepCount: number;
+  worktreeCount: number;
+  status: OrchestrationFlowStatus;
+}
+
 interface OrchestrationFlow {
   nodes: OrchestrationFlowNode[];
+  setup: OrchestrationFlowSetup;
   nodeCount: number;
   parallelCount: number;
   retryCount: number;
@@ -3112,6 +3121,14 @@ function createFlowNode(input: {
   };
 }
 
+function taskNodeTitle(task: OrchestrationFlowTask, phase: OrchestrationFlowPhase) {
+  const stepId = task.stepIds[0];
+  if (phase === "plan") return stepId ? `规划 · ${stepId}` : "规划任务";
+  if (phase === "review") return stepId ? `Review · ${stepId}` : "Review / Validate";
+  if (phase === "deliver") return stepId ? `Delivery · ${stepId}` : "Delivery";
+  return stepId ? `执行 · ${stepId}` : "执行任务";
+}
+
 function buildOrchestrationFlow({
   changedFiles,
   events,
@@ -3127,6 +3144,7 @@ function buildOrchestrationFlow({
 }): OrchestrationFlow {
   const nodes: OrchestrationFlowNode[] = [];
   const allEvents = orderedQuestEvents(events, { includeInternal: true });
+  const prepareEvents = phaseEvents(allEvents, "prepare");
   const stepTasks = (plan?.steps ?? []).map((step, index) => ({
     phase: stepPhase(step, index),
     dependenciesKey: step.dependencies.slice().sort().join("|"),
@@ -3141,6 +3159,17 @@ function buildOrchestrationFlow({
       step
     })
   }));
+  const setup: OrchestrationFlowSetup = {
+    hasSpec: Boolean(quest?.spec),
+    hasPlan: Boolean(plan || quest?.planApproval),
+    planStepCount: plan?.steps.length ?? 0,
+    worktreeCount: quest?.worktrees.length ?? 0,
+    status: prepareEvents.some((event) => event.severity === "error") || quest?.planApproval?.status === "rejected"
+      ? "blocked"
+      : plan || quest?.planApproval || quest?.spec
+        ? "completed"
+        : "planned"
+  };
   const runtimeTasks = participantAgents
     .filter((agent) => agent.stepIds.length === 0 || agent.source === "runtime")
     .map((agent) => ({
@@ -3150,70 +3179,27 @@ function buildOrchestrationFlow({
       task: taskFromAgent(agent, changedFiles)
     }));
 
-  if (quest?.spec) {
-    nodes.push(createFlowNode({
-      id: "flow-spec",
-      phase: "spec",
-      title: "明确请求",
-      summary: quest.spec.userGoal || quest.requirement || "已生成 request brief。",
-      status: "completed",
-      events: phaseEvents(allEvents, "spec")
-    }));
-  }
-
-  if (plan || quest?.planApproval) {
-    const planTasks = stepTasks.filter((item) => item.phase === "plan").map((item) => item.task);
-    const planStatus: OrchestrationFlowStatus =
-      quest?.planApproval?.status === "approved" || quest?.status === "delivered" || quest?.status === "ready"
-        ? "completed"
-        : quest?.planApproval?.status === "rejected"
-          ? "blocked"
-          : planTasks.length > 0
-            ? combineFlowStatuses(planTasks.map((task) => task.status))
-            : "planned";
-    nodes.push(createFlowNode({
-      id: "flow-plan",
-      phase: "plan",
-      title: "规划拆解",
-      summary: plan?.summary ?? "等待 orchestration plan。",
-      status: planStatus,
-      tasks: planTasks,
-      events: phaseEvents(allEvents, "plan")
-    }));
-  }
-
-  const prepareEvents = phaseEvents(allEvents, "prepare");
-  if (prepareEvents.length > 0 || (quest?.worktrees.length ?? 0) > 0) {
-    nodes.push(createFlowNode({
-      id: "flow-prepare",
-      phase: "prepare",
-      title: "准备环境",
-      summary: quest?.worktrees.length ? `${quest.worktrees.length} 个 worktree 已关联。` : "执行环境和上下文已准备。",
-      status: prepareEvents.some((event) => event.severity === "error") ? "blocked" : "completed",
-      events: prepareEvents
-    }));
-  }
-
-  const executeItems = [
-    ...stepTasks.filter((item) => item.phase === "execute"),
-    ...runtimeTasks.filter((item) => item.phase === "execute")
+  const plannedWorkItems = [
+    ...stepTasks.filter((item) => item.phase !== "review" && item.phase !== "deliver"),
+    ...(stepTasks.length === 0 ? runtimeTasks.filter((item) => item.phase === "execute") : [])
   ].sort((a, b) => a.order - b.order);
-  const executeGroups = new Map<string, typeof executeItems>();
-  executeItems.forEach((item) => {
-    const key = item.dependenciesKey ?? `runtime-${item.order}`;
-    executeGroups.set(key, [...(executeGroups.get(key) ?? []), item]);
+  const workGroups = new Map<string, typeof plannedWorkItems>();
+  plannedWorkItems.forEach((item) => {
+    const key = `${item.phase}:${item.dependenciesKey ?? `runtime-${item.order}`}`;
+    workGroups.set(key, [...(workGroups.get(key) ?? []), item]);
   });
-  [...executeGroups.entries()].forEach(([key, group], index) => {
+  [...workGroups.entries()].forEach(([key, group], index) => {
     const tasks = group.map((item) => item.task);
     const parallel = tasks.length > 1;
+    const phase = group[0]?.phase ?? "execute";
     nodes.push(createFlowNode({
-      id: `flow-execute-${key || index}`,
-      phase: "execute",
+      id: `flow-work-${key || index}`,
+      phase,
       kind: parallel ? "parallel" : "phase",
-      title: parallel ? "并行执行" : "执行",
+      title: parallel ? "并行执行" : taskNodeTitle(tasks[0]!, phase),
       summary: parallel ? `${tasks.length} 个 agent 在同一依赖后并行推进。` : tasks[0]?.title ?? "执行计划步骤。",
       tasks,
-      events: phaseEvents(allEvents, "execute").filter((event) => tasks.some((task) => task.events.some((taskEvent) => taskEvent.id === event.id)))
+      events: phaseEvents(allEvents, phase).filter((event) => tasks.some((task) => task.events.some((taskEvent) => taskEvent.id === event.id)))
     }));
   });
 
@@ -3293,6 +3279,7 @@ function buildOrchestrationFlow({
 
   return {
     nodes,
+    setup,
     nodeCount: nodes.length,
     parallelCount: nodes.filter((node) => node.kind === "parallel").length,
     retryCount,
@@ -3414,6 +3401,44 @@ function OrchestrationTaskRow({
   );
 }
 
+function OrchestrationTaskInline({
+  plan,
+  projects,
+  task,
+  onFileSelect,
+  onTabChange
+}: {
+  plan: OrchestrationPlan | null;
+  projects: Project[];
+  task: OrchestrationFlowTask;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const status = participantStatusMeta[task.status];
+  const projectLabels = task.targetProjectIds.map((projectId) => projectName(projects, projectId));
+  return (
+    <div className="orchestration-task-inline">
+      <div className="orchestration-task-inline-heading">
+        <span><Bot size={13} /> {task.agentName}</span>
+        <em>{task.role ?? "Agent"} · {task.source === "runtime" ? "运行时加入" : "计划参与"}</em>
+        <strong className={status.className}>{status.label}</strong>
+      </div>
+      <div className="orchestration-task-meta">
+        {projectLabels.map((label) => <span key={label}>项目: {label}</span>)}
+        {task.stepIds.map((stepId) => <span key={stepId}>步骤: {stepId}</span>)}
+        {task.expectedOutput ? <span>产物: <CompactText text={task.expectedOutput} max={70} /></span> : null}
+      </div>
+      <OrchestrationEvidenceLinks
+        files={task.files}
+        showAudit={task.events.length > 0}
+        showPlan={Boolean(plan && task.stepIds.length > 0)}
+        onFileSelect={onFileSelect}
+        onTabChange={onTabChange}
+      />
+    </div>
+  );
+}
+
 function OrchestrationTimeline({
   flow,
   plan,
@@ -3435,17 +3460,37 @@ function OrchestrationTimeline({
   return (
     <div className="orchestration-flow">
       <div className="orchestration-flow-summary">
-        <div className="orchestration-stage-strip" aria-label="流程摘要">
-          {flow.stageLabels.map((stage) => (
-            <span className={`orchestration-stage-chip ${stage.status}`} key={stage.phase}>
-              {stage.label}{flowStageSuffix(stage)}
-            </span>
-          ))}
+        <div className="orchestration-setup-row" aria-label="准备概况">
+          {flow.setup.hasSpec ? <span>Request ✓</span> : null}
+          {flow.setup.hasPlan ? <span>Plan {flow.setup.planStepCount > 0 ? `${flow.setup.planStepCount} steps` : "✓"}</span> : null}
+          {flow.setup.worktreeCount > 0 ? <span>Worktrees {flow.setup.worktreeCount}</span> : null}
+          <OrchestrationEvidenceLinks
+            files={[]}
+            showAudit={flow.setup.worktreeCount > 0}
+            showPlan={Boolean(plan)}
+            showSpec={Boolean(quest?.spec)}
+            onFileSelect={onFileSelect}
+            onTabChange={onTabChange}
+          />
         </div>
+        {flow.stageLabels.length > 0 ? (
+          <div className="orchestration-stage-strip" aria-label="流程摘要">
+            {flow.stageLabels.map((stage) => (
+              <span className={`orchestration-stage-chip ${stage.status}`} key={stage.phase}>
+                {stage.label}{flowStageSuffix(stage)}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <p>
-          {flow.nodeCount} 个节点 · {flow.parallelCount} 组并行 · {flow.retryCount} 次返工 · {flow.currentLabel}
+          {flow.nodeCount} 个工作节点 · {flow.parallelCount} 组并行 · {flow.retryCount} 次返工 · {flow.currentLabel}
         </p>
       </div>
+      {flow.nodeCount > 0 ? (
+        <div className="orchestration-flow-note">
+          主线按计划依赖排序；Request、Plan 和 Worktree 只作为准备概况展示。
+        </div>
+      ) : null}
       {selectedAgentId && visibleNodes.length === 0 ? <p className="muted">这个专家暂未关联到流程节点。</p> : null}
       <div className="orchestration-timeline">
         {visibleNodes.map((node, index) => {
@@ -3497,7 +3542,16 @@ function OrchestrationTimeline({
                     })}
                   </div>
                 ) : null}
-                {node.kind !== "parallel" && taskRows.length > 0 ? (
+                {node.kind !== "parallel" && taskRows.length === 1 ? (
+                  <OrchestrationTaskInline
+                    plan={plan}
+                    projects={projects}
+                    task={taskRows[0]!}
+                    onFileSelect={onFileSelect}
+                    onTabChange={onTabChange}
+                  />
+                ) : null}
+                {node.kind !== "parallel" && taskRows.length > 1 ? (
                   <div className="orchestration-task-list">
                     {taskRows.map((task) => (
                       <OrchestrationTaskRow
