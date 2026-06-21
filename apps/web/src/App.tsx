@@ -3414,14 +3414,12 @@ function OrchestrationTaskInline({
   onFileSelect: (file: ChangedFile) => void;
   onTabChange: (tab: InspectorTab) => void;
 }) {
-  const status = participantStatusMeta[task.status];
   const projectLabels = task.targetProjectIds.map((projectId) => projectName(projects, projectId));
   return (
     <div className="orchestration-task-inline">
       <div className="orchestration-task-inline-heading">
         <span><Bot size={13} /> {task.agentName}</span>
         <em>{task.role ?? "Agent"} · {task.source === "runtime" ? "运行时加入" : "计划参与"}</em>
-        <strong className={status.className}>{status.label}</strong>
       </div>
       <div className="orchestration-task-meta">
         {projectLabels.map((label) => <span key={label}>项目: {label}</span>)}
@@ -3441,6 +3439,7 @@ function OrchestrationTaskInline({
 
 function OrchestrationTimeline({
   flow,
+  participantCount,
   plan,
   projects,
   quest,
@@ -3449,6 +3448,7 @@ function OrchestrationTimeline({
   onTabChange
 }: {
   flow: OrchestrationFlow;
+  participantCount: number;
   plan: OrchestrationPlan | null;
   projects: Project[];
   quest?: Quest;
@@ -3483,15 +3483,15 @@ function OrchestrationTimeline({
           </div>
         ) : null}
         <p>
-          {flow.nodeCount} 个工作节点 · {flow.parallelCount} 组并行 · {flow.retryCount} 次返工 · {flow.currentLabel}
+          {flow.nodeCount} 个主线节点 · {participantCount} 位参与专家 · {flow.parallelCount} 组并行 · {flow.retryCount} 次返工 · {flow.currentLabel}
         </p>
       </div>
       {flow.nodeCount > 0 ? (
         <div className="orchestration-flow-note">
-          主线按计划依赖排序；Request、Plan 和 Worktree 只作为准备概况展示。
+          主线只展示计划步骤、并行/返工和交付节点；准备、规划和监督角色会计入参与专家。
         </div>
       ) : null}
-      {selectedAgentId && visibleNodes.length === 0 ? <p className="muted">这个专家暂未关联到流程节点。</p> : null}
+      {selectedAgentId && visibleNodes.length === 0 ? <p className="muted">这个专家参与了准备、规划或监督，但没有形成主线节点。</p> : null}
       <div className="orchestration-timeline">
         {visibleNodes.map((node, index) => {
           const status = flowStatusMeta[node.status];
@@ -3599,6 +3599,9 @@ function ParticipantAgentIndex({
   return (
     <details className="evidence-details-panel participant-agent-index">
       <summary>本次参与专家 ({agents.length})</summary>
+      <p className="participant-agent-index-hint">
+        这里统计所有参与角色；只有实际计划步骤、并行/返工和交付会进入上方主线。
+      </p>
       <div className="participant-agent-filter-row" aria-label="按专家过滤流程">
         <button
           className={selectedAgentId === null ? "ghost-action active" : "ghost-action"}
@@ -3694,6 +3697,7 @@ function CapabilitiesPanel({
         {flow.nodes.length > 0 ? (
           <OrchestrationTimeline
             flow={flow}
+            participantCount={participantAgents.length}
             plan={plan}
             projects={projects}
             quest={quest}

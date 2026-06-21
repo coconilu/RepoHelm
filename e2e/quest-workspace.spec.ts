@@ -856,7 +856,8 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toHaveCount(0);
   await expect(capabilitiesDrawer.getByText("Manifest", { exact: true })).toHaveCount(0);
   const flow = capabilitiesDrawer.locator(".orchestration-flow");
-  await expect(flow).toContainText("4 个工作节点");
+  await expect(flow).toContainText("4 个主线节点");
+  await expect(flow).toContainText("位参与专家");
   await expect(flow).toContainText("1 组并行");
   await expect(flow).toContainText("1 次返工");
   await expect(flow.getByText("Request ✓", { exact: true })).toBeVisible();
@@ -865,7 +866,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(flow.getByText("Execute ✓", { exact: true })).toBeVisible();
   await expect(flow.getByText("Review ↻1", { exact: true })).toBeVisible();
   await expect(flow.getByText("Delivery !", { exact: true })).toBeVisible();
-  await expect(flow).toContainText("主线按计划依赖排序");
+  await expect(flow).toContainText("主线只展示计划步骤、并行/返工和交付节点");
   await expect(flow.getByText("Delivery Review Skill")).toHaveCount(0);
   await expect(flow.getByText("User", { exact: true })).toHaveCount(0);
   await expect(flow.getByText("Worktree Manager", { exact: true })).toHaveCount(0);
@@ -884,6 +885,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(planNode).toContainText("项目: Delivery Docs");
   await expect(planNode).toContainText("步骤: plan-step");
   await expect(planNode).toContainText("Delivery evidence plan");
+  await expect(planNode.locator(".badge.green")).toHaveCount(1);
   await expect(planNode.getByRole("button", { name: "Plan" })).toBeVisible();
   await expect(planNode.getByRole("button", { name: "Audit" })).toBeVisible();
   await expect(planNode.getByRole("button", { name: "Files" })).toBeVisible();
@@ -934,6 +936,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(capabilitiesDrawer.getByText("建议的额外专家")).toHaveCount(0);
   await expect(capabilitiesDrawer.getByText("专家库")).toHaveCount(0);
   await capabilitiesDrawer.getByText("本次参与专家", { exact: false }).click();
+  await expect(capabilitiesDrawer.getByText("这里统计所有参与角色")).toBeVisible();
   await capabilitiesDrawer.getByRole("button", { name: /Coder Agent/ }).click();
   await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "Coder Agent" })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "Review Loop" })).toHaveCount(0);
@@ -1172,7 +1175,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Repos are global now: register the docs directory once, then link it from the workspace below.
   await settingsDialog.getByRole("textbox", { name: "项目路径" }).fill(docsPath);
   await settingsDialog.getByRole("button", { name: "添加仓库" }).click();
-  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: docsPath });
+  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: docsPath }).first();
   await expect(settingsProjectRow).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "打开目录" })).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "检查状态" })).toBeVisible();
