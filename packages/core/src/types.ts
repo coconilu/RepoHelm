@@ -137,6 +137,24 @@ export type AgentEventVisibility = "summary" | "milestone" | "process" | "audit"
 
 export type AgentEventSeverity = "info" | "success" | "warning" | "error";
 
+export type CollaborationEdgeKind = "delegate" | "dependency" | "handoff" | "loop";
+
+export type CollaborationEdgeEvidence = "actual" | "inferred";
+
+export interface CollaborationTraceEdge {
+  kind: CollaborationEdgeKind;
+  evidence: CollaborationEdgeEvidence;
+  label?: string;
+  sourceAgentId?: string;
+  sourceAgentName?: string;
+  targetAgentId?: string;
+  targetAgentName?: string;
+  sourceStepId?: string;
+  targetStepId?: string;
+  targetProjectId?: string;
+  correlationId?: string;
+}
+
 export interface AgentEvent {
   id: string;
   questId: string;
@@ -150,6 +168,7 @@ export interface AgentEvent {
   severity?: AgentEventSeverity;
   stepId?: string;
   projectId?: string;
+  collaboration?: CollaborationTraceEdge;
 }
 
 export interface DeliveryState {

@@ -534,13 +534,27 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
     {
       id: `event-delegate-code-${runId}`,
       questId: `quest-delivery-${runId}`,
-      type: "agent.tool_call",
-      title: "委派任务: coder-agent",
-      detail: JSON.stringify({ agentId: "coder-agent", task: "Implement delivery evidence chips", context: { stepId: "code-step" } }),
+      type: "collaboration.edge",
+      title: "委派计划步骤",
+      detail: "Planner Agent delegated code-step to Coder Agent.",
       agent: "Planner Agent",
       phase: "execute",
       visibility: "process",
       severity: "info",
+      stepId: "code-step",
+      projectId: project.id,
+      collaboration: {
+        kind: "delegate",
+        evidence: "actual",
+        label: "实际委派",
+        sourceAgentId: "planner-agent",
+        sourceAgentName: "Planner Agent",
+        targetAgentId: "coder-agent",
+        targetAgentName: "Coder Agent",
+        targetStepId: "code-step",
+        targetProjectId: project.id,
+        correlationId: `quest-delivery-${runId}:code-step:attempt_1`
+      },
       createdAt
     },
     {
@@ -1016,6 +1030,168 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(page.locator(".evidence-highlight")).toHaveCount(0);
 });
 
+test("renders no-plan delegate collaboration edges by worker display name", async ({ page }) => {
+  const runId = Date.now().toString(36);
+  const createdAt = "2026-06-20T12:15:00.000Z";
+  const workspace = {
+    id: `ws-delegate-trace-${runId}`,
+    name: `Delegate Trace Workspace ${runId}`,
+    description: "Delegate-mode collaboration trace regression workspace",
+    projectIds: [`project-delegate-trace-${runId}`],
+    worktrees: [],
+    worktreeRoot: "",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const project = {
+    id: `project-delegate-trace-${runId}`,
+    name: "Delegate Trace Docs",
+    path: docsPath,
+    role: "documentation",
+    defaultBranch: "main",
+    validationCommand: "pnpm test",
+    health: { status: "ok", message: "Ready", checkedAt: createdAt },
+    createdAt,
+    updatedAt: createdAt
+  };
+  const quest = {
+    id: `quest-delegate-trace-${runId}`,
+    workspaceId: workspace.id,
+    title: `Delegate Trace Quest ${runId}`,
+    requirement: "Run a dynamic delegate request.",
+    status: "ready",
+    agentBackendId: "mock",
+    affectedProjectIds: [project.id],
+    worktrees: [],
+    changedFiles: [],
+    validationResults: [],
+    reviewNotes: [],
+    deliveryResults: [],
+    capabilityRecommendations: [],
+    autoApprovePlan: true,
+    planApproval: { status: "approved", approvedAt: createdAt },
+    agentSummary: "Supervisor delegated work to Coder Agent.",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const events = [
+    {
+      id: `event-delegate-started-${runId}`,
+      questId: quest.id,
+      type: "delegate.started",
+      title: "动态委派执行",
+      detail: "Supervisor 在运行时动态委派了 1 个子任务。",
+      agent: "Supervisor",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "info",
+      createdAt
+    },
+    {
+      id: `event-delegate-call-${runId}`,
+      questId: quest.id,
+      type: "agent.tool_call",
+      title: "委派任务: coder-agent",
+      detail: JSON.stringify({ agentId: "coder-agent", task: "Implement the dynamic task." }),
+      agent: "Supervisor",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      collaboration: {
+        kind: "delegate",
+        evidence: "actual",
+        label: "实际委派",
+        sourceAgentName: "Supervisor",
+        targetAgentId: "coder-agent",
+        targetAgentName: "Coder Agent",
+        correlationId: `delegate-call-${runId}`
+      },
+      createdAt
+    },
+    {
+      id: `event-worker-completed-${runId}`,
+      questId: quest.id,
+      type: "step.completed",
+      title: "步骤完成: Coder Agent",
+      detail: "Coder Agent completed the dynamic subtask.",
+      agent: "Coder Agent",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "success",
+      stepId: "step_1",
+      projectId: project.id,
+      createdAt
+    }
+  ];
+
+  await page.route("**/api/state", (route) => route.fulfill({
+    json: {
+      workspaces: [workspace],
+      projects: [project],
+      quests: [quest],
+      events,
+      knowledge: [],
+      capabilities: [],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: [],
+        commandTemplates: [],
+        fileScopes: [],
+        networkScopes: [],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local-worktree",
+        updatedAt: createdAt
+      },
+      auditLog: [],
+      commandApprovals: [],
+      engine: {
+        mode: "cli",
+        cliId: "mock",
+        cliModels: {},
+        byokProviders: {},
+        activeByokProviderId: "openai",
+        modelKits: {},
+        updatedAt: createdAt
+      },
+      subAgents: {},
+      userPreferences: {},
+      failurePatterns: {}
+    }
+  }));
+  await page.route("**/api/agent-backends", (route) => route.fulfill({
+    json: [{ id: "mock", name: "Mock Agent", available: true, configured: true, detail: "Mock backend" }]
+  }));
+  await page.route("**/api/product-readiness", (route) => route.fulfill({
+    json: {
+      version: "test",
+      status: "prototype-ready",
+      milestones: [],
+      workspaceTemplates: [],
+      dependencyMap: { nodes: [], edges: [] },
+      governance: []
+    }
+  }));
+  await page.route(`**/api/quests/${quest.id}/plan`, (route) => route.fulfill({
+    json: {
+      questId: quest.id,
+      summary: "Delegate mode synthetic plan",
+      steps: [],
+      generatedAt: createdAt
+    }
+  }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: quest.title })).toBeVisible();
+  await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
+  await page.getByRole("dialog", { name: "概要" }).locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
+  const graph = page.getByRole("dialog", { name: "专家团" }).locator(".collaboration-graph");
+  await expect(graph.getByText("协作关系图", { exact: true })).toBeVisible();
+  await expect(graph).toContainText("Supervisor");
+  await expect(graph).toContainText("Coder Agent");
+  await expect(graph.locator(".collaboration-relation-list .collaboration-edge-chip").filter({ hasText: "Supervisor → Coder Agent" }).first())
+    .toContainText("实际委派 · 实际");
+});
+
 test("renders planned experts without registered capabilities", async ({ page }) => {
   const runId = Date.now().toString(36);
   const createdAt = "2026-06-20T10:45:00.000Z";
@@ -1269,7 +1445,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   const linkProjectSelect = configDialog.getByRole("combobox", { name: "选择要关联的仓库" });
   await expect(linkProjectSelect).toBeEnabled();
   await linkProjectSelect.click();
-  await page.getByRole("option", { name: /docs ·/ }).click();
+  await page.getByRole("option", { name: /docs ·/ }).first().click();
   await configDialog.getByRole("button", { name: "关联并 checkout worktree" }).click();
   const linkedRepoRow = configDialog.locator(".worktree-row").filter({ hasText: boundRepoName });
   await expect(linkedRepoRow).toBeVisible();

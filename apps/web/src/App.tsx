@@ -211,6 +211,8 @@ interface CollaborationGraph {
 
 interface DelegateTarget {
   agentKeys: string[];
+  agentId?: string;
+  agentName?: string;
   stepId?: string;
 }
 
@@ -2741,6 +2743,13 @@ const flowPhaseLabels: Record<OrchestrationFlowPhase, string> = {
   deliver: "Delivery"
 };
 
+const collaborationKindLabels: Record<CollaborationEdgeKind, string> = {
+  delegate: "实际委派",
+  dependency: "依赖输出",
+  handoff: "交付汇总",
+  loop: "返工回路"
+};
+
 const flowPhaseOrder: Record<OrchestrationFlowPhase, number> = {
   spec: 0,
   plan: 1,
@@ -3174,6 +3183,22 @@ function taskNodeTitle(task: OrchestrationFlowTask, phase: OrchestrationFlowPhas
 function parseDelegateTargets(events: AgentEvent[]) {
   const targets: DelegateTarget[] = [];
   events.forEach((event) => {
+    if (event.collaboration?.kind === "delegate") {
+      const agentKeys = uniqueStrings([
+        event.collaboration.targetAgentId ? normalizedAgentKey(event.collaboration.targetAgentId) : "",
+        event.collaboration.targetAgentName ? normalizedAgentKey(event.collaboration.targetAgentName) : ""
+      ].filter(Boolean));
+      const stepId = event.collaboration.targetStepId ?? event.stepId;
+      if (agentKeys.length > 0 || stepId) {
+        targets.push({
+          agentKeys,
+          agentId: event.collaboration.targetAgentId,
+          agentName: event.collaboration.targetAgentName,
+          stepId
+        });
+      }
+      return;
+    }
     if (event.type !== "agent.tool_call") return;
     if (!event.title.includes("委派任务") && !event.title.toLowerCase().includes("delegate")) return;
     const titleTarget = event.title.split(":").slice(1).join(":").trim();
@@ -3197,7 +3222,8 @@ function parseDelegateTargets(events: AgentEvent[]) {
       // Non-JSON tool-call detail still contributes the title target above.
     }
     if (agentKeys.length > 0 || stepId) {
-      targets.push({ agentKeys: uniqueStrings(agentKeys), stepId });
+      const uniqueAgentKeys = uniqueStrings(agentKeys);
+      targets.push({ agentKeys: uniqueAgentKeys, agentId: uniqueAgentKeys[0], stepId });
     }
   });
   return targets;
@@ -3209,9 +3235,14 @@ function taskHasActualDelegate(task: OrchestrationFlowTask, delegateTargets: Del
     normalizedAgentKey(task.agentName)
   ].filter(Boolean));
   return delegateTargets.some((target) =>
-    taskKeys.some((key) => target.agentKeys.includes(key)) ||
-    (target.stepId ? task.stepIds.includes(target.stepId) : false)
+    target.stepId
+      ? task.stepIds.includes(target.stepId)
+      : taskKeys.some((key) => target.agentKeys.includes(key))
   );
+}
+
+function actualDelegateForStep(stepId: string, delegateTargets: DelegateTarget[]) {
+  return [...delegateTargets].reverse().find((target) => target.stepId === stepId);
 }
 
 function terminalStepIds(steps: OrchestrationPlanStep[]) {
@@ -3264,12 +3295,33 @@ function buildCollaborationGraph({
     graphNodes.set(node.id, node);
   };
   const addEdge = (edge: CollaborationGraphEdge) => {
-    if (edge.from === edge.to || !graphNodes.has(edge.from) || !graphNodes.has(edge.to)) return;
+    if (edge.from === edge.to && edge.kind !== "loop") return;
+    if (!graphNodes.has(edge.from) || !graphNodes.has(edge.to)) return;
     edges.set(edge.id, edge);
+  };
+  const nodeIdForTraceEndpoint = (
+    edge: NonNullable<AgentEvent["collaboration"]>,
+    endpoint: "source" | "target"
+  ) => {
+    const stepId = endpoint === "source" ? edge.sourceStepId : edge.targetStepId;
+    if (stepId && graphNodes.has(`step-${stepId}`)) return `step-${stepId}`;
+    const agentId = endpoint === "source" ? edge.sourceAgentId : edge.targetAgentId;
+    const agentName = endpoint === "source" ? edge.sourceAgentName : edge.targetAgentName;
+    const agentKey = agentId ? normalizedAgentKey(agentId) : "";
+    const nameKey = agentName ? normalizedAgentKey(agentName) : "";
+    const match = [...graphNodes.values()].find((node) =>
+      (agentKey && node.agentId && normalizedAgentKey(node.agentId) === agentKey) ||
+      (nameKey && normalizedAgentKey(node.title) === nameKey)
+    );
+    if (!match && endpoint === "source" && (agentKey || nameKey) && graphNodes.has("agent-lead")) {
+      return "agent-lead";
+    }
+    return match?.id;
   };
 
   const plannerAgent = participantAgents.find((agent) => agent.role === "Planner" && /lead|supervisor|planner|orchestrator|规划|编排/i.test(agent.name)) ??
     participantAgents.find((agent) => agent.role === "Planner");
+  const tracedLeadName = events.find((event) => event.collaboration?.sourceAgentName)?.collaboration?.sourceAgentName;
   const leadNodeId = "agent-lead";
 
   if (quest?.spec) {
@@ -3289,11 +3341,11 @@ function buildCollaborationGraph({
   if (plan || plannerAgent || quest?.planApproval) {
     addNode({
       id: leadNodeId,
-      title: plannerAgent?.name ?? "Lead Agent",
+      title: plannerAgent?.name ?? tracedLeadName ?? "Lead Agent",
       subtitle: "拆解 / 调度",
       role: "Planner",
       status: plannerAgent?.status ?? (quest?.planApproval?.status === "rejected" ? "blocked" : "completed"),
-      source: plannerAgent ? "actual" : "inferred",
+      source: plannerAgent || tracedLeadName ? "actual" : "inferred",
       phase: "plan",
       level: quest?.spec ? 1 : 0,
       agentId: plannerAgent?.id,
@@ -3303,24 +3355,50 @@ function buildCollaborationGraph({
 
   (plan?.steps ?? []).forEach((step, index) => {
     const task = taskByStepId.get(step.id);
+    const actualDelegate = actualDelegateForStep(step.id, delegateTargets);
+    const nodeAgentName = actualDelegate?.agentName ?? task?.agentName ?? step.agentName;
+    const nodeAgentId = actualDelegate?.agentId ?? task?.agentId ?? step.agentId;
     const phase = stepPhase(step, index);
     const role = task?.role ?? inferParticipantRole({
-      agentName: step.agentName,
+      agentName: nodeAgentName,
       text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
       fallback: phase === "review" ? "Reviewer" : "Coder"
     });
     addNode({
       id: `step-${step.id}`,
-      title: task?.agentName ?? step.agentName,
+      title: nodeAgentName,
       subtitle: `${step.id} · ${flowPhaseLabels[phase]}`,
       role,
       status: task?.status ?? deriveParticipantStatus(quest, [], true),
       source: task?.events.length ? "actual" : "inferred",
       phase,
       level: computeStepLevel(step.id),
-      agentId: task?.agentId ?? step.agentId,
+      agentId: nodeAgentId,
       stepId: step.id,
       targetProjectIds: task?.targetProjectIds ?? uniqueStrings([step.targetProjectId])
+    });
+  });
+
+  flowNodes.forEach((node) => {
+    if (node.phase !== "execute") return;
+    node.tasks.forEach((task) => {
+      if (task.stepIds.some((stepId) => graphNodes.has(`step-${stepId}`))) return;
+      const graphNodeId = `runtime-${task.id}`;
+      if (graphNodes.has(graphNodeId)) return;
+      const runtimeRole: ParticipantAgentRole = task.role ?? "Coder";
+      addNode({
+        id: graphNodeId,
+        title: task.agentName,
+        subtitle: task.stepIds[0] ? `${task.stepIds[0]} · Execute` : "运行时执行",
+        role: runtimeRole,
+        status: task.status,
+        source: "actual",
+        phase: "execute",
+        level: 2,
+        agentId: task.agentId,
+        stepId: task.stepIds[0],
+        targetProjectIds: task.targetProjectIds
+      });
     });
   });
 
@@ -3458,6 +3536,23 @@ function buildCollaborationGraph({
       evidence: deliveryNode?.events.length || (quest?.deliveryResults.length ?? 0) > 0 ? "actual" : "inferred"
     }));
   }
+
+  events.forEach((event) => {
+    const trace = event.collaboration;
+    if (!trace) return;
+    if (trace.kind === "delegate" && trace.targetStepId && graphNodes.has(`step-${trace.targetStepId}`)) return;
+    const from = nodeIdForTraceEndpoint(trace, "source");
+    const to = nodeIdForTraceEndpoint(trace, "target");
+    if (!from || !to) return;
+    addEdge({
+      id: `edge-trace-${event.id}`,
+      from,
+      to,
+      label: trace.label ?? collaborationKindLabels[trace.kind],
+      kind: trace.kind,
+      evidence: trace.evidence
+    });
+  });
 
   if (reviewGraphId && reviewNode?.kind === "loop") {
     const loopTargetStepIds = reviewStep?.dependencies.length ? reviewStep.dependencies : terminalIds;

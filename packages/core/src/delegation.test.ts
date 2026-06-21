@@ -13,7 +13,7 @@ function delegateCall(id: string, agentId: string, task: string): LlmToolCall {
 
 describe("runDelegationLoop", () => {
   it("routes a delegate tool call to onDelegate and captures the final message", async () => {
-    const onDelegate = vi.fn(async () => JSON.stringify({ ok: true, result: { content: "done" } }));
+    const onDelegate = vi.fn(async () => JSON.stringify({ ok: true, agentName: "Worker A", result: { content: "done" } }));
     let turn = 0;
     const callModel = vi.fn(async (): Promise<DelegationCallResult> => {
       turn += 1;
@@ -37,7 +37,16 @@ describe("runDelegationLoop", () => {
     // The tool result must be threaded back to the model on the next turn.
     const secondCallMessages = callModel.mock.calls[1]![0];
     expect(secondCallMessages.some((m) => m.role === "tool")).toBe(true);
-    expect(result.events.some((e) => e.type === "agent.tool_call")).toBe(true);
+    const toolCallEvent = result.events.find((e) => e.type === "agent.tool_call");
+    expect(toolCallEvent).toMatchObject({
+      collaboration: {
+        kind: "delegate",
+        evidence: "actual",
+        sourceAgentName: "Supervisor",
+        targetAgentId: "worker_a",
+        targetAgentName: "Worker A"
+      }
+    });
   });
 
   it("delegates to two distinct workers across turns", async () => {

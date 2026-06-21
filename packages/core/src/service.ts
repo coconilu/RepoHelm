@@ -75,7 +75,7 @@ import { defaultEngineConfig, type StateStore } from "./store.js";
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${nanoid(10)}`;
 
-type AgentEventMeta = Partial<Pick<AgentEvent, "phase" | "visibility" | "severity" | "stepId" | "projectId">>;
+type AgentEventMeta = Partial<Pick<AgentEvent, "phase" | "visibility" | "severity" | "stepId" | "projectId" | "collaboration">>;
 
 function defaultEventMeta(type: string): Pick<AgentEvent, "phase" | "visibility" | "severity"> {
   let phase: AgentEventPhase = "audit";
@@ -2157,6 +2157,21 @@ export class RepoHelmService {
     };
 
     const stepCount = mode === "delegate" ? result.iterations : plan.steps.length;
+    const entryEvents = (result.entryEvents ?? []).map((e) => {
+      const stepId = e.stepId;
+      return this.event(questId, e.type, e.title, e.detail, e.agent, {
+        ...e,
+        ...(stepId ? { stepId } : {}),
+        ...(e.collaboration
+          ? {
+              collaboration: {
+                ...e.collaboration,
+                targetStepId: e.collaboration.targetStepId ?? stepId
+              }
+            }
+          : {})
+      });
+    });
     const events: AgentEvent[] = [
       mode === "delegate"
         ? this.event(
@@ -2175,7 +2190,7 @@ export class RepoHelmService {
           ),
       // Surface the entry agent's own loop events (delegate tool calls / messages)
       // before the per-delegation worker events below.
-      ...(result.entryEvents ?? []).map((e) => this.event(questId, e.type, e.title, e.detail, e.agent, e)),
+      ...entryEvents,
       ...result.delegations.flatMap((d, index) => [
         // Surface the worker's fine-grained execution events (tool calls,
         // messages, command output) first, then the step's conclusion.
@@ -3479,7 +3494,8 @@ export class RepoHelmService {
       visibility,
       severity,
       ...(meta.stepId ? { stepId: meta.stepId } : {}),
-      ...(meta.projectId ? { projectId: meta.projectId } : {})
+      ...(meta.projectId ? { projectId: meta.projectId } : {}),
+      ...(meta.collaboration ? { collaboration: meta.collaboration } : {})
     };
   }
 
