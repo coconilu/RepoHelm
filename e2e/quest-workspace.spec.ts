@@ -493,18 +493,159 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   };
   const events = [
     {
+      id: `event-user-approval-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "plan.approved",
+      title: "Plan approved",
+      detail: "User approved the orchestration plan.",
+      agent: "User",
+      phase: "plan",
+      visibility: "milestone",
+      severity: "info",
+      createdAt
+    },
+    {
+      id: `event-worktree-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "worktree.created",
+      title: "Worktree created",
+      detail: "Worktree Manager prepared the project worktree.",
+      agent: "Worktree Manager",
+      phase: "prepare",
+      visibility: "milestone",
+      severity: "success",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-plan-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "step.completed",
+      title: "Planner step completed",
+      detail: "Planner Agent confirmed delivery evidence responsibilities.",
+      agent: "Planner Agent",
+      phase: "plan",
+      visibility: "milestone",
+      severity: "success",
+      stepId: "plan-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-code-message-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "agent.message",
+      title: "Coder analyzed error handling",
+      detail: "Coder Agent is fixing an error handling path before completing the step.",
+      agent: "Coder Agent",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      stepId: "code-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-code-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "step.completed",
+      title: "Coder step completed",
+      detail: "Coder Agent updated src/storefront.js evidence chips and drawer links.",
+      agent: "Coder Agent",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "success",
+      stepId: "code-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-review-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "review.completed",
+      title: "Reviewer validation completed",
+      detail: "Reviewer Agent checked PR handoff and validation state.",
+      agent: "Reviewer Agent",
+      phase: "review",
+      visibility: "audit",
+      severity: "success",
+      stepId: "review-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-floating-review-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "review.completed",
+      title: "Floating review completed",
+      detail: "Floating Reviewer summarized release readiness without a project-specific diff.",
+      agent: "Floating Reviewer",
+      phase: "review",
+      visibility: "audit",
+      severity: "success",
+      createdAt
+    },
+    {
+      id: `event-partial-delivery-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "delivery.partial",
+      title: "Delivery partially failed",
+      detail: "One project failed delivery handoff.",
+      agent: "Partial Delivery Agent",
+      phase: "deliver",
+      visibility: "summary",
+      severity: "warning",
+      projectId: project.id,
+      createdAt
+    },
+    {
       id: `event-audit-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "delivery.audit",
       title: "Audit trail captured",
       detail: "Audit validation checked PR handoff and internal trace for src/storefront.js file.",
-      agent: "Delivery Agent",
-      phase: "review",
+      agent: "Final Handoff Agent",
+      phase: "deliver",
       visibility: "audit",
       severity: "info",
+      projectId: project.id,
       createdAt
     }
   ];
+  const plan = {
+    questId: `quest-delivery-${runId}`,
+    summary: "Plan delivery evidence drawer work across planning, implementation, and review.",
+    generatedAt: createdAt,
+    steps: [
+      {
+        id: "plan-step",
+        description: "Plan delivery evidence responsibilities and acceptance checkpoints.",
+        agentId: "planner-agent",
+        agentName: "Planner Agent",
+        dependencies: [],
+        expectedOutput: "Delivery evidence plan",
+        targetProjectId: project.id
+      },
+      {
+        id: "code-step",
+        description: "Implement delivery evidence chips for src/storefront.js and drawer links.",
+        agentId: "coder-agent",
+        agentName: "Coder Agent",
+        dependencies: ["plan-step"],
+        expectedOutput: "Updated Evidence drawer UI",
+        targetProjectId: project.id
+      },
+      {
+        id: "review-step",
+        description: "Review changed files and validate PR handoff evidence.",
+        agentId: "reviewer-agent",
+        agentName: "Reviewer Agent",
+        dependencies: ["code-step"],
+        expectedOutput: "Review notes and validation result",
+        targetProjectId: project.id
+      }
+    ]
+  };
   const quest = {
     id: `quest-delivery-${runId}`,
     workspaceId: workspace.id,
@@ -574,6 +715,8 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       }
     ],
     autoApprovePlan: false,
+    planApproval: { status: "approved", approvedAt: createdAt },
+    planPath: `/tmp/repohelm-${runId}-plan.md`,
     createdAt,
     updatedAt: createdAt
   };
@@ -625,6 +768,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       governance: []
     }
   }));
+  await page.route(`**/api/quests/${quest.id}/plan`, (route) => route.fulfill({ json: plan }));
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: questTitle })).toBeVisible();
@@ -659,26 +803,97 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await specDrawer.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
   const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
   await expect(capabilitiesDrawer).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("这些专家根据当前 request 被匹配出来；建议启用表示系统认为它适合本次任务，但还未确认参与。", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("专家库", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("这里是系统已注册的可用专家，不代表全部都会在本次 request 中参与。", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("本次参与的专家", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toHaveCount(0);
   await expect(capabilitiesDrawer.getByText("Manifest", { exact: true })).toHaveCount(0);
+  const participantCards = capabilitiesDrawer.locator(".participant-agent-card");
+  await expect(participantCards.filter({ hasText: "Delivery Review Skill" })).toHaveCount(0);
+  await expect(participantCards.filter({ hasText: "User" })).toHaveCount(0);
+  await expect(participantCards.filter({ hasText: "Worktree Manager" })).toHaveCount(0);
+
+  const plannerCard = participantCards.filter({ hasText: "Planner Agent" });
+  await expect(plannerCard).toBeVisible();
+  await expect(plannerCard).toContainText("Planner");
+  await expect(plannerCard).toContainText("completed");
+  await expect(plannerCard).toContainText("Plan delivery evidence responsibilities");
+  await expect(plannerCard).toContainText("项目: Delivery Docs");
+  await expect(plannerCard).toContainText("步骤: plan-step");
+  await expect(plannerCard).toContainText("Delivery evidence plan");
+  await expect(plannerCard.getByRole("button", { name: "Plan" })).toBeVisible();
+  await expect(plannerCard.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(plannerCard.getByRole("button", { name: "Files" })).toBeVisible();
+
+  const coderCard = participantCards.filter({ hasText: "Coder Agent" });
+  await expect(coderCard).toBeVisible();
+  await expect(coderCard).toContainText("Coder");
+  await expect(coderCard).toContainText("completed");
+  await expect(coderCard).not.toContainText("blocked");
+  await expect(coderCard).toContainText("Implement delivery evidence chips");
+  await expect(coderCard).toContainText("项目: Delivery Docs");
+  await expect(coderCard).toContainText("步骤: code-step");
+  await expect(coderCard).toContainText("依赖: plan-step");
+  await expect(coderCard).toContainText("Updated Evidence drawer UI");
+  await expect(coderCard.getByRole("button", { name: "Plan" })).toBeVisible();
+  await expect(coderCard.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(coderCard.getByRole("button", { name: "Files" })).toBeVisible();
+  await expect(coderCard.getByRole("button", { name: "Diff" })).toBeVisible();
+
+  const reviewerCard = participantCards.filter({ hasText: "Reviewer Agent" });
+  await expect(reviewerCard).toBeVisible();
+  await expect(reviewerCard).toContainText("Reviewer");
+  await expect(reviewerCard).toContainText("completed");
+  await expect(reviewerCard).toContainText("Review changed files");
+  await expect(reviewerCard).toContainText("项目: Delivery Docs");
+  await expect(reviewerCard).toContainText("步骤: review-step");
+  await expect(reviewerCard).toContainText("依赖: code-step");
+  await expect(reviewerCard).toContainText("Review notes and validation result");
+
+  const deliveryRuntimeCard = participantCards.filter({ hasText: "Final Handoff Agent" });
+  await expect(deliveryRuntimeCard).toBeVisible();
+  await expect(deliveryRuntimeCard).toContainText("Delivery");
+  await expect(deliveryRuntimeCard).toContainText("completed");
+  await expect(deliveryRuntimeCard).toContainText("运行时加入");
+  await expect(deliveryRuntimeCard).toContainText("项目: Delivery Docs");
+  await expect(deliveryRuntimeCard).toContainText("Audit trail captured");
+  await expect(deliveryRuntimeCard.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(deliveryRuntimeCard.getByRole("button", { name: "Files" })).toBeVisible();
+
+  const floatingReviewerCard = participantCards.filter({ hasText: "Floating Reviewer" });
+  await expect(floatingReviewerCard).toBeVisible();
+  await expect(floatingReviewerCard).toContainText("Reviewer");
+  await expect(floatingReviewerCard).toContainText("completed");
+  await expect(floatingReviewerCard.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(floatingReviewerCard.getByRole("button", { name: "Files" })).toHaveCount(0);
+  await expect(floatingReviewerCard.getByRole("button", { name: "Diff" })).toHaveCount(0);
+
+  const partialDeliveryCard = participantCards.filter({ hasText: "Partial Delivery Agent" });
+  await expect(partialDeliveryCard).toBeVisible();
+  await expect(partialDeliveryCard).toContainText("Delivery");
+  await expect(partialDeliveryCard).toContainText("blocked");
+  await expect(partialDeliveryCard).not.toContainText("completed");
+
+  await expect(capabilitiesDrawer.getByText("建议的额外专家 (3)", { exact: true })).toBeVisible();
+  await capabilitiesDrawer.getByText("建议的额外专家 (3)", { exact: true }).click();
   const capabilityRow = capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Delivery Review Skill" });
   await expect(capabilityRow).toBeVisible();
   await expect(capabilityRow.getByText("建议启用", { exact: true })).toBeVisible();
-  await expect(capabilityRow).toContainText("PR handoff");
-  await expect(capabilityRow).toContainText("validation");
-  await expect(capabilityRow).toContainText("planning");
   await expect(capabilityRow.locator(".capability-permissions").getByText("read:changed-files", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Accepted Expert" }).getByText("已启用", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Dismissed Expert" }).getByText("已忽略", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("专家库 (3)", { exact: true })).toBeVisible();
+
+  await coderCard.getByRole("button", { name: "Diff" }).click();
+  await expect(page.getByRole("dialog", { name: "Diff" })).toBeVisible();
+  await expect(page.locator(".diff-meta").getByText("src/storefront.js", { exact: true })).toBeVisible();
+  await page.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
+  await expect(page.getByRole("dialog", { name: "专家团" })).toBeVisible();
 
   await capabilitiesDrawer.locator(".inspector-tabs").getByRole("button", { name: "Audit" }).click();
   const auditDrawer = page.getByRole("dialog", { name: "Audit" });
   await expect(auditDrawer).toBeVisible();
-  await expect(auditDrawer.locator(".raw-audit-row").first()).toContainText("Audit");
-  await expect(auditDrawer.locator(".raw-audit-row").first()).toContainText("src/storefront.js");
+  const deliveryAuditRow = auditDrawer.locator(".raw-audit-row").filter({ hasText: "delivery.audit" });
+  await expect(deliveryAuditRow).toContainText("Audit");
+  await expect(deliveryAuditRow).toContainText("src/storefront.js");
 
   await auditDrawer.locator(".inspector-tabs").getByRole("button", { name: "文件" }).click();
   await expect(page.getByRole("dialog", { name: "文件" })).toBeVisible();
@@ -698,6 +913,145 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(diffMeta.getByText("src/storefront.js", { exact: true })).toBeVisible();
   await expect(diffMeta.getByText("modified", { exact: true })).toBeVisible();
   await expect(page.locator(".evidence-highlight")).toHaveCount(0);
+});
+
+test("renders planned experts without registered capabilities", async ({ page }) => {
+  const runId = Date.now().toString(36);
+  const createdAt = "2026-06-20T10:45:00.000Z";
+  const workspace = {
+    id: `ws-no-cap-${runId}`,
+    name: `No Capability Workspace ${runId}`,
+    description: "Expert panel plan-only regression workspace",
+    projectIds: [`project-no-cap-${runId}`],
+    worktrees: [],
+    worktreeRoot: "",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const project = {
+    id: `project-no-cap-${runId}`,
+    name: "Plan Only Docs",
+    path: docsPath,
+    role: "documentation",
+    defaultBranch: "main",
+    validationCommand: "pnpm test",
+    health: { status: "ok", message: "Ready", checkedAt: createdAt },
+    createdAt,
+    updatedAt: createdAt
+  };
+  const quest = {
+    id: `quest-no-cap-${runId}`,
+    workspaceId: workspace.id,
+    title: `Plan Only Expert Quest ${runId}`,
+    requirement: "Render planned experts even when the capability registry is empty.",
+    status: "planning",
+    spec: {
+      background: "Plan-only expert panel regression",
+      userGoal: "Show actual planned participants without capability recommendations.",
+      functionalRequirements: ["Render planned participant agents from the orchestration plan."],
+      nonFunctionalRequirements: [],
+      affectedSurfaces: ["Evidence drawer"],
+      outOfScope: [],
+      acceptanceCriteria: ["The Expert panel is visible without registered capabilities."],
+      openQuestions: []
+    },
+    agentBackendId: "mock",
+    affectedProjectIds: [project.id],
+    worktrees: [],
+    changedFiles: [],
+    validationResults: [],
+    reviewNotes: [],
+    deliveryResults: [],
+    capabilityRecommendations: [],
+    autoApprovePlan: false,
+    planApproval: { status: "pending" },
+    planPath: `/tmp/repohelm-${runId}-plan.md`,
+    createdAt,
+    updatedAt: createdAt
+  };
+  const plan = {
+    questId: quest.id,
+    summary: "Plan-only request with no registered capabilities.",
+    generatedAt: createdAt,
+    steps: [
+      {
+        id: "plan-only-code",
+        description: "Implement the plan-only expert panel state.",
+        agentId: "plan-only-coder",
+        agentName: "Plan Only Coder",
+        dependencies: [],
+        expectedOutput: "Plan-only expert panel UI",
+        targetProjectId: project.id
+      }
+    ]
+  };
+
+  await page.route("**/api/state", (route) => route.fulfill({
+    json: {
+      workspaces: [workspace],
+      projects: [project],
+      quests: [quest],
+      events: [],
+      knowledge: [],
+      capabilities: [],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: [],
+        commandTemplates: [],
+        fileScopes: [],
+        networkScopes: [],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local-worktree",
+        updatedAt: createdAt
+      },
+      auditLog: [],
+      commandApprovals: [],
+      engine: {
+        mode: "cli",
+        cliId: "mock",
+        cliModels: {},
+        byokProviders: {},
+        activeByokProviderId: "openai",
+        modelKits: {},
+        updatedAt: createdAt
+      },
+      subAgents: {},
+      userPreferences: {},
+      failurePatterns: {}
+    }
+  }));
+  await page.route("**/api/agent-backends", (route) => route.fulfill({
+    json: [{ id: "mock", name: "Mock Agent", available: true, configured: true, detail: "Mock backend" }]
+  }));
+  await page.route("**/api/product-readiness", (route) => route.fulfill({
+    json: {
+      version: "test",
+      status: "prototype-ready",
+      milestones: [],
+      workspaceTemplates: [],
+      dependencyMap: { nodes: [], edges: [] },
+      governance: []
+    }
+  }));
+  await page.route(`**/api/quests/${quest.id}/plan`, (route) => route.fulfill({ json: plan }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: quest.title })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开 专家团 证据" })).toBeVisible();
+  await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
+  await page.getByRole("dialog", { name: "概要" }).locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
+
+  const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
+  await expect(capabilitiesDrawer).toBeVisible();
+  const participantCard = capabilitiesDrawer.locator(".participant-agent-card").filter({ hasText: "Plan Only Coder" });
+  await expect(participantCard).toBeVisible();
+  await expect(participantCard).toContainText("planned");
+  await expect(participantCard).toContainText("Implement the plan-only expert panel state");
+  await expect(participantCard).toContainText("项目: Plan Only Docs");
+  await expect(participantCard).toContainText("步骤: plan-only-code");
+  await expect(participantCard).toContainText("Plan-only expert panel UI");
+  await expect(capabilitiesDrawer.getByText("建议的额外专家")).toHaveCount(0);
+  await expect(capabilitiesDrawer.getByText("专家库")).toHaveCount(0);
 });
 
 test("creates and runs a Quest from the workspace UI", async ({ page }) => {
