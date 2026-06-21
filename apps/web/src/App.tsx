@@ -816,6 +816,7 @@ export function App() {
               agentBackendId={agentBackendId}
               agentBackends={agentBackends}
               busy={busy}
+              capabilities={state.capabilities}
               entrySubAgents={entrySubAgents}
               events={questEvents}
               pendingAction={pendingAction}
@@ -1293,11 +1294,11 @@ function uniqueEvidenceTabs(tabs: InspectorTab[]) {
   return [...new Set(tabs)];
 }
 
-function evidenceTabsForQuest(quest: Quest, events: AgentEvent[]) {
+function evidenceTabsForQuest(quest: Quest, events: AgentEvent[], capabilities: CapabilityDefinition[] = []) {
   const tabs: InspectorTab[] = ["overview"];
   if (quest.spec) tabs.push("spec");
   if (quest.planApproval) tabs.push("plan");
-  if (hasExpertPanelEvidence(quest, events)) tabs.push("capabilities");
+  if (hasExpertPanelEvidence(quest, events, capabilities)) tabs.push("capabilities");
   if (quest.changedFiles.length > 0) tabs.push("files", "diff");
   if (events.length > 0) tabs.push("audit");
   return uniqueEvidenceTabs(tabs);
@@ -1329,17 +1330,19 @@ function evidenceTabsForEvent(event: AgentEvent, quest: Quest) {
 }
 
 function EvidenceQuickActions({
+  capabilities,
   events,
   quest,
   onEvidenceOpen
 }: {
+  capabilities: CapabilityDefinition[];
   events: AgentEvent[];
   quest: Quest;
   onEvidenceOpen: (tab: InspectorTab) => void;
 }) {
   return (
     <div className="evidence-control-row" aria-label="证据入口">
-      {evidenceTabsForQuest(quest, events).map((tab) => (
+      {evidenceTabsForQuest(quest, events, capabilities).map((tab) => (
         <button
           aria-label={`打开 ${evidenceTabLabels[tab]} 证据`}
           className="evidence-chip"
@@ -1531,6 +1534,7 @@ function QuestStage({
   agentBackendId,
   agentBackends,
   busy,
+  capabilities,
   entrySubAgents,
   events,
   pendingAction,
@@ -1554,6 +1558,7 @@ function QuestStage({
   agentBackendId: AgentBackendId;
   agentBackends: AgentBackendInfo[];
   busy: boolean;
+  capabilities: CapabilityDefinition[];
   entrySubAgents: SubAgent[];
   events: AgentEvent[];
   pendingAction: string;
@@ -1750,7 +1755,7 @@ function QuestStage({
               </article>
             ) : null}
             {analysisBubble}
-            <EvidenceQuickActions events={auditEvents} quest={quest} onEvidenceOpen={onEvidenceOpen} />
+            <EvidenceQuickActions capabilities={capabilities} events={auditEvents} quest={quest} onEvidenceOpen={onEvidenceOpen} />
             <QuestMilestones events={orderedEvents} onEvidenceOpen={onEvidenceOpen} quest={quest} />
             <RawAuditLog events={auditEvents} onEvidenceOpen={onEvidenceOpen} />
             {pendingAction ? (
@@ -2338,7 +2343,7 @@ function PlanPanel({
       .then((p) => setPlan(p))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [quest?.id, quest?.planPath]);
+  }, [quest?.id, quest?.planPath, quest?.updatedAt]);
 
   if (!quest) {
     return (
@@ -2670,6 +2675,24 @@ const participantEventPrefixes = [
   "validation."
 ];
 
+const blockedParticipantEventTypes = new Set([
+  "delivery.partial",
+  "delivery.skipped",
+  "step.failed",
+  "orchestrator.failed",
+  "validation.failed",
+  "review.failed",
+  "delivery.failed"
+]);
+
+const completedParticipantEventTypes = new Set([
+  "step.completed",
+  "orchestrator.completed",
+  "delivery.completed",
+  "review.completed",
+  "validation.completed"
+]);
+
 function hasExpertPanelEvidence(quest?: Quest, events: AgentEvent[] = [], capabilities: CapabilityDefinition[] = []) {
   return Boolean(
     quest?.planPath ||
@@ -2688,22 +2711,6 @@ function normalizedAgentKey(name: string) {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function isBlockedEvent(event: AgentEvent) {
-  return /failed|failure|blocked|error|denied|失败|阻塞|错误/.test(`${event.type} ${event.title} ${event.detail}`.toLowerCase());
-}
-
-function isCompletedEvent(event: AgentEvent) {
-  return /completed|complete|succeeded|success|ready|delivered|validated|reviewed|finished|完成|成功|就绪|交付/.test(
-    `${event.type} ${event.title} ${event.detail}`.toLowerCase()
-  );
-}
-
-function isRunningEvent(event: AgentEvent) {
-  return /started|running|executing|delegated|prepared|created|queued|执行|启动|准备|委派/.test(
-    `${event.type} ${event.title} ${event.detail}`.toLowerCase()
-  );
-}
-
 function getRuntimeParticipantEvents(events: AgentEvent[]) {
   return events.filter((event) => {
     const agent = event.agent.trim();
@@ -2716,6 +2723,14 @@ function getRuntimeParticipantEvents(events: AgentEvent[]) {
     }
     return Boolean(event.stepId) || participantEventPrefixes.some((prefix) => event.type.startsWith(prefix));
   });
+}
+
+function isBlockedParticipantEvent(event: AgentEvent) {
+  return event.severity === "error" || blockedParticipantEventTypes.has(event.type);
+}
+
+function isCompletedParticipantEvent(event: AgentEvent) {
+  return completedParticipantEventTypes.has(event.type);
 }
 
 function inferParticipantRole(input: {
@@ -2738,22 +2753,15 @@ function inferParticipantRole(input: {
 }
 
 function deriveParticipantStatus(quest: Quest | undefined, events: AgentEvent[], planned: boolean): ParticipantAgentStatus {
-  const latest = events[events.length - 1];
-  if (latest && isBlockedEvent(latest)) return "blocked";
-  if (latest && isRunningEvent(latest) && !isCompletedEvent(latest)) return "running";
-  if (latest && isCompletedEvent(latest)) return "completed";
-  if (quest?.status === "blocked" && events.some(isBlockedEvent)) return "blocked";
+  const latestTerminalEvent = orderedQuestEvents(events, { includeInternal: true })
+    .reverse()
+    .find((event) => isBlockedParticipantEvent(event) || isCompletedParticipantEvent(event));
+  if (latestTerminalEvent) {
+    return isBlockedParticipantEvent(latestTerminalEvent) ? "blocked" : "completed";
+  }
   if (quest?.status === "ready" || quest?.status === "delivered") return planned || events.length > 0 ? "completed" : "planned";
   if (["executing", "validating", "reviewing"].includes(quest?.status ?? "") && events.length > 0) return "running";
   return "planned";
-}
-
-function mergeParticipantStatus(current: ParticipantAgentStatus, next: ParticipantAgentStatus): ParticipantAgentStatus {
-  if (current === "blocked" || next === "blocked") return "blocked";
-  if (next === "running") return "running";
-  if (current === "running") return "running";
-  if (next === "completed") return "completed";
-  return current;
 }
 
 function stepEventsForAgent(step: OrchestrationPlanStep, events: AgentEvent[]) {
@@ -2788,7 +2796,6 @@ function buildParticipantAgents({
     const current = agents.get(input.key);
     if (current) {
       current.role = current.role === "Coder" && input.role !== "Coder" ? input.role : current.role;
-      current.status = mergeParticipantStatus(current.status, input.status);
       current.source = current.source === "planned" ? "planned" : input.source;
       current.order = Math.min(current.order, input.order);
       return current;
@@ -2861,12 +2868,18 @@ function buildParticipantAgents({
     }
   });
 
-  return [...agents.values()].sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+  return [...agents.values()]
+    .map((agent) => ({
+      ...agent,
+      events: orderedQuestEvents(agent.events, { includeInternal: true }),
+      status: deriveParticipantStatus(quest, agent.events, agent.source === "planned")
+    }))
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 }
 
 function relatedFilesForAgent(agent: ParticipantAgent, changedFiles: ChangedFile[]) {
   if (agent.targetProjectIds.length === 0) {
-    return changedFiles;
+    return [];
   }
   const targetProjects = new Set(agent.targetProjectIds);
   return changedFiles.filter((file) => targetProjects.has(file.projectId));
@@ -2923,7 +2936,7 @@ function CapabilitiesPanel({
     return () => {
       cancelled = true;
     };
-  }, [quest?.id, quest?.planPath]);
+  }, [quest?.id, quest?.planPath, quest?.updatedAt]);
 
   return (
     <div className="inspector-stack">
@@ -2938,7 +2951,10 @@ function CapabilitiesPanel({
           <div className="participant-agent-list">
             {participantAgents.map((agent) => {
               const status = participantStatusMeta[agent.status];
-              const targetProjects = agent.targetProjectIds.map((projectId) => projectName(projects, projectId));
+              const targetProjects = agent.targetProjectIds.map((projectId) => ({
+                id: projectId,
+                name: projectName(projects, projectId)
+              }));
               const files = relatedFilesForAgent(agent, changedFiles);
               const latestEvent = agent.events[agent.events.length - 1];
               const visibleResponsibilities = agent.responsibilities.slice(0, 3);
@@ -2954,7 +2970,7 @@ function CapabilitiesPanel({
                   <div className="participant-agent-meta">
                     <span>{agent.source === "planned" ? "计划参与" : "运行时加入"}</span>
                     {targetProjects.map((project) => (
-                      <span key={project}>项目: {project}</span>
+                      <span key={project.id}>项目: {project.name}</span>
                     ))}
                     {agent.stepIds.map((stepId) => (
                       <span key={stepId}>步骤: {stepId}</span>

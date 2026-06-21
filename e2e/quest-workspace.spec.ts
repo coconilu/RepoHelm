@@ -532,6 +532,20 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       createdAt
     },
     {
+      id: `event-code-message-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "agent.message",
+      title: "Coder analyzed error handling",
+      detail: "Coder Agent is fixing an error handling path before completing the step.",
+      agent: "Coder Agent",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      stepId: "code-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
       id: `event-code-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "step.completed",
@@ -560,12 +574,37 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       createdAt
     },
     {
+      id: `event-floating-review-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "review.completed",
+      title: "Floating review completed",
+      detail: "Floating Reviewer summarized release readiness without a project-specific diff.",
+      agent: "Floating Reviewer",
+      phase: "review",
+      visibility: "audit",
+      severity: "success",
+      createdAt
+    },
+    {
+      id: `event-partial-delivery-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "delivery.partial",
+      title: "Delivery partially failed",
+      detail: "One project failed delivery handoff.",
+      agent: "Partial Delivery Agent",
+      phase: "deliver",
+      visibility: "summary",
+      severity: "warning",
+      projectId: project.id,
+      createdAt
+    },
+    {
       id: `event-audit-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "delivery.audit",
       title: "Audit trail captured",
       detail: "Audit validation checked PR handoff and internal trace for src/storefront.js file.",
-      agent: "Delivery Agent",
+      agent: "Final Handoff Agent",
       phase: "deliver",
       visibility: "audit",
       severity: "info",
@@ -788,6 +827,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(coderCard).toBeVisible();
   await expect(coderCard).toContainText("Coder");
   await expect(coderCard).toContainText("completed");
+  await expect(coderCard).not.toContainText("blocked");
   await expect(coderCard).toContainText("Implement delivery evidence chips");
   await expect(coderCard).toContainText("项目: Delivery Docs");
   await expect(coderCard).toContainText("步骤: code-step");
@@ -808,7 +848,7 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(reviewerCard).toContainText("依赖: code-step");
   await expect(reviewerCard).toContainText("Review notes and validation result");
 
-  const deliveryRuntimeCard = participantCards.filter({ hasText: "Delivery Agent" });
+  const deliveryRuntimeCard = participantCards.filter({ hasText: "Final Handoff Agent" });
   await expect(deliveryRuntimeCard).toBeVisible();
   await expect(deliveryRuntimeCard).toContainText("Delivery");
   await expect(deliveryRuntimeCard).toContainText("completed");
@@ -817,6 +857,20 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(deliveryRuntimeCard).toContainText("Audit trail captured");
   await expect(deliveryRuntimeCard.getByRole("button", { name: "Audit" })).toBeVisible();
   await expect(deliveryRuntimeCard.getByRole("button", { name: "Files" })).toBeVisible();
+
+  const floatingReviewerCard = participantCards.filter({ hasText: "Floating Reviewer" });
+  await expect(floatingReviewerCard).toBeVisible();
+  await expect(floatingReviewerCard).toContainText("Reviewer");
+  await expect(floatingReviewerCard).toContainText("completed");
+  await expect(floatingReviewerCard.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(floatingReviewerCard.getByRole("button", { name: "Files" })).toHaveCount(0);
+  await expect(floatingReviewerCard.getByRole("button", { name: "Diff" })).toHaveCount(0);
+
+  const partialDeliveryCard = participantCards.filter({ hasText: "Partial Delivery Agent" });
+  await expect(partialDeliveryCard).toBeVisible();
+  await expect(partialDeliveryCard).toContainText("Delivery");
+  await expect(partialDeliveryCard).toContainText("blocked");
+  await expect(partialDeliveryCard).not.toContainText("completed");
 
   await expect(capabilitiesDrawer.getByText("建议的额外专家 (3)", { exact: true })).toBeVisible();
   await capabilitiesDrawer.getByText("建议的额外专家 (3)", { exact: true }).click();
@@ -983,6 +1037,7 @@ test("renders planned experts without registered capabilities", async ({ page })
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: quest.title })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开 专家团 证据" })).toBeVisible();
   await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
   await page.getByRole("dialog", { name: "概要" }).locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
 
