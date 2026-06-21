@@ -532,6 +532,18 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       createdAt
     },
     {
+      id: `event-delegate-code-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "agent.tool_call",
+      title: "委派任务: coder-agent",
+      detail: JSON.stringify({ agentId: "coder-agent", task: "Implement delivery evidence chips", context: { stepId: "code-step" } }),
+      agent: "Planner Agent",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      createdAt
+    },
+    {
       id: `event-code-message-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "agent.message",
@@ -877,6 +889,35 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
     "Review Loop",
     "Delivery"
   ]);
+  const graph = flow.locator(".collaboration-graph");
+  await expect(graph.getByText("协作关系图", { exact: true })).toBeVisible();
+  await expect(graph).toContainText("展示谁调度谁、哪些分支并行、哪里发生返工。");
+  await expect(graph).toContainText("2 条实际关系");
+  await expect(graph).toContainText("8 条推断关系");
+  await expect(graph).toContainText("1 组并行");
+  await expect(graph).toContainText("1 个 loop");
+  await expect(graph.getByText("Parallel Group", { exact: true })).toBeVisible();
+  await expect(graph).toContainText("Planner Agent");
+  await expect(graph).toContainText("Coder Agent");
+  await expect(graph).toContainText("Test Agent");
+  await expect(graph).toContainText("Reviewer Agent");
+  await expect(graph).toContainText("Delivery Agent");
+  await expect(graph).toContainText("并行分支");
+  await expect(graph).toContainText("汇合依赖");
+  await expect(graph).toContainText("返工范围");
+  await expect(graph).toContainText("实际");
+  await expect(graph).toContainText("推断");
+  await expect(graph.getByText("实线：真实 delegate / 运行证据")).toBeVisible();
+  await expect(graph.getByText("虚线：从 plan dependency 推断")).toBeVisible();
+  const relationList = graph.locator(".collaboration-relation-list");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Planner Agent → Coder Agent / code-step" }).first())
+    .toContainText("实际委派 · 实际");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Planner Agent / plan-step → Coder Agent / code-step" }).first())
+    .toContainText("并行分支 · 推断");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Reviewer Agent / review-step → Coder Agent / code-step" }).first())
+    .toContainText("返工范围 · 推断");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Reviewer Agent / review-step → Test Agent / test-step" }).first())
+    .toContainText("返工范围 · 推断");
 
   const planNode = capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "规划 · plan-step" });
   await expect(planNode).toBeVisible();
@@ -1193,9 +1234,12 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await page.getByRole("button", { name: "关闭设置" }).click();
 
   const demoWorkspaceNode = page.locator(".workspace-node").filter({ hasText: "RepoHelm Demo Workspace" });
-  await demoWorkspaceNode.locator(".workspace-title-button").click();
+  const collapseDemoWorkspace = demoWorkspaceNode.getByRole("button", { name: "收起 workspace" });
+  if (await collapseDemoWorkspace.count()) {
+    await collapseDemoWorkspace.click();
+  }
   await expect(demoWorkspaceNode.locator(".request-list")).toBeHidden();
-  await demoWorkspaceNode.locator(".workspace-title-button").click();
+  await demoWorkspaceNode.getByRole("button", { name: "展开 workspace" }).click();
   await expect(demoWorkspaceNode.locator(".request-list")).toBeVisible();
   await page.getByRole("button", { name: "创建 Workspace" }).click();
   const workspaceCreateDialog = page.getByRole("dialog", { name: "创建 Workspace" });
