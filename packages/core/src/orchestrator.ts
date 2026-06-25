@@ -36,6 +36,7 @@ import type {
   AgentEventPhase,
   AgentEventSeverity,
   AgentEventVisibility,
+  CollaborationTraceEdge,
   ModelKit,
   OrchestrationPlan,
   OrchestrationPlanStep,
@@ -160,6 +161,29 @@ export interface BackendEvent {
   severity?: AgentEventSeverity;
   stepId?: string;
   projectId?: string;
+  collaboration?: CollaborationTraceEdge;
+}
+
+function collaborationEdgeEvent(input: {
+  title: string;
+  agent: string;
+  detail?: string;
+  stepId?: string;
+  projectId?: string;
+  collaboration: CollaborationTraceEdge;
+}): BackendEvent {
+  return {
+    type: "collaboration.edge",
+    title: input.title,
+    detail: input.detail ?? JSON.stringify(input.collaboration),
+    agent: input.agent,
+    phase: "execute",
+    visibility: "process",
+    severity: "info",
+    ...(input.stepId ? { stepId: input.stepId } : {}),
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    collaboration: input.collaboration
+  };
 }
 
 export interface SubAgentBackendResult {
@@ -644,13 +668,33 @@ export class SubAgentOrchestrator {
       attempt++;
       const agent = ctx.agentPool.find((a) => a.id === effectiveStep.agentId);
       const agentLabel = agent?.name ?? effectiveStep.agentName;
+      const targetProjectId = effectiveStep.targetProjectId || ctx.quest.affectedProjectIds[0];
+      events.push(collaborationEdgeEvent({
+        title: attempt > 1 ? "重新委派任务" : "委派计划步骤",
+        detail: `${ctx.entryAgent.name} delegated ${effectiveStep.id} to ${agentLabel}.`,
+        agent: ctx.entryAgent.name,
+        stepId: effectiveStep.id,
+        projectId: targetProjectId,
+        collaboration: {
+          kind: "delegate",
+          evidence: "actual",
+          label: attempt > 1 ? "重新委派" : "实际委派",
+          sourceAgentId: ctx.entryAgent.id,
+          sourceAgentName: ctx.entryAgent.name,
+          targetAgentId: effectiveStep.agentId,
+          targetAgentName: agentLabel,
+          targetStepId: effectiveStep.id,
+          targetProjectId,
+          correlationId: `${ctx.quest.id}:${effectiveStep.id}:attempt_${attempt}`
+        }
+      }));
 
       // Snapshot the worktree BEFORE this attempt so we can both detect the
       // attempt's real disk changes (even when a CLI errors out before our own
       // accounting runs) and roll them back if the attempt fails and recovery
       // continues. A missing agent runs no worker, so there is nothing to snapshot.
       const worktree = agent
-        ? this.resolveWorktreeForStep(ctx.quest, effectiveStep.targetProjectId || ctx.quest.affectedProjectIds[0])
+        ? this.resolveWorktreeForStep(ctx.quest, targetProjectId)
         : undefined;
       const baselineSig = worktree?.worktreePath
         ? await readWorktreeChangeSnapshot(worktree.worktreePath)
@@ -672,7 +716,7 @@ export class SubAgentOrchestrator {
           step: effectiveStep,
           dependencies: ctx.dependencies,
           quest: ctx.quest,
-          targetProjectId: effectiveStep.targetProjectId || ctx.quest.affectedProjectIds[0]
+          targetProjectId
         });
         if (result.events) events.push(...result.events);
         const material = !result.error

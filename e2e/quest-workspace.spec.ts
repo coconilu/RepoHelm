@@ -532,6 +532,32 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       createdAt
     },
     {
+      id: `event-delegate-code-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "collaboration.edge",
+      title: "委派计划步骤",
+      detail: "Planner Agent delegated code-step to Coder Agent.",
+      agent: "Planner Agent",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      stepId: "code-step",
+      projectId: project.id,
+      collaboration: {
+        kind: "delegate",
+        evidence: "actual",
+        label: "实际委派",
+        sourceAgentId: "planner-agent",
+        sourceAgentName: "Planner Agent",
+        targetAgentId: "coder-agent",
+        targetAgentName: "Coder Agent",
+        targetStepId: "code-step",
+        targetProjectId: project.id,
+        correlationId: `quest-delivery-${runId}:code-step:attempt_1`
+      },
+      createdAt
+    },
+    {
       id: `event-code-message-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "agent.message",
@@ -546,6 +572,18 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       createdAt
     },
     {
+      id: `event-runtime-execute-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "agent.message",
+      title: "Runtime execute observer joined",
+      detail: "Runtime Execute Observer joined during execution without a planned step.",
+      agent: "Runtime Execute Observer",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      createdAt
+    },
+    {
       id: `event-code-${runId}`,
       questId: `quest-delivery-${runId}`,
       type: "step.completed",
@@ -556,6 +594,34 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
       visibility: "milestone",
       severity: "success",
       stepId: "code-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-test-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "validation.completed",
+      title: "Test coverage completed",
+      detail: "Test Agent added e2e coverage for the evidence drawer orchestration view.",
+      agent: "Test Agent",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "success",
+      stepId: "test-step",
+      projectId: project.id,
+      createdAt
+    },
+    {
+      id: `event-review-failed-${runId}`,
+      questId: `quest-delivery-${runId}`,
+      type: "review.failed",
+      title: "Reviewer found blocker",
+      detail: "Reviewer Agent found a missing runtime delivery state in round one.",
+      agent: "Reviewer Agent",
+      phase: "review",
+      visibility: "audit",
+      severity: "error",
+      stepId: "review-step",
       projectId: project.id,
       createdAt
     },
@@ -636,11 +702,20 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
         targetProjectId: project.id
       },
       {
+        id: "test-step",
+        description: "Add e2e coverage for the expert orchestration timeline.",
+        agentId: "test-agent",
+        agentName: "Test Agent",
+        dependencies: ["plan-step"],
+        expectedOutput: "Evidence drawer orchestration regression",
+        targetProjectId: project.id
+      },
+      {
         id: "review-step",
         description: "Review changed files and validate PR handoff evidence.",
         agentId: "reviewer-agent",
         agentName: "Reviewer Agent",
-        dependencies: ["code-step"],
+        dependencies: ["code-step", "test-step"],
         expectedOutput: "Review notes and validation result",
         targetProjectId: project.id
       }
@@ -803,86 +878,126 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await specDrawer.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
   const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
   await expect(capabilitiesDrawer).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("本次参与的专家", { exact: true })).toBeVisible();
+  await expect(capabilitiesDrawer.getByText("本次协作流程", { exact: true })).toBeVisible();
   await expect(capabilitiesDrawer.getByText("本次匹配的专家", { exact: true })).toHaveCount(0);
   await expect(capabilitiesDrawer.getByText("Manifest", { exact: true })).toHaveCount(0);
-  const participantCards = capabilitiesDrawer.locator(".participant-agent-card");
-  await expect(participantCards.filter({ hasText: "Delivery Review Skill" })).toHaveCount(0);
-  await expect(participantCards.filter({ hasText: "User" })).toHaveCount(0);
-  await expect(participantCards.filter({ hasText: "Worktree Manager" })).toHaveCount(0);
+  const flow = capabilitiesDrawer.locator(".orchestration-flow");
+  await expect(flow).toContainText("4 个主线节点");
+  await expect(flow).toContainText("位参与专家");
+  await expect(flow).toContainText("1 组并行");
+  await expect(flow).toContainText("1 次返工");
+  await expect(flow.getByText("Request ✓", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Plan 4 steps", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Plan ✓", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Execute ✓", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Review ↻1", { exact: true })).toBeVisible();
+  await expect(flow.getByText("Delivery !", { exact: true })).toBeVisible();
+  await expect(flow).toContainText("主线只展示计划步骤、并行/返工和交付节点");
+  await expect(flow.getByText("Delivery Review Skill")).toHaveCount(0);
+  await expect(flow.getByText("User", { exact: true })).toHaveCount(0);
+  await expect(flow.getByText("Worktree Manager", { exact: true })).toHaveCount(0);
+  await expect(flow.getByText("Runtime Execute Observer", { exact: true })).toHaveCount(0);
+  await expect(flow.locator(".orchestration-node-heading strong")).toHaveText([
+    "规划 · plan-step",
+    "并行执行",
+    "Review Loop",
+    "Delivery"
+  ]);
+  const graph = flow.locator(".collaboration-graph");
+  await expect(graph.getByText("协作关系图", { exact: true })).toBeVisible();
+  await expect(graph).toContainText("展示谁调度谁、哪些分支并行、哪里发生返工。");
+  await expect(graph).toContainText("2 条实际关系");
+  await expect(graph).toContainText("8 条推断关系");
+  await expect(graph).toContainText("1 组并行");
+  await expect(graph).toContainText("1 个 loop");
+  await expect(graph.getByText("Parallel Group", { exact: true })).toBeVisible();
+  await expect(graph).toContainText("Planner Agent");
+  await expect(graph).toContainText("Coder Agent");
+  await expect(graph).toContainText("Test Agent");
+  await expect(graph).toContainText("Reviewer Agent");
+  await expect(graph).toContainText("Delivery Agent");
+  await expect(graph).toContainText("并行分支");
+  await expect(graph).toContainText("汇合依赖");
+  await expect(graph).toContainText("返工范围");
+  await expect(graph).toContainText("实际");
+  await expect(graph).toContainText("推断");
+  await expect(graph.getByText("实线：真实 delegate / 运行证据")).toBeVisible();
+  await expect(graph.getByText("虚线：从 plan dependency 推断")).toBeVisible();
+  const relationList = graph.locator(".collaboration-relation-list");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Planner Agent → Coder Agent / code-step" }).first())
+    .toContainText("实际委派 · 实际");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Planner Agent / plan-step → Coder Agent / code-step" }).first())
+    .toContainText("并行分支 · 推断");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Reviewer Agent / review-step → Coder Agent / code-step" }).first())
+    .toContainText("返工范围 · 推断");
+  await expect(relationList.locator(".collaboration-edge-chip").filter({ hasText: "Reviewer Agent / review-step → Test Agent / test-step" }).first())
+    .toContainText("返工范围 · 推断");
 
-  const plannerCard = participantCards.filter({ hasText: "Planner Agent" });
-  await expect(plannerCard).toBeVisible();
-  await expect(plannerCard).toContainText("Planner");
-  await expect(plannerCard).toContainText("completed");
-  await expect(plannerCard).toContainText("Plan delivery evidence responsibilities");
-  await expect(plannerCard).toContainText("项目: Delivery Docs");
-  await expect(plannerCard).toContainText("步骤: plan-step");
-  await expect(plannerCard).toContainText("Delivery evidence plan");
-  await expect(plannerCard.getByRole("button", { name: "Plan" })).toBeVisible();
-  await expect(plannerCard.getByRole("button", { name: "Audit" })).toBeVisible();
-  await expect(plannerCard.getByRole("button", { name: "Files" })).toBeVisible();
+  const planNode = capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "规划 · plan-step" });
+  await expect(planNode).toBeVisible();
+  await expect(planNode).toContainText("Planner Agent");
+  await expect(planNode).toContainText("Plan delivery evidence responsibilities");
+  await expect(planNode).toContainText("项目: Delivery Docs");
+  await expect(planNode).toContainText("步骤: plan-step");
+  await expect(planNode).toContainText("Delivery evidence plan");
+  await expect(planNode.locator(".badge.green")).toHaveCount(1);
+  await expect(planNode.getByRole("button", { name: "Plan" })).toBeVisible();
+  await expect(planNode.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(planNode.getByRole("button", { name: "Files" })).toBeVisible();
+  await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "明确请求" })).toHaveCount(0);
+  await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "准备环境" })).toHaveCount(0);
 
-  const coderCard = participantCards.filter({ hasText: "Coder Agent" });
-  await expect(coderCard).toBeVisible();
-  await expect(coderCard).toContainText("Coder");
-  await expect(coderCard).toContainText("completed");
-  await expect(coderCard).not.toContainText("blocked");
-  await expect(coderCard).toContainText("Implement delivery evidence chips");
-  await expect(coderCard).toContainText("项目: Delivery Docs");
-  await expect(coderCard).toContainText("步骤: code-step");
-  await expect(coderCard).toContainText("依赖: plan-step");
-  await expect(coderCard).toContainText("Updated Evidence drawer UI");
-  await expect(coderCard.getByRole("button", { name: "Plan" })).toBeVisible();
-  await expect(coderCard.getByRole("button", { name: "Audit" })).toBeVisible();
-  await expect(coderCard.getByRole("button", { name: "Files" })).toBeVisible();
-  await expect(coderCard.getByRole("button", { name: "Diff" })).toBeVisible();
+  const parallelNode = capabilitiesDrawer.locator(".orchestration-flow-node.parallel");
+  await expect(parallelNode).toBeVisible();
+  await expect(parallelNode).toContainText("并行执行");
+  await expect(parallelNode).toContainText("Coder Agent");
+  await expect(parallelNode).toContainText("Test Agent");
+  await expect(parallelNode).toContainText("Implement delivery evidence chips");
+  await expect(parallelNode).toContainText("Add e2e coverage");
+  const coderTask = parallelNode.locator(".orchestration-task-row").filter({ hasText: "Coder Agent" });
+  await expect(coderTask).toContainText("completed");
+  await expect(coderTask).not.toContainText("blocked");
+  await expect(coderTask).toContainText("项目: Delivery Docs");
+  await expect(coderTask).toContainText("步骤: code-step");
+  await expect(coderTask).toContainText("Updated Evidence drawer UI");
+  await expect(coderTask.getByRole("button", { name: "Plan" })).toBeVisible();
+  await expect(coderTask.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(coderTask.getByRole("button", { name: "Files" })).toBeVisible();
+  await expect(coderTask.getByRole("button", { name: "Diff" })).toBeVisible();
 
-  const reviewerCard = participantCards.filter({ hasText: "Reviewer Agent" });
-  await expect(reviewerCard).toBeVisible();
-  await expect(reviewerCard).toContainText("Reviewer");
-  await expect(reviewerCard).toContainText("completed");
-  await expect(reviewerCard).toContainText("Review changed files");
-  await expect(reviewerCard).toContainText("项目: Delivery Docs");
-  await expect(reviewerCard).toContainText("步骤: review-step");
-  await expect(reviewerCard).toContainText("依赖: code-step");
-  await expect(reviewerCard).toContainText("Review notes and validation result");
+  const loopNode = capabilitiesDrawer.locator(".orchestration-flow-node.loop");
+  await expect(loopNode).toBeVisible();
+  await expect(loopNode).toContainText("Review Loop");
+  await expect(loopNode).toContainText("Round 1 · Reviewer Agent");
+  await expect(loopNode).toContainText("Reviewer found blocker");
+  await expect(loopNode).toContainText("Round 2 · Reviewer Agent");
+  await expect(loopNode).toContainText("Reviewer validation completed");
+  await expect(loopNode).toContainText("Floating Reviewer");
+  const floatingReviewerTask = loopNode.locator(".orchestration-task-row").filter({ hasText: "Floating Reviewer" });
+  await expect(floatingReviewerTask).toBeVisible();
+  await expect(floatingReviewerTask).toContainText("运行时加入");
+  await expect(floatingReviewerTask.getByRole("button", { name: "Audit" })).toBeVisible();
+  await expect(floatingReviewerTask.getByRole("button", { name: "Files" })).toHaveCount(0);
+  await expect(floatingReviewerTask.getByRole("button", { name: "Diff" })).toHaveCount(0);
 
-  const deliveryRuntimeCard = participantCards.filter({ hasText: "Final Handoff Agent" });
-  await expect(deliveryRuntimeCard).toBeVisible();
-  await expect(deliveryRuntimeCard).toContainText("Delivery");
-  await expect(deliveryRuntimeCard).toContainText("completed");
-  await expect(deliveryRuntimeCard).toContainText("运行时加入");
-  await expect(deliveryRuntimeCard).toContainText("项目: Delivery Docs");
-  await expect(deliveryRuntimeCard).toContainText("Audit trail captured");
-  await expect(deliveryRuntimeCard.getByRole("button", { name: "Audit" })).toBeVisible();
-  await expect(deliveryRuntimeCard.getByRole("button", { name: "Files" })).toBeVisible();
+  const deliveryNode = capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "Final Handoff Agent" });
+  await expect(deliveryNode).toBeVisible();
+  await expect(deliveryNode).toContainText("Final Handoff Agent");
+  await expect(deliveryNode).toContainText("Partial Delivery Agent");
+  await expect(deliveryNode).toContainText("运行时加入");
+  await expect(deliveryNode).toContainText("blocked");
+  await expect(deliveryNode).not.toContainText("建议的额外专家");
 
-  const floatingReviewerCard = participantCards.filter({ hasText: "Floating Reviewer" });
-  await expect(floatingReviewerCard).toBeVisible();
-  await expect(floatingReviewerCard).toContainText("Reviewer");
-  await expect(floatingReviewerCard).toContainText("completed");
-  await expect(floatingReviewerCard.getByRole("button", { name: "Audit" })).toBeVisible();
-  await expect(floatingReviewerCard.getByRole("button", { name: "Files" })).toHaveCount(0);
-  await expect(floatingReviewerCard.getByRole("button", { name: "Diff" })).toHaveCount(0);
+  await expect(capabilitiesDrawer.getByText("建议的额外专家")).toHaveCount(0);
+  await expect(capabilitiesDrawer.getByText("专家库")).toHaveCount(0);
+  await capabilitiesDrawer.getByText("本次参与专家", { exact: false }).click();
+  await expect(capabilitiesDrawer.getByText("这里统计所有参与角色")).toBeVisible();
+  await capabilitiesDrawer.getByRole("button", { name: /Coder Agent/ }).click();
+  await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "Coder Agent" })).toBeVisible();
+  await expect(capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "Review Loop" })).toHaveCount(0);
+  await capabilitiesDrawer.getByRole("button", { name: "全部" }).click();
 
-  const partialDeliveryCard = participantCards.filter({ hasText: "Partial Delivery Agent" });
-  await expect(partialDeliveryCard).toBeVisible();
-  await expect(partialDeliveryCard).toContainText("Delivery");
-  await expect(partialDeliveryCard).toContainText("blocked");
-  await expect(partialDeliveryCard).not.toContainText("completed");
-
-  await expect(capabilitiesDrawer.getByText("建议的额外专家 (3)", { exact: true })).toBeVisible();
-  await capabilitiesDrawer.getByText("建议的额外专家 (3)", { exact: true }).click();
-  const capabilityRow = capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Delivery Review Skill" });
-  await expect(capabilityRow).toBeVisible();
-  await expect(capabilityRow.getByText("建议启用", { exact: true })).toBeVisible();
-  await expect(capabilityRow.locator(".capability-permissions").getByText("read:changed-files", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Accepted Expert" }).getByText("已启用", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.locator(".capability-row").filter({ hasText: "Dismissed Expert" }).getByText("已忽略", { exact: true })).toBeVisible();
-  await expect(capabilitiesDrawer.getByText("专家库 (3)", { exact: true })).toBeVisible();
-
-  await coderCard.getByRole("button", { name: "Diff" }).click();
+  await coderTask.getByRole("button", { name: "Diff" }).click();
   await expect(page.getByRole("dialog", { name: "Diff" })).toBeVisible();
   await expect(page.locator(".diff-meta").getByText("src/storefront.js", { exact: true })).toBeVisible();
   await page.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
@@ -913,6 +1028,168 @@ test("renders delivery evidence chips in the overview drawer", async ({ page }) 
   await expect(diffMeta.getByText("src/storefront.js", { exact: true })).toBeVisible();
   await expect(diffMeta.getByText("modified", { exact: true })).toBeVisible();
   await expect(page.locator(".evidence-highlight")).toHaveCount(0);
+});
+
+test("renders no-plan delegate collaboration edges by worker display name", async ({ page }) => {
+  const runId = Date.now().toString(36);
+  const createdAt = "2026-06-20T12:15:00.000Z";
+  const workspace = {
+    id: `ws-delegate-trace-${runId}`,
+    name: `Delegate Trace Workspace ${runId}`,
+    description: "Delegate-mode collaboration trace regression workspace",
+    projectIds: [`project-delegate-trace-${runId}`],
+    worktrees: [],
+    worktreeRoot: "",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const project = {
+    id: `project-delegate-trace-${runId}`,
+    name: "Delegate Trace Docs",
+    path: docsPath,
+    role: "documentation",
+    defaultBranch: "main",
+    validationCommand: "pnpm test",
+    health: { status: "ok", message: "Ready", checkedAt: createdAt },
+    createdAt,
+    updatedAt: createdAt
+  };
+  const quest = {
+    id: `quest-delegate-trace-${runId}`,
+    workspaceId: workspace.id,
+    title: `Delegate Trace Quest ${runId}`,
+    requirement: "Run a dynamic delegate request.",
+    status: "ready",
+    agentBackendId: "mock",
+    affectedProjectIds: [project.id],
+    worktrees: [],
+    changedFiles: [],
+    validationResults: [],
+    reviewNotes: [],
+    deliveryResults: [],
+    capabilityRecommendations: [],
+    autoApprovePlan: true,
+    planApproval: { status: "approved", approvedAt: createdAt },
+    agentSummary: "Supervisor delegated work to Coder Agent.",
+    createdAt,
+    updatedAt: createdAt
+  };
+  const events = [
+    {
+      id: `event-delegate-started-${runId}`,
+      questId: quest.id,
+      type: "delegate.started",
+      title: "动态委派执行",
+      detail: "Supervisor 在运行时动态委派了 1 个子任务。",
+      agent: "Supervisor",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "info",
+      createdAt
+    },
+    {
+      id: `event-delegate-call-${runId}`,
+      questId: quest.id,
+      type: "agent.tool_call",
+      title: "委派任务: coder-agent",
+      detail: JSON.stringify({ agentId: "coder-agent", task: "Implement the dynamic task." }),
+      agent: "Supervisor",
+      phase: "execute",
+      visibility: "process",
+      severity: "info",
+      collaboration: {
+        kind: "delegate",
+        evidence: "actual",
+        label: "实际委派",
+        sourceAgentName: "Supervisor",
+        targetAgentId: "coder-agent",
+        targetAgentName: "Coder Agent",
+        correlationId: `delegate-call-${runId}`
+      },
+      createdAt
+    },
+    {
+      id: `event-worker-completed-${runId}`,
+      questId: quest.id,
+      type: "step.completed",
+      title: "步骤完成: Coder Agent",
+      detail: "Coder Agent completed the dynamic subtask.",
+      agent: "Coder Agent",
+      phase: "execute",
+      visibility: "milestone",
+      severity: "success",
+      stepId: "step_1",
+      projectId: project.id,
+      createdAt
+    }
+  ];
+
+  await page.route("**/api/state", (route) => route.fulfill({
+    json: {
+      workspaces: [workspace],
+      projects: [project],
+      quests: [quest],
+      events,
+      knowledge: [],
+      capabilities: [],
+      securityPolicy: {
+        commandApprovalMode: "allowlist",
+        allowedCommands: [],
+        commandTemplates: [],
+        fileScopes: [],
+        networkScopes: [],
+        secretsPolicy: "redact-env",
+        sandboxRuntime: "local-worktree",
+        updatedAt: createdAt
+      },
+      auditLog: [],
+      commandApprovals: [],
+      engine: {
+        mode: "cli",
+        cliId: "mock",
+        cliModels: {},
+        byokProviders: {},
+        activeByokProviderId: "openai",
+        modelKits: {},
+        updatedAt: createdAt
+      },
+      subAgents: {},
+      userPreferences: {},
+      failurePatterns: {}
+    }
+  }));
+  await page.route("**/api/agent-backends", (route) => route.fulfill({
+    json: [{ id: "mock", name: "Mock Agent", available: true, configured: true, detail: "Mock backend" }]
+  }));
+  await page.route("**/api/product-readiness", (route) => route.fulfill({
+    json: {
+      version: "test",
+      status: "prototype-ready",
+      milestones: [],
+      workspaceTemplates: [],
+      dependencyMap: { nodes: [], edges: [] },
+      governance: []
+    }
+  }));
+  await page.route(`**/api/quests/${quest.id}/plan`, (route) => route.fulfill({
+    json: {
+      questId: quest.id,
+      summary: "Delegate mode synthetic plan",
+      steps: [],
+      generatedAt: createdAt
+    }
+  }));
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: quest.title })).toBeVisible();
+  await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
+  await page.getByRole("dialog", { name: "概要" }).locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
+  const graph = page.getByRole("dialog", { name: "专家团" }).locator(".collaboration-graph");
+  await expect(graph.getByText("协作关系图", { exact: true })).toBeVisible();
+  await expect(graph).toContainText("Supervisor");
+  await expect(graph).toContainText("Coder Agent");
+  await expect(graph.locator(".collaboration-relation-list .collaboration-edge-chip").filter({ hasText: "Supervisor → Coder Agent" }).first())
+    .toContainText("实际委派 · 实际");
 });
 
 test("renders planned experts without registered capabilities", async ({ page }) => {
@@ -1043,13 +1320,15 @@ test("renders planned experts without registered capabilities", async ({ page })
 
   const capabilitiesDrawer = page.getByRole("dialog", { name: "专家团" });
   await expect(capabilitiesDrawer).toBeVisible();
-  const participantCard = capabilitiesDrawer.locator(".participant-agent-card").filter({ hasText: "Plan Only Coder" });
-  await expect(participantCard).toBeVisible();
-  await expect(participantCard).toContainText("planned");
-  await expect(participantCard).toContainText("Implement the plan-only expert panel state");
-  await expect(participantCard).toContainText("项目: Plan Only Docs");
-  await expect(participantCard).toContainText("步骤: plan-only-code");
-  await expect(participantCard).toContainText("Plan-only expert panel UI");
+  await expect(capabilitiesDrawer.getByText("本次协作流程", { exact: true })).toBeVisible();
+  const flowNode = capabilitiesDrawer.locator(".orchestration-flow-node").filter({ hasText: "Plan Only Coder" });
+  await expect(flowNode).toBeVisible();
+  await expect(flowNode).toContainText("planned");
+  await expect(flowNode).toContainText("Implement the plan-only expert panel state");
+  await expect(flowNode).toContainText("项目: Plan Only Docs");
+  await expect(flowNode).toContainText("步骤: plan-only-code");
+  await expect(flowNode).toContainText("Plan-only expert panel UI");
+  await expect(capabilitiesDrawer.getByText("本次参与专家", { exact: false })).toBeVisible();
   await expect(capabilitiesDrawer.getByText("建议的额外专家")).toHaveCount(0);
   await expect(capabilitiesDrawer.getByText("专家库")).toHaveCount(0);
 });
@@ -1113,7 +1392,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   // Repos are global now: register the docs directory once, then link it from the workspace below.
   await settingsDialog.getByRole("textbox", { name: "项目路径" }).fill(docsPath);
   await settingsDialog.getByRole("button", { name: "添加仓库" }).click();
-  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: docsPath });
+  const settingsProjectRow = settingsDialog.locator(".settings-project-row").filter({ hasText: docsPath }).first();
   await expect(settingsProjectRow).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "打开目录" })).toBeVisible();
   await expect(settingsProjectRow.getByRole("button", { name: "检查状态" })).toBeVisible();
@@ -1130,10 +1409,14 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(settingsDialog.getByRole("button", { name: /刷新模型/ })).toBeVisible();
   await page.getByRole("button", { name: "关闭设置" }).click();
 
-  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
-  await expect(page.locator(".request-list")).toBeHidden();
-  await page.locator(".workspace-title-button").filter({ hasText: "RepoHelm Demo Workspace" }).click();
-  await expect(page.locator(".request-list")).toBeVisible();
+  const demoWorkspaceNode = page.locator(".workspace-node").filter({ hasText: "RepoHelm Demo Workspace" });
+  const collapseDemoWorkspace = demoWorkspaceNode.getByRole("button", { name: "收起 workspace" });
+  if (await collapseDemoWorkspace.count()) {
+    await collapseDemoWorkspace.click();
+  }
+  await expect(demoWorkspaceNode.locator(".request-list")).toBeHidden();
+  await demoWorkspaceNode.getByRole("button", { name: "展开 workspace" }).click();
+  await expect(demoWorkspaceNode.locator(".request-list")).toBeVisible();
   await page.getByRole("button", { name: "创建 Workspace" }).click();
   const workspaceCreateDialog = page.getByRole("dialog", { name: "创建 Workspace" });
   await expect(workspaceCreateDialog).toBeVisible();
@@ -1162,7 +1445,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   const linkProjectSelect = configDialog.getByRole("combobox", { name: "选择要关联的仓库" });
   await expect(linkProjectSelect).toBeEnabled();
   await linkProjectSelect.click();
-  await page.getByRole("option", { name: /docs ·/ }).click();
+  await page.getByRole("option", { name: /docs ·/ }).first().click();
   await configDialog.getByRole("button", { name: "关联并 checkout worktree" }).click();
   const linkedRepoRow = configDialog.locator(".worktree-row").filter({ hasText: boundRepoName });
   await expect(linkedRepoRow).toBeVisible();
@@ -1184,7 +1467,7 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.locator(".run-context .lucide-chevron-down")).toHaveCount(0);
   await expect(page.locator(".run-context-separator")).toHaveCount(2);
 
-  // Capability recommendation surfaced during the streaming creation flow.
+  // The Expert Panel is request-scoped evidence now, not a capability recommendation list.
   await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
   await expect(page.getByRole("dialog", { name: "概要" })).toBeVisible();
   const overviewMetrics = page.locator(".overview-metrics");
@@ -1209,9 +1492,11 @@ test("creates and runs a Quest from the workspace UI", async ({ page }) => {
   await expect(page.locator(".spec-block").filter({ hasText: "功能需求" }).getByText("功能一", { exact: true })).toBeVisible();
   await page.locator(".inspector-tabs").getByRole("button", { name: "专家团" }).click();
   await expect(page.getByRole("dialog", { name: "专家团" })).toBeVisible();
-  const securityCapability = page.locator(".capability-row").filter({ hasText: "Security Review Skill" });
-  await expect(securityCapability).toBeVisible();
-  await expect(securityCapability.getByText("read:changed-files")).toBeVisible();
+  await expect(page.getByText("本次协作流程", { exact: true })).toBeVisible();
+  await expect(page.locator(".orchestration-flow")).toBeVisible();
+  await expect(page.locator(".capability-row").filter({ hasText: "Security Review Skill" })).toHaveCount(0);
+  await expect(page.getByText("建议的额外专家")).toHaveCount(0);
+  await expect(page.getByText("专家库")).toHaveCount(0);
 
   // The orchestrator produced an approval-gated plan. The test stops here: quest execution
   // moved from the legacy direct mock-backend (which this test used to assert) to sub-agent
