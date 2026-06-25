@@ -2847,6 +2847,9 @@ function getRuntimeParticipantEvents(events: AgentEvent[]) {
     if (nonParticipantEventTypes.has(event.type) || nonParticipantEventPrefixes.some((prefix) => event.type.startsWith(prefix))) {
       return false;
     }
+    if (event.type === "collaboration.edge" || event.collaboration?.kind === "delegate") {
+      return false;
+    }
     return Boolean(event.stepId) || participantEventPrefixes.some((prefix) => event.type.startsWith(prefix));
   });
 }
@@ -3421,7 +3424,7 @@ function buildCollaborationGraph({
   }
 
   const deliveryNode = flowNodes.find((node) => node.phase === "deliver");
-  if (deliveryNode) {
+  if (deliveryNode && !deliveryNode.tasks.some((task) => task.stepIds.some((stepId) => graphNodes.has(`step-${stepId}`)))) {
     const maxStepLevel = Math.max(1, ...[...graphNodes.values()].map((node) => node.level));
     const task = deliveryNode.tasks[0];
     addNode({
@@ -4243,8 +4246,11 @@ function CapabilitiesPanel({
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const participantAgents = buildParticipantAgents({ events, plan, quest });
-  const flow = buildOrchestrationFlow({ changedFiles, events, participantAgents, plan, quest });
+  const participantAgents = useMemo(() => buildParticipantAgents({ events, plan, quest }), [events, plan, quest]);
+  const flow = useMemo(
+    () => buildOrchestrationFlow({ changedFiles, events, participantAgents, plan, quest }),
+    [changedFiles, events, participantAgents, plan, quest]
+  );
 
   useEffect(() => {
     setSelectedAgentId(null);
