@@ -82,16 +82,40 @@ export async function runDelegationLoop(
         } catch {
           args = {};
         }
+        const context = (args.context ?? {}) as Record<string, unknown>;
+        const agentId = typeof args.agentId === "string" ? args.agentId : "?";
+        const targetProjectId = typeof context.targetProjectId === "string" ? context.targetProjectId : undefined;
+        const targetStepId = typeof context.stepId === "string" ? context.stepId : undefined;
+        output = await deps.onDelegate(args as unknown as DelegateInput);
+        let targetAgentName: string | undefined;
+        try {
+          const parsedOutput = JSON.parse(output || "{}") as { agentName?: unknown };
+          targetAgentName = typeof parsedOutput.agentName === "string" ? parsedOutput.agentName : undefined;
+        } catch {
+          targetAgentName = undefined;
+        }
         events.push({
           type: "agent.tool_call",
-          title: `委派任务: ${typeof args.agentId === "string" ? args.agentId : "?"}`,
+          title: `委派任务: ${agentId}`,
           detail: truncate(call.function.arguments || "", 300),
           agent: deps.agentName,
           phase: "execute",
           visibility: "process",
-          severity: "info"
+          severity: "info",
+          ...(targetStepId ? { stepId: targetStepId } : {}),
+          ...(targetProjectId ? { projectId: targetProjectId } : {}),
+          collaboration: {
+            kind: "delegate",
+            evidence: "actual",
+            label: "实际委派",
+            sourceAgentName: deps.agentName,
+            targetAgentId: agentId,
+            ...(targetAgentName ? { targetAgentName } : {}),
+            ...(targetStepId ? { targetStepId } : {}),
+            ...(targetProjectId ? { targetProjectId } : {}),
+            correlationId: call.id
+          }
         });
-        output = await deps.onDelegate(args as unknown as DelegateInput);
         delegateCount += 1;
       } else {
         output = JSON.stringify({ ok: false, error: `unknown tool ${call.function.name}` });

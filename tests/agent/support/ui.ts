@@ -75,9 +75,11 @@ export async function runQuestViaUi(page: Page, input: {
   await page.getByRole("button", { name: "发送给 Agent" }).click();
   await expect(page.getByRole("heading", { name: input.questTitle })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("编排计划已生成").first()).toBeVisible({ timeout: 30_000 });
+  await page.locator(".chat-header").getByRole("button", { name: "证据" }).click();
   await page.locator(".inspector-tabs").getByRole("button", { name: "Plan" }).click();
   await expect(page.getByRole("button", { name: "Approve & Execute" })).toBeVisible();
   await page.getByRole("button", { name: "Approve & Execute" }).click();
+  await page.getByRole("button", { name: "关闭 Evidence Drawer" }).click();
   await expect(page.locator(".quest-row").filter({ hasText: input.questTitle }).getByText("待交付")).toBeVisible({
     timeout: 60_000
   });

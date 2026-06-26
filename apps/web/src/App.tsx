@@ -13,7 +13,10 @@ import {
   MessageSquare,
   Moon,
   MoreHorizontal,
+  PanelRightOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Route,
@@ -27,7 +30,7 @@ import {
   Wrench,
   X
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AgentBackendId,
   AgentBackendInfo,
@@ -54,6 +57,7 @@ import {
   LocalCliInfo,
   ModelKit,
   OrchestrationPlan,
+  OrchestrationPlanStep,
   Project,
   ProductReadiness,
   ProviderId,
@@ -99,16 +103,160 @@ const statusClass: Record<string, string> = {
   blocked: "badge red"
 };
 
-type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
-type ResizeDivider = "sidebar" | "inspector";
+type InspectorTab = "spec" | "plan" | "overview" | "capabilities" | "files" | "diff" | "audit" | "orchestration" | "progress" | "acceptance" | "deliverables" | "references" | "research";
+type ResizeDivider = "sidebar" | "evidence";
 type SettingsTab = "repositories" | "models" | "modelkits" | "subagents" | "security";
+type ParticipantAgentRole = "Spec" | "Planner" | "Coder" | "Reviewer" | "Delivery";
+type ParticipantAgentStatus = "planned" | "running" | "completed" | "blocked";
+type ParticipantAgentSource = "planned" | "runtime";
+type OrchestrationFlowPhase = "spec" | "plan" | "prepare" | "execute" | "review" | "deliver";
+type OrchestrationFlowKind = "phase" | "parallel" | "loop";
+type OrchestrationFlowStatus = ParticipantAgentStatus | "attention";
+type CollaborationEdgeKind = "delegate" | "dependency" | "handoff" | "loop";
+type CollaborationEdgeEvidence = "actual" | "inferred";
+
+interface ParticipantAgent {
+  id: string;
+  name: string;
+  role: ParticipantAgentRole;
+  source: ParticipantAgentSource;
+  status: ParticipantAgentStatus;
+  stepIds: string[];
+  responsibilities: string[];
+  expectedOutputs: string[];
+  targetProjectIds: string[];
+  dependencies: string[];
+  events: AgentEvent[];
+  order: number;
+}
+
+interface OrchestrationFlowTask {
+  id: string;
+  title: string;
+  agentId?: string;
+  agentName: string;
+  role?: ParticipantAgentRole;
+  status: ParticipantAgentStatus;
+  source?: ParticipantAgentSource;
+  description?: string;
+  expectedOutput?: string;
+  targetProjectIds: string[];
+  stepIds: string[];
+  events: AgentEvent[];
+  files: ChangedFile[];
+}
+
+interface OrchestrationLoopRound {
+  id: string;
+  label: string;
+  status: OrchestrationFlowStatus;
+  agentName: string;
+  detail: string;
+  event: AgentEvent;
+}
+
+interface OrchestrationFlowNode {
+  id: string;
+  phase: OrchestrationFlowPhase;
+  kind: OrchestrationFlowKind;
+  title: string;
+  summary: string;
+  status: OrchestrationFlowStatus;
+  tasks: OrchestrationFlowTask[];
+  events: AgentEvent[];
+  rounds: OrchestrationLoopRound[];
+}
+
+interface OrchestrationFlowSetup {
+  hasSpec: boolean;
+  hasPlan: boolean;
+  planStepCount: number;
+  worktreeCount: number;
+  status: OrchestrationFlowStatus;
+}
+
+interface CollaborationGraphNode {
+  id: string;
+  title: string;
+  subtitle: string;
+  role: ParticipantAgentRole;
+  status: OrchestrationFlowStatus;
+  source: "actual" | "inferred";
+  phase: OrchestrationFlowPhase;
+  level: number;
+  agentId?: string;
+  stepId?: string;
+  targetProjectIds: string[];
+}
+
+interface CollaborationGraphEdge {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+  kind: CollaborationEdgeKind;
+  evidence: CollaborationEdgeEvidence;
+}
+
+interface CollaborationGraph {
+  nodes: CollaborationGraphNode[];
+  columns: CollaborationGraphNode[][];
+  edges: CollaborationGraphEdge[];
+  loopEdges: CollaborationGraphEdge[];
+  actualEdgeCount: number;
+  inferredEdgeCount: number;
+  loopCount: number;
+  parallelGroupCount: number;
+}
+
+interface DelegateTarget {
+  agentKeys: string[];
+  agentId?: string;
+  agentName?: string;
+  stepId?: string;
+}
+
+interface OrchestrationFlow {
+  nodes: OrchestrationFlowNode[];
+  collaboration: CollaborationGraph;
+  setup: OrchestrationFlowSetup;
+  nodeCount: number;
+  parallelCount: number;
+  retryCount: number;
+  stageLabels: Array<{ phase: OrchestrationFlowPhase; label: string; status: OrchestrationFlowStatus; retryCount?: number }>;
+  currentLabel: string;
+}
 
 const defaultColumnWidths = {
   sidebar: 280,
-  inspector: 440
+  evidence: 440
 };
+const minimumDockedQuestMainWidth = 420;
+const evidenceDockDividerWidth = 6;
+const compactWorkbenchBreakpoint = 1180;
+const compactSidebarWidth = 240;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+function dockableContentWidth(sidebarWidth: number) {
+  if (typeof window === "undefined") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const sidebarAndDivider =
+    window.innerWidth <= compactWorkbenchBreakpoint ? compactSidebarWidth : sidebarWidth + 6;
+  return window.innerWidth - sidebarAndDivider;
+}
+
+function maxDockedEvidenceWidth(sidebarWidth: number) {
+  return Math.min(720, Math.max(360, dockableContentWidth(sidebarWidth) - minimumDockedQuestMainWidth - evidenceDockDividerWidth));
+}
+
+function canDockEvidencePane(sidebarWidth: number, evidenceWidth: number) {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  return dockableContentWidth(sidebarWidth) >= minimumDockedQuestMainWidth + evidenceDockDividerWidth + evidenceWidth;
+}
 
 export function App() {
   const [state, setState] = useState<RepoHelmState | null>(null);
@@ -128,6 +276,9 @@ export function App() {
   const [workspaceConfigId, setWorkspaceConfigId] = useState("");
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [evidenceDrawerOpen, setEvidenceDrawerOpen] = useState(false);
+  const [evidenceDrawerPinned, setEvidenceDrawerPinned] = useState(false);
+  const [evidenceDockAvailable, setEvidenceDockAvailable] = useState(() => canDockEvidencePane(defaultColumnWidths.sidebar, defaultColumnWidths.evidence));
   const [commandOpen, setCommandOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof document !== "undefined") {
@@ -142,10 +293,10 @@ export function App() {
     try {
       const saved = window.localStorage.getItem("repohelm:column-widths");
       if (saved) {
-        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths>;
+        const parsed = JSON.parse(saved) as Partial<typeof defaultColumnWidths> & { inspector?: number };
         return {
           sidebar: clamp(parsed.sidebar ?? defaultColumnWidths.sidebar, 220, 380),
-          inspector: clamp(parsed.inspector ?? defaultColumnWidths.inspector, 360, 560)
+          evidence: clamp(parsed.evidence ?? parsed.inspector ?? defaultColumnWidths.evidence, 360, 720)
         };
       }
     } catch {
@@ -180,8 +331,10 @@ export function App() {
     divider: ResizeDivider;
     pointerX: number;
     sidebar: number;
-    inspector: number;
+    evidence: number;
   } | null>(null);
+  const evidenceReturnFocusRef = useRef<HTMLElement | null>(null);
+  const evidenceReturnFocusTimeoutRef = useRef<number | null>(null);
 
   const load = async () => {
     const [nextState, nextBackends, nextReadiness] = await Promise.all([
@@ -202,8 +355,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+    try {
+      window.localStorage.setItem("repohelm:column-widths", JSON.stringify(columnWidths));
+    } catch {
+      // Ignore unavailable storage; column widths are a non-critical preference.
+    }
   }, [columnWidths]);
+
+  useEffect(() => {
+    const updateDockAvailability = () => setEvidenceDockAvailable(canDockEvidencePane(columnWidths.sidebar, columnWidths.evidence));
+    updateDockAvailability();
+    window.addEventListener("resize", updateDockAvailability);
+    return () => window.removeEventListener("resize", updateDockAvailability);
+  }, [columnWidths.evidence, columnWidths.sidebar]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -274,6 +438,33 @@ export function App() {
   const changedFiles = selectedQuest?.changedFiles.map((file) => normalizeChangedFile(file)) ?? [];
   const selectedChangedFile =
     changedFiles.find((file) => changedFileKey(file) === selectedChangedFileKey) ?? changedFiles[0];
+  const clearEvidenceReturnFocusTimeout = useCallback(() => {
+    if (evidenceReturnFocusTimeoutRef.current !== null) {
+      window.clearTimeout(evidenceReturnFocusTimeoutRef.current);
+      evidenceReturnFocusTimeoutRef.current = null;
+    }
+  }, []);
+  const openEvidenceDrawer = useCallback((tab: InspectorTab = "overview") => {
+    clearEvidenceReturnFocusTimeout();
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      evidenceReturnFocusRef.current = document.activeElement;
+    }
+    setInspectorTab(tab);
+    setEvidenceDrawerOpen(true);
+  }, [clearEvidenceReturnFocusTimeout]);
+  const closeEvidenceDrawer = useCallback(() => {
+    clearEvidenceReturnFocusTimeout();
+    setEvidenceDrawerOpen(false);
+    setEvidenceDrawerPinned(false);
+    evidenceReturnFocusTimeoutRef.current = window.setTimeout(() => {
+      evidenceReturnFocusTimeoutRef.current = null;
+      const target = evidenceReturnFocusRef.current;
+      if (target?.isConnected) {
+        target.focus({ preventScroll: true });
+      }
+    }, 0);
+  }, [clearEvidenceReturnFocusTimeout]);
+  useEffect(() => clearEvidenceReturnFocusTimeout, [clearEvidenceReturnFocusTimeout]);
   const activeBackend = agentBackends.find((backend) => backend.id === agentBackendId);
   // The pill should reflect what actually answers: the entry agent + its model.
   const activeEntryAgentGlobal = state?.entrySubAgentId ? state.subAgents[state.entrySubAgentId] : undefined;
@@ -464,7 +655,7 @@ export function App() {
       divider,
       pointerX: event.clientX,
       sidebar: columnWidths.sidebar,
-      inspector: columnWidths.inspector
+      evidence: columnWidths.evidence
     };
     document.body.classList.add("is-resizing-columns");
 
@@ -474,9 +665,10 @@ export function App() {
         return;
       }
       const delta = moveEvent.clientX - start.pointerX;
+      const evidenceMax = evidenceDrawerPinned && evidenceDockAvailable ? maxDockedEvidenceWidth(start.sidebar) : 720;
       setColumnWidths({
         sidebar: start.divider === "sidebar" ? clamp(start.sidebar + delta, 220, 380) : start.sidebar,
-        inspector: start.divider === "inspector" ? clamp(start.inspector - delta, 360, 560) : start.inspector
+        evidence: start.divider === "evidence" ? clamp(start.evidence - delta, 360, evidenceMax) : start.evidence
       });
     };
 
@@ -609,6 +801,8 @@ export function App() {
     );
   }
 
+  const evidenceDocked = Boolean(evidenceDrawerOpen && evidenceDrawerPinned && evidenceDockAvailable && selectedQuest && !knowledgeOpen);
+
   return (
     <main className="app-shell">
       <header className="app-toolbar">
@@ -650,7 +844,7 @@ export function App() {
         style={
           {
             "--sidebar-width": `${columnWidths.sidebar}px`,
-            "--inspector-width": `${columnWidths.inspector}px`
+            "--evidence-width": `${columnWidths.evidence}px`
           } as React.CSSProperties
         }
       >
@@ -667,7 +861,10 @@ export function App() {
             setWorkspaceConfigOpen(true);
           }}
           onCreateWorkspace={() => setWorkspaceCreateOpen(true)}
-          onKnowledgeOpen={() => setKnowledgeOpen(true)}
+          onKnowledgeOpen={() => {
+            setKnowledgeOpen(true);
+            setEvidenceDrawerOpen(false);
+          }}
           onNewQuest={(workspaceId) => {
             setKnowledgeOpen(false);
             setSelectedWorkspaceId(workspaceId);
@@ -676,6 +873,7 @@ export function App() {
             setQuestRequirement("");
             setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
             setInspectorTab("spec");
+            if (!evidenceDrawerPinned) setEvidenceDrawerOpen(false);
           }}
           onSelectQuest={(questId, workspaceId) => {
             setKnowledgeOpen(false);
@@ -683,6 +881,7 @@ export function App() {
             setSelectedQuestId(questId);
             setDraftWorkspaceId("");
             setInspectorTab("spec");
+            if (!evidenceDrawerPinned) setEvidenceDrawerOpen(false);
             setExpandedWorkspaceIds((current) => (current.includes(workspaceId) ? current : [...current, workspaceId]));
           }}
           onSelectWorkspace={(workspaceId) => {
@@ -692,6 +891,7 @@ export function App() {
             setDraftWorkspaceId("");
             setQuestRequirement("");
             setInspectorTab("spec");
+            if (!evidenceDrawerPinned) setEvidenceDrawerOpen(false);
           }}
           onToggleWorkspace={(workspaceId) => {
             setExpandedWorkspaceIds((current) =>
@@ -713,11 +913,12 @@ export function App() {
             onClose={() => setKnowledgeOpen(false)}
           />
         ) : (
-          <>
+          <div className={evidenceDocked ? "quest-main-region evidence-docked" : "quest-main-region"}>
             <QuestStage
               agentBackendId={agentBackendId}
               agentBackends={agentBackends}
               busy={busy}
+              capabilities={state.capabilities}
               entrySubAgents={entrySubAgents}
               events={questEvents}
               pendingAction={pendingAction}
@@ -733,36 +934,46 @@ export function App() {
               onEntrySubAgentChange={setSelectedEntrySubAgentId}
               onCreateQuest={createQuest}
               onDeliverQuest={deliverQuest}
-              onInspectorTabChange={setInspectorTab}
+              evidenceDrawerOpen={evidenceDrawerOpen}
+              onEvidenceOpen={openEvidenceDrawer}
               onRejectPlan={rejectPlan}
               onRequirementChange={setQuestRequirement}
             />
-            <div
-              aria-label="调整右侧栏宽度"
-              className="resize-handle resize-handle-right"
-              onPointerDown={(event) => startColumnResize("inspector", event)}
-              role="separator"
-            />
-            <Inspector
-              busy={busy}
-              capabilities={state.capabilities}
-              changedFiles={changedFiles}
-              events={questEvents}
-              expertSession={expertSession}
-              projects={projects}
-              quest={selectedQuest}
-              selectedChangedFile={selectedChangedFile}
-              tab={inspectorTab}
-              onApprovePlan={approvePlan}
-              onConfirmExpertSession={handleConfirmExpertSession}
-              onRejectPlan={rejectPlan}
-              onFileSelect={(file) => {
-                setSelectedChangedFileKey(changedFileKey(file));
-                setInspectorTab("diff");
-              }}
-              onTabChange={setInspectorTab}
-            />
-          </>
+            {evidenceDocked ? (
+              <div
+                aria-label="调整证据面板宽度"
+                className="resize-handle evidence-resize-handle"
+                onPointerDown={(event) => startColumnResize("evidence", event)}
+                role="separator"
+              />
+            ) : null}
+            {evidenceDrawerOpen && selectedQuest ? (
+              <EvidenceDrawer
+                busy={busy}
+                capabilities={state.capabilities}
+                changedFiles={changedFiles}
+                events={questEvents}
+                expertSession={expertSession}
+                dockAvailable={evidenceDockAvailable}
+                docked={evidenceDocked}
+                projects={projects}
+                quest={selectedQuest}
+                selectedChangedFile={selectedChangedFile}
+                tab={inspectorTab}
+                onApprovePlan={approvePlan}
+                onClose={closeEvidenceDrawer}
+                onConfirmExpertSession={handleConfirmExpertSession}
+                onFileSelect={(file) => {
+                  setSelectedChangedFileKey(changedFileKey(file));
+                  setInspectorTab("diff");
+                }}
+                onRejectPlan={rejectPlan}
+                onTabChange={setInspectorTab}
+                onTogglePinned={() => setEvidenceDrawerPinned((current) => !current)}
+                onResizeStart={(event) => startColumnResize("evidence", event)}
+              />
+            ) : null}
+          </div>
         )}
       </section>
 
@@ -1092,6 +1303,14 @@ function compactDetail(detail: string, max = 180) {
   return `${normalized.slice(0, max - 1)}…`;
 }
 
+function CompactText({ text, max }: { text: string; max?: number }) {
+  const value = max ? compactDetail(text, max) : text;
+  if (!value) {
+    return null;
+  }
+  return <>{value}</>;
+}
+
 function questResultTone(quest: Quest) {
   if (quest.status === "ready" || quest.status === "delivered") return "success";
   if (quest.status === "blocked" || quest.status === "cancelled") return "danger";
@@ -1138,18 +1357,122 @@ function changedProjectSummary(quest: Quest, projects: Project[]) {
     .join(" / ");
 }
 
+const evidenceTabLabels: Record<InspectorTab, string> = {
+  overview: "概要",
+  spec: "Spec",
+  plan: "Plan",
+  capabilities: "专家团",
+  files: "文件",
+  diff: "Diff",
+  audit: "Audit",
+  orchestration: "编排",
+  progress: "进展",
+  acceptance: "验收",
+  deliverables: "产物",
+  references: "引用",
+  research: "研究"
+};
+
+function evidenceTabIcon(tab: InspectorTab, size = 14) {
+  switch (tab) {
+    case "spec":
+      return <FileText size={size} />;
+    case "plan":
+      return <Route size={size} />;
+    case "files":
+      return <FolderOpen size={size} />;
+    case "diff":
+      return <Pencil size={size} />;
+    case "audit":
+      return <ShieldCheck size={size} />;
+    case "capabilities":
+      return <Sparkles size={size} />;
+    default:
+      return <PanelRightOpen size={size} />;
+  }
+}
+
+function uniqueEvidenceTabs(tabs: InspectorTab[]) {
+  return [...new Set(tabs)];
+}
+
+function evidenceTabsForQuest(quest: Quest, events: AgentEvent[], capabilities: CapabilityDefinition[] = []) {
+  const tabs: InspectorTab[] = ["overview"];
+  if (quest.spec) tabs.push("spec");
+  if (quest.planApproval) tabs.push("plan");
+  if (hasExpertPanelEvidence(quest, events)) tabs.push("capabilities");
+  if (quest.changedFiles.length > 0) tabs.push("files", "diff");
+  if (events.length > 0) tabs.push("audit");
+  return uniqueEvidenceTabs(tabs);
+}
+
+function evidenceTabsForEvent(event: AgentEvent, quest: Quest) {
+  const tabs: InspectorTab[] = [];
+  if (quest.spec && (event.type === "quest.created" || event.type.startsWith("spec."))) {
+    tabs.push("spec");
+  }
+  if (
+    quest.planApproval &&
+    (event.type.startsWith("plan.") ||
+      event.type.startsWith("step.") ||
+      event.type.startsWith("orchestrator.") ||
+      event.type.startsWith("delegate.") ||
+      event.type.startsWith("worktree."))
+  ) {
+    tabs.push("plan");
+  }
+  if (
+    quest.changedFiles.length > 0 &&
+    (event.type === "agent.file_change" || event.type === "implementation.changed_files" || event.type.startsWith("delivery."))
+  ) {
+    tabs.push("files", "diff");
+  }
+  tabs.push("audit");
+  return uniqueEvidenceTabs(tabs);
+}
+
+function EvidenceQuickActions({
+  capabilities,
+  events,
+  quest,
+  onEvidenceOpen
+}: {
+  capabilities: CapabilityDefinition[];
+  events: AgentEvent[];
+  quest: Quest;
+  onEvidenceOpen: (tab: InspectorTab) => void;
+}) {
+  return (
+    <div className="evidence-control-row" aria-label="证据入口">
+      {evidenceTabsForQuest(quest, events, capabilities).map((tab) => (
+        <button
+          aria-label={`打开 ${evidenceTabLabels[tab]} 证据`}
+          className="evidence-chip"
+          data-evidence-trigger="true"
+          key={tab}
+          onClick={() => onEvidenceOpen(tab)}
+          type="button"
+        >
+          {evidenceTabIcon(tab)}
+          <span>{evidenceTabLabels[tab]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function QuestResultSummary({
   busy,
   events,
   onDeliverQuest,
-  onInspectorTabChange,
+  onEvidenceOpen,
   projects,
   quest
 }: {
   busy: boolean;
   events: AgentEvent[];
   onDeliverQuest: () => void;
-  onInspectorTabChange: (tab: InspectorTab) => void;
+  onEvidenceOpen: (tab: InspectorTab) => void;
   projects: Project[];
   quest: Quest;
 }) {
@@ -1185,15 +1508,15 @@ function QuestResultSummary({
         <p>{compactDetail(detail, 220)}</p>
         {projectSummary ? <span className="quest-result-subtle">{projectSummary}</span> : null}
         <div className="quest-result-metrics">
-          <button type="button" onClick={() => onInspectorTabChange("files")} disabled={changedCount === 0}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("files")} disabled={changedCount === 0}>
             <FileText size={14} />
             <span>{changedCount} 文件</span>
           </button>
-          <button type="button" onClick={() => onInspectorTabChange("plan")} disabled={!canOpenPlan}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("plan")} disabled={!canOpenPlan}>
             <Route size={14} />
             <span>{stepCount > 0 ? `${stepCount} 步骤` : "Plan"}</span>
           </button>
-          <button type="button" onClick={() => onInspectorTabChange("diff")} disabled={changedCount === 0}>
+          <button type="button" data-evidence-trigger="true" onClick={() => onEvidenceOpen("diff")} disabled={changedCount === 0}>
             <Pencil size={14} />
             <span>Diff</span>
           </button>
@@ -1209,9 +1532,11 @@ function QuestResultSummary({
 
 function QuestMilestones({
   events,
+  onEvidenceOpen,
   quest
 }: {
   events: AgentEvent[];
+  onEvidenceOpen: (tab: InspectorTab) => void;
   quest: Quest;
 }) {
   const includeFailureDetails = isFailedQuest(quest, events);
@@ -1236,6 +1561,21 @@ function QuestMilestones({
               <strong>{event.title}</strong>
               <span>{event.agent}</span>
               <p>{compactDetail(event.detail)}</p>
+              <div className="evidence-chip-row" aria-label={`${event.title} 的证据`}>
+                {evidenceTabsForEvent(event, quest).map((tab) => (
+                  <button
+                    aria-label={`打开 ${evidenceTabLabels[tab]} 证据: ${event.title}`}
+                    className="evidence-chip"
+                    data-evidence-trigger="true"
+                    key={tab}
+                    onClick={() => onEvidenceOpen(tab)}
+                    type="button"
+                  >
+                    {evidenceTabIcon(tab, 13)}
+                    <span>{evidenceTabLabels[tab]}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </article>
         ))}
@@ -1245,7 +1585,7 @@ function QuestMilestones({
   );
 }
 
-function RawAuditLog({ events }: { events: AgentEvent[] }) {
+function RawAuditLog({ events, onEvidenceOpen }: { events: AgentEvent[]; onEvidenceOpen: (tab: InspectorTab) => void }) {
   const [expanded, setExpanded] = useState(false);
   if (events.length === 0) {
     return null;
@@ -1265,9 +1605,15 @@ function RawAuditLog({ events }: { events: AgentEvent[] }) {
           {internalCount > 0 ? `，其中 ${internalCount} 条为 internal 事件` : ""}。
         </p>
       </div>
-      <button className="ghost-action" type="button" onClick={() => setExpanded((current) => !current)}>
-        {expanded ? "收起审计日志" : "显示全部事件"}
-      </button>
+      <div className="raw-audit-actions">
+        <button className="ghost-action" data-evidence-trigger="true" type="button" onClick={() => onEvidenceOpen("audit")}>
+          <PanelRightOpen size={14} />
+          <span>打开 Audit Drawer</span>
+        </button>
+        <button className="ghost-action" type="button" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "收起审计日志" : "显示全部事件"}
+        </button>
+      </div>
       {expanded ? (
         <div className="raw-audit-list">
           {shownEvents.map((event) => (
@@ -1290,6 +1636,7 @@ function QuestStage({
   agentBackendId,
   agentBackends,
   busy,
+  capabilities,
   entrySubAgents,
   events,
   pendingAction,
@@ -1305,13 +1652,15 @@ function QuestStage({
   onEntrySubAgentChange,
   onCreateQuest,
   onDeliverQuest,
-  onInspectorTabChange,
+  evidenceDrawerOpen,
+  onEvidenceOpen,
   onRejectPlan,
   onRequirementChange
 }: {
   agentBackendId: AgentBackendId;
   agentBackends: AgentBackendInfo[];
   busy: boolean;
+  capabilities: CapabilityDefinition[];
   entrySubAgents: SubAgent[];
   events: AgentEvent[];
   pendingAction: string;
@@ -1327,7 +1676,8 @@ function QuestStage({
   onEntrySubAgentChange: (id: string) => void;
   onCreateQuest: (event: FormEvent) => void;
   onDeliverQuest: () => void;
-  onInspectorTabChange: (tab: InspectorTab) => void;
+  evidenceDrawerOpen: boolean;
+  onEvidenceOpen: (tab: InspectorTab) => void;
   onRejectPlan: () => void;
   onRequirementChange: (value: string) => void;
 }) {
@@ -1409,14 +1759,24 @@ function QuestStage({
           <h1>{quest ? quest.title : "把需求交给 Agent"}</h1>
           <div className="run-context">
             <span>{workspace.name}</span>
-            <ChevronDown size={14} />
+            <span className="run-context-separator" aria-hidden="true" />
             <span>{activeEntryAgent?.name ?? (questBackend?.name ?? "未选择 Agent")}</span>
-            <ChevronDown size={14} />
+            <span className="run-context-separator" aria-hidden="true" />
             <span>{affectedProjectCount} project{affectedProjectCount === 1 ? "" : "s"}</span>
           </div>
         </div>
         {quest ? (
           <div className="chat-header-actions">
+            <button
+              aria-expanded={evidenceDrawerOpen}
+              className="ghost-action"
+              data-evidence-trigger="true"
+              onClick={() => onEvidenceOpen("overview")}
+              type="button"
+            >
+              <PanelRightOpen size={15} />
+              <span>证据</span>
+            </button>
             {canCancel ? (
               <button
                 className="ghost-action"
@@ -1491,14 +1851,15 @@ function QuestStage({
                 <div className="chat-bubble">
                   <strong>{activeEntryAgent?.name ?? "RepoHelm Agent"}</strong>
                   <p>
-                    Request 已进入工作流。右侧会展示 Supervisor 分派进展、Spec、执行产物和 diff。
+                    Request 已进入工作流。证据抽屉会保留 Supervisor 分派进展、Spec、执行产物和 diff。
                   </p>
                 </div>
               </article>
             ) : null}
             {analysisBubble}
-            <QuestMilestones events={orderedEvents} quest={quest} />
-            <RawAuditLog events={auditEvents} />
+            <EvidenceQuickActions capabilities={capabilities} events={auditEvents} quest={quest} onEvidenceOpen={onEvidenceOpen} />
+            <QuestMilestones events={orderedEvents} onEvidenceOpen={onEvidenceOpen} quest={quest} />
+            <RawAuditLog events={auditEvents} onEvidenceOpen={onEvidenceOpen} />
             {pendingAction ? (
               <article className="chat-message assistant compact">
                 <div className="chat-avatar">
@@ -1516,7 +1877,7 @@ function QuestStage({
                 busy={busy}
                 events={orderedEvents}
                 onDeliverQuest={onDeliverQuest}
-                onInspectorTabChange={onInspectorTabChange}
+                onEvidenceOpen={onEvidenceOpen}
                 projects={projects}
                 quest={quest}
               />
@@ -1599,6 +1960,271 @@ function QuestStage({
   );
 }
 
+function EvidenceDrawer({
+  busy,
+  capabilities,
+  changedFiles,
+  dockAvailable,
+  docked,
+  events,
+  expertSession,
+  projects,
+  quest,
+  selectedChangedFile,
+  tab,
+  onApprovePlan,
+  onClose,
+  onConfirmExpertSession,
+  onFileSelect,
+  onRejectPlan,
+  onResizeStart,
+  onTabChange,
+  onTogglePinned
+}: {
+  busy: boolean;
+  capabilities: CapabilityDefinition[];
+  changedFiles: ChangedFile[];
+  dockAvailable: boolean;
+  docked: boolean;
+  events: AgentEvent[];
+  expertSession: ExpertSession | null;
+  projects: Project[];
+  quest: Quest;
+  selectedChangedFile?: ChangedFile;
+  tab: InspectorTab;
+  onApprovePlan: () => void;
+  onClose: () => void;
+  onConfirmExpertSession?: () => void;
+  onFileSelect: (file: ChangedFile) => void;
+  onRejectPlan: () => void;
+  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onTabChange: (tab: InspectorTab) => void;
+  onTogglePinned: () => void;
+}) {
+  const drawerRef = useRef<HTMLElement>(null);
+  const visibleTabs = getVisibleInspectorTabs({
+    capabilities,
+    changedFiles,
+    events,
+    expertSession,
+    quest,
+    selectedChangedFile
+  });
+  const effectiveTab = resolveInspectorTab(tab, visibleTabs);
+
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (!docked && drawer && !drawer.contains(document.activeElement)) {
+      drawer.focus();
+    }
+  }, [docked, effectiveTab, quest.id]);
+
+  useEffect(() => {
+    if (docked) {
+      return undefined;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const drawer = drawerRef.current;
+      if (!drawer || event.button !== 0) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && !drawer.contains(target)) {
+        if (target instanceof Element && target.closest("[data-evidence-trigger='true']")) {
+          return;
+        }
+        onClose();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [docked, onClose]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (docked) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") {
+        return;
+      }
+      const drawer = drawerRef.current;
+      if (!drawer) {
+        return;
+      }
+      const focusable = getFocusableElements(drawer);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        drawer.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      const focusIsOutsideDrawer = !(activeElement instanceof Node) || !drawer.contains(activeElement);
+      if (event.shiftKey && (focusIsOutsideDrawer || activeElement === first || activeElement === drawer)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (focusIsOutsideDrawer || activeElement === last || activeElement === drawer)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [docked, onClose]);
+
+  return (
+    <aside
+      aria-labelledby="evidence-drawer-title"
+      aria-modal={docked ? undefined : "true"}
+      className={docked ? "evidence-drawer docked" : "evidence-drawer"}
+      ref={drawerRef}
+      role={docked ? "complementary" : "dialog"}
+      tabIndex={-1}
+    >
+      {!docked ? (
+        <div
+          aria-label="调整证据面板宽度"
+          className="evidence-drawer-resize-handle"
+          onPointerDown={onResizeStart}
+          role="separator"
+        />
+      ) : null}
+      <header className="evidence-drawer-header">
+        <div>
+          <p className="eyebrow">Evidence</p>
+          <h2 id="evidence-drawer-title">{evidenceTabLabels[effectiveTab] ?? "证据"}</h2>
+        </div>
+        <div className="evidence-drawer-actions">
+          <button
+            aria-label={docked ? "取消固定 Evidence Drawer" : "固定 Evidence Drawer"}
+            aria-pressed={docked}
+            className="toolbar-icon-button"
+            disabled={!dockAvailable}
+            onClick={onTogglePinned}
+            title={dockAvailable ? undefined : "窄屏下使用全屏 Drawer"}
+            type="button"
+          >
+            {docked ? <PinOff size={15} /> : <Pin size={15} />}
+          </button>
+          <button aria-label="关闭 Evidence Drawer" className="toolbar-icon-button" onClick={onClose} type="button">
+            <X size={15} />
+          </button>
+        </div>
+      </header>
+      <Inspector
+        busy={busy}
+        capabilities={capabilities}
+        changedFiles={changedFiles}
+        events={events}
+        expertSession={expertSession}
+        projects={projects}
+        quest={quest}
+        selectedChangedFile={selectedChangedFile}
+        tab={effectiveTab}
+        onApprovePlan={onApprovePlan}
+        onConfirmExpertSession={onConfirmExpertSession}
+        onFileSelect={onFileSelect}
+        onRejectPlan={onRejectPlan}
+        onTabChange={onTabChange}
+      />
+    </aside>
+  );
+}
+
+const inspectorTabItems: Array<{ id: InspectorTab; label: string }> = [
+  { id: "overview", label: "概要" },
+  { id: "spec", label: "Spec" },
+  { id: "plan", label: "Plan" },
+  { id: "capabilities", label: "专家团" },
+  { id: "files", label: "文件" },
+  { id: "diff", label: "Diff" },
+  { id: "audit", label: "Audit" },
+  { id: "orchestration", label: "编排" },
+  { id: "progress", label: "进展" },
+  { id: "acceptance", label: "验收" },
+  { id: "deliverables", label: "产物" },
+  { id: "references", label: "引用" },
+  { id: "research", label: "研究" }
+];
+
+function getVisibleInspectorTabs({
+  capabilities,
+  changedFiles,
+  events,
+  expertSession,
+  quest,
+  selectedChangedFile
+}: {
+  capabilities: CapabilityDefinition[];
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  expertSession: ExpertSession | null;
+  quest?: Quest;
+  selectedChangedFile?: ChangedFile;
+}) {
+  const hasSpec = !!quest?.spec;
+  const hasPlan = !!quest?.planApproval;
+  const hasCapabilities = hasExpertPanelEvidence(quest, events);
+  const hasFiles = changedFiles.length > 0;
+  const hasDiff = !!selectedChangedFile;
+  const hasAudit = events.length > 0;
+
+  return inspectorTabItems.filter((tabItem) => {
+    switch (tabItem.id) {
+      case "overview":
+        return true;
+      case "spec":
+        return hasSpec;
+      case "plan":
+        return hasPlan;
+      case "capabilities":
+        return hasCapabilities;
+      case "files":
+        return hasFiles;
+      case "diff":
+        return hasDiff;
+      case "audit":
+        return hasAudit;
+      case "orchestration":
+      case "progress":
+      case "acceptance":
+      case "deliverables":
+      case "references":
+      case "research":
+        return !!expertSession;
+      default:
+        return false;
+    }
+  });
+}
+
+function resolveInspectorTab(tab: InspectorTab, visibleTabs: Array<{ id: InspectorTab; label: string }>) {
+  return visibleTabs.some((item) => item.id === tab) ? tab : visibleTabs[0]?.id || "overview";
+}
+
+function getFocusableElements(container: HTMLElement) {
+  const selector = [
+    "a[href]",
+    "button:not([disabled])",
+    "summary",
+    "textarea:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])"
+  ].join(",");
+  return Array.from(container.querySelectorAll<HTMLElement>(selector)).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
 function Inspector({
   busy,
   capabilities,
@@ -1632,60 +2258,24 @@ function Inspector({
 }) {
   const projectById = new Map(projects.map((project) => [project.id, project]));
 
-  // Determine which tabs have content
   const hasSpec = !!quest?.spec;
   const hasPlan = !!quest?.planApproval;
-  const hasCapabilities = capabilities.length > 0;
+  const hasCapabilities = hasExpertPanelEvidence(quest, events);
   const hasFiles = changedFiles.length > 0;
   const hasDiff = !!selectedChangedFile;
-
-  // Build visible tabs list (dynamic display)
-  const allTabs: Array<{ id: InspectorTab; label: string }> = [
-    { id: "overview", label: "概要" },
-    { id: "spec", label: "Spec" },
-    { id: "plan", label: "Plan" },
-    { id: "capabilities", label: "能力" },
-    { id: "files", label: "文件" },
-    { id: "diff", label: "Diff" },
-    { id: "orchestration", label: "编排" },
-    { id: "progress", label: "进展" },
-    { id: "acceptance", label: "验收" },
-    { id: "deliverables", label: "产物" },
-    { id: "references", label: "引用" },
-    { id: "research", label: "研究" }
-  ];
-
-  const visibleTabs = allTabs.filter((tabItem) => {
-    switch (tabItem.id) {
-      case "overview":
-        return true; // Always visible
-      case "spec":
-        return hasSpec;
-      case "plan":
-        return hasPlan;
-      case "capabilities":
-        return hasCapabilities;
-      case "files":
-        return hasFiles;
-      case "diff":
-        return hasDiff;
-      case "orchestration":
-      case "progress":
-      case "acceptance":
-      case "deliverables":
-      case "references":
-      case "research":
-        return !!expertSession; // Expert tabs only visible when expert session exists
-      default:
-        return false;
-    }
+  const hasAudit = events.length > 0;
+  const visibleTabs = getVisibleInspectorTabs({
+    capabilities,
+    changedFiles,
+    events,
+    expertSession,
+    quest,
+    selectedChangedFile
   });
-
-  // Auto-select first visible tab if current tab has no content
-  const effectiveTab = visibleTabs.some((t) => t.id === tab) ? tab : visibleTabs[0]?.id || "overview";
+  const effectiveTab = resolveInspectorTab(tab, visibleTabs);
 
   return (
-    <aside className="inspector">
+    <div className="inspector">
       <div className="inspector-tabs">
         {visibleTabs.map((item) => (
           <button
@@ -1705,16 +2295,26 @@ function Inspector({
         ) : null}
         {effectiveTab === "spec" && hasSpec ? <SpecPanel quest={quest} /> : null}
         {effectiveTab === "plan" && hasPlan ? (
-          <PlanPanel busy={busy} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
+          <PlanPanel busy={busy} projects={projects} quest={quest} onApprovePlan={onApprovePlan} onRejectPlan={onRejectPlan} />
         ) : null}
         {effectiveTab === "capabilities" && hasCapabilities ? (
-          <CapabilitiesPanel capabilities={capabilities} quest={quest} />
+          <CapabilitiesPanel
+            changedFiles={changedFiles}
+            events={events}
+            projects={projects}
+            quest={quest}
+            onFileSelect={onFileSelect}
+            onTabChange={onTabChange}
+          />
         ) : null}
         {effectiveTab === "files" && hasFiles ? (
           <FilesPanel changedFiles={changedFiles} projectById={projectById} quest={quest} onFileSelect={onFileSelect} />
         ) : null}
         {effectiveTab === "diff" && hasDiff ? (
           <DiffPanel file={selectedChangedFile} projectById={projectById} quest={quest} />
+        ) : null}
+        {effectiveTab === "audit" && hasAudit ? (
+          <AuditPanel events={orderedQuestEvents(events, { includeInternal: true })} />
         ) : null}
         {effectiveTab === "orchestration" && expertSession ? (
           <OrchestrationPanel session={expertSession} />
@@ -1735,7 +2335,48 @@ function Inspector({
           <ResearchPanel research={expertSession.research} />
         ) : null}
       </div>
-    </aside>
+    </div>
+  );
+}
+
+function AuditPanel({ events }: { events: AgentEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <div className="inspector-empty">
+        <ShieldCheck size={16} />
+        <p>暂无事件可回溯。</p>
+      </div>
+    );
+  }
+
+  const internalCount = events.filter((event) => INTERNAL_EVENT_TYPES.has(event.type)).length;
+  const auditCount = events.filter((event) => isAuditEvent(event)).length;
+
+  return (
+    <div className="inspector-stack">
+      <section className="inspector-section audit-summary">
+        <h3>完整事件回溯</h3>
+        <p>
+          {events.length} 条事件 · {auditCount} 条 audit 记录
+          {internalCount > 0 ? ` · ${internalCount} 条 internal` : ""}
+        </p>
+      </section>
+      <div className="raw-audit-list drawer-audit-list">
+        {events.map((event) => (
+          <article className={`raw-audit-row ${event.severity ?? "info"}`} key={event.id}>
+            <div className="raw-audit-row-header">
+              <strong>{event.title}</strong>
+              <span>{event.type}</span>
+            </div>
+            <p><CompactText text={event.detail} /></p>
+            <em>
+              {event.agent}
+              {event.phase ? ` · ${event.phase}` : ""}
+            </em>
+          </article>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1752,7 +2393,21 @@ function SpecPanel({ quest }: { quest?: Quest }) {
   return (
     <div className="inspector-stack">
       <InspectorSection title="Agent Spec">
-        <SpecBlock title="用户目标" items={[quest.spec.userGoal]} />
+        <div className="spec-overview-card">
+          <span>用户目标</span>
+          <p><CompactText text={quest.spec.userGoal} max={220} /></p>
+          {compactDetail(quest.spec.userGoal, 220) !== quest.spec.userGoal ? (
+            <details className="evidence-inline-details">
+              <summary>完整目标</summary>
+              <p><CompactText text={quest.spec.userGoal} /></p>
+            </details>
+          ) : null}
+          <div className="spec-overview-meta">
+            <em>{quest.spec.functionalRequirements.length} 功能</em>
+            <em>{quest.spec.nonFunctionalRequirements.length} 非功能</em>
+            <em>{quest.spec.acceptanceCriteria.length} 验收</em>
+          </div>
+        </div>
         <SpecBlock title="功能需求" items={quest.spec.functionalRequirements} />
         <SpecBlock title="非功能需求" items={quest.spec.nonFunctionalRequirements} />
         <SpecBlock title="验收标准" items={quest.spec.acceptanceCriteria} />
@@ -1762,7 +2417,19 @@ function SpecPanel({ quest }: { quest?: Quest }) {
   );
 }
 
-function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean; quest?: Quest; onApprovePlan: () => void; onRejectPlan: () => void }) {
+function PlanPanel({
+  busy,
+  projects,
+  quest,
+  onApprovePlan,
+  onRejectPlan
+}: {
+  busy: boolean;
+  projects: Project[];
+  quest?: Quest;
+  onApprovePlan: () => void;
+  onRejectPlan: () => void;
+}) {
   const [plan, setPlan] = useState<OrchestrationPlan | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1777,7 +2444,7 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
       .then((p) => setPlan(p))
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [quest?.id, quest?.planPath]);
+  }, [quest?.id, quest?.planPath, quest?.updatedAt]);
 
   if (!quest) {
     return (
@@ -1809,44 +2476,76 @@ function PlanPanel({ busy, quest, onApprovePlan, onRejectPlan }: { busy: boolean
   }
 
   const isPending = quest.planApproval?.status === "pending";
+  const stepLabel = `${plan.steps.length} 步骤`;
+  const summaryIsCompacted = compactDetail(plan.summary, 220) !== plan.summary;
 
   return (
     <div className="inspector-stack">
       <InspectorSection title="编排计划">
-        <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>{plan.summary}</p>
-        {plan.steps.map((step, index) => (
-          <div key={step.id} style={{ padding: "8px 0", borderBottom: index < plan.steps.length - 1 ? "1px solid var(--border)" : undefined }}>
-            <div style={{ fontWeight: 500, fontSize: 13 }}>
-              {index + 1}. {step.description}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
-              Agent: {step.agentName}
-              {step.dependencies.length > 0 ? ` · 依赖: ${step.dependencies.join(", ")}` : ""}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-              预期输出: {step.contract?.outputFormat || step.expectedOutput}
-            </div>
-            {step.contract?.boundaries ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                边界: {step.contract.boundaries}
+        <div className="plan-summary">
+          <p>{compactDetail(plan.summary, 220)}</p>
+          <span>{stepLabel}</span>
+        </div>
+        {summaryIsCompacted ? (
+          <details className="plan-summary-details">
+            <summary>完整摘要</summary>
+            <p>{plan.summary}</p>
+          </details>
+        ) : null}
+        <div className="plan-flow" aria-label="编排计划流程">
+          {plan.steps.map((step, index) => {
+            const targetProject = step.targetProjectId ? projectName(projects, step.targetProjectId) : "";
+            const visibleDescription = compactDetail(step.description, 150);
+            const detailRows = [
+              visibleDescription !== step.description ? { label: "完整描述", value: step.description } : undefined,
+              { label: "预期输出", value: step.expectedOutput },
+              { label: "输出格式", value: step.contract?.outputFormat },
+              { label: "边界", value: step.contract?.boundaries },
+              { label: "信息源", value: step.contract?.sourcesGuidance },
+              { label: "完成判据", value: step.contract?.doneCriteria }
+            ].filter((row): row is { label: string; value: string } => Boolean(row?.value));
+
+            return (
+              <div className="plan-flow-item" key={step.id}>
+                <div className="plan-step-connector" aria-hidden="true">
+                  <span className="plan-step-index">{index + 1}</span>
+                  {index < plan.steps.length - 1 ? <span className="plan-step-line" /> : null}
+                </div>
+                <article className="plan-step-card">
+                  <div className="plan-step-heading">
+                    <span>步骤 {index + 1}</span>
+                    <h4>{visibleDescription}</h4>
+                  </div>
+                  <div className="plan-step-meta">
+                    <span>Agent: {step.agentName}</span>
+                    {targetProject ? <span>项目: {targetProject}</span> : null}
+                    {step.dependencies.map((dependency) => (
+                      <span key={dependency}>依赖: {dependency}</span>
+                    ))}
+                  </div>
+                  {detailRows.length > 0 ? (
+                    <details className="plan-step-details">
+                      <summary>查看详情</summary>
+                      <dl className="plan-step-detail-grid">
+                        {detailRows.map((row) => (
+                          <div key={row.label}>
+                            <dt>{row.label}</dt>
+                            <dd>{row.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </details>
+                  ) : null}
+                </article>
               </div>
-            ) : null}
-            {step.contract?.sourcesGuidance ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                信息源: {step.contract.sourcesGuidance}
-              </div>
-            ) : null}
-            {step.contract?.doneCriteria ? (
-              <div style={{ fontSize: 12, color: "var(--text-tertiary)", marginTop: 2 }}>
-                完成判据: {step.contract.doneCriteria}
-              </div>
-            ) : null}
-          </div>
-        ))}
+            );
+          })}
+        </div>
         {plan.notes ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
-            <strong>备注:</strong> {plan.notes}
-          </div>
+          <details className="plan-notes-details">
+            <summary>备注</summary>
+            <p>{plan.notes}</p>
+          </details>
         ) : null}
       </InspectorSection>
       {isPending ? (
@@ -1908,9 +2607,32 @@ function OverviewPanel({
     project: projects.find((p) => p.id === pid),
     worktree: quest.worktrees.find((w) => w.projectId === pid)
   })) ?? [];
+  const validationCount = quest?.validationResults.length ?? 0;
+  const riskCount = quest?.reviewNotes.length ?? 0;
+  const deliveryCount = quest?.deliveryResults.length ?? 0;
 
   return (
     <div className="inspector-stack">
+      <InspectorSection title="状态摘要">
+        <div className="overview-metrics">
+          <div className="overview-metric">
+            <strong>{affectedProjects.length}</strong>
+            <span>项目</span>
+          </div>
+          <div className="overview-metric">
+            <strong>{validationCount}</strong>
+            <span>验证</span>
+          </div>
+          <div className={riskCount > 0 ? "overview-metric warning" : "overview-metric"}>
+            <strong>{riskCount}</strong>
+            <span>风险</span>
+          </div>
+          <div className="overview-metric success">
+            <strong>{deliveryCount}</strong>
+            <span>交付</span>
+          </div>
+        </div>
+      </InspectorSection>
       <InspectorSection title="受影响项目">
         {affectedProjects.length === 0 ? (
           <p className="muted">暂未关联项目。</p>
@@ -1938,7 +2660,7 @@ function OverviewPanel({
                 <div className="worktree-title">
                   <strong>{page.title}</strong>
                 </div>
-                <span className="muted">{summary || "(无摘要)"}</span>
+                <span className="muted"><CompactText text={summary || "(无摘要)"} /></span>
               </div>
             );
           })
@@ -1952,70 +2674,1644 @@ function OverviewPanel({
       ) : null}
       {quest?.deliveryResults?.length ? (
         <InspectorSection title="交付">
-          {quest.deliveryResults.map((delivery) => (
-            <div className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
-              <div className="worktree-title">
-                <strong>{projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId}</strong>
-                <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
-              </div>
-              {delivery.commitMessage ? <p>{delivery.commitMessage}</p> : null}
-              {delivery.prUrl ? <span>{delivery.prUrl}</span> : null}
-              {delivery.note ? <p>{delivery.note}</p> : null}
-            </div>
-          ))}
+          {quest.deliveryResults.map((delivery) => {
+            const projectLabel = projects.find((project) => project.id === delivery.projectId)?.name ?? delivery.projectId;
+            const summary = delivery.prUrl || delivery.note || delivery.commitMessage || delivery.validationOutput || "交付记录已生成。";
+            const commitIsReady = Boolean(delivery.commitSha || delivery.status === "committed" || delivery.status === "pr_ready" || delivery.status === "pr_created");
+            const detailRows = [
+              { label: "Commit SHA", value: delivery.commitSha },
+              { label: "Commit Message", value: delivery.commitMessage },
+              { label: "PR", value: delivery.prUrl },
+              { label: "验证输出", value: delivery.validationOutput },
+              { label: "交付说明", value: delivery.note }
+            ].filter((row): row is { label: string; value: string } => Boolean(row.value));
+            return (
+              <article className="delivery-row" key={`${delivery.projectId}-${delivery.createdAt}`}>
+                <div className="worktree-title">
+                  <strong>{projectLabel}</strong>
+                  <em className={delivery.status === "failed" ? "badge red" : "badge green"}>{delivery.status}</em>
+                </div>
+                <p className="delivery-summary"><CompactText text={summary} max={150} /></p>
+                <div className="delivery-chips">
+                  {commitIsReady ? <span>commit ready</span> : null}
+                  {delivery.prUrl || delivery.status === "pr_ready" || delivery.status === "pr_created" ? <span>PR handoff</span> : null}
+                  <span>{delivery.createdAt.slice(0, 10)}</span>
+                </div>
+                {detailRows.length > 0 ? (
+                  <details className="evidence-inline-details">
+                    <summary>交付详情</summary>
+                    <dl className="evidence-detail-grid">
+                      {detailRows.map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd><CompactText text={row.value} /></dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
+                ) : null}
+              </article>
+            );
+          })}
         </InspectorSection>
       ) : null}
     </div>
   );
 }
 
-function CapabilitiesPanel({
-  capabilities,
+const participantStatusMeta: Record<ParticipantAgentStatus, { label: string; className: string }> = {
+  planned: { label: "planned", className: "badge blue" },
+  running: { label: "running", className: "badge blue" },
+  completed: { label: "completed", className: "badge green" },
+  blocked: { label: "blocked", className: "badge red" }
+};
+
+const flowStatusMeta: Record<OrchestrationFlowStatus, { label: string; className: string }> = {
+  planned: { label: "planned", className: "badge blue" },
+  running: { label: "running", className: "badge blue" },
+  completed: { label: "completed", className: "badge green" },
+  blocked: { label: "blocked", className: "badge red" },
+  attention: { label: "attention", className: "badge warning" }
+};
+
+const flowPhaseLabels: Record<OrchestrationFlowPhase, string> = {
+  spec: "Spec",
+  plan: "Plan",
+  prepare: "Prepare",
+  execute: "Execute",
+  review: "Review",
+  deliver: "Delivery"
+};
+
+const collaborationKindLabels: Record<CollaborationEdgeKind, string> = {
+  delegate: "实际委派",
+  dependency: "依赖输出",
+  handoff: "交付汇总",
+  loop: "返工回路"
+};
+
+const flowPhaseOrder: Record<OrchestrationFlowPhase, number> = {
+  spec: 0,
+  plan: 1,
+  prepare: 2,
+  execute: 3,
+  review: 4,
+  deliver: 5
+};
+
+const eventRoleByPhase: Record<string, ParticipantAgentRole> = {
+  spec: "Spec",
+  plan: "Planner",
+  prepare: "Planner",
+  execute: "Coder",
+  validate: "Reviewer",
+  review: "Reviewer",
+  deliver: "Delivery",
+  audit: "Reviewer"
+};
+
+const nonParticipantAgentNames = new Set([
+  "repohelm",
+  "system",
+  "user",
+  "worktree manager",
+  "用户习惯助手",
+  "失败经验助手"
+]);
+
+const nonParticipantEventPrefixes = [
+  "agent.backend.",
+  "capability.",
+  "knowledge.",
+  "preference.",
+  "quest.",
+  "risk.",
+  "worktree."
+];
+
+const nonParticipantEventTypes = new Set(["plan.approved", "plan.rejected"]);
+
+const participantEventPrefixes = [
+  "delegate.",
+  "delivery.",
+  "implementation.",
+  "orchestrator.",
+  "plan.",
+  "review.",
+  "spec.",
+  "step.",
+  "validation."
+];
+
+const blockedParticipantEventTypes = new Set([
+  "delivery.partial",
+  "delivery.skipped",
+  "step.failed",
+  "orchestrator.failed",
+  "validation.failed",
+  "review.failed",
+  "delivery.failed"
+]);
+
+const completedParticipantEventTypes = new Set([
+  "step.completed",
+  "orchestrator.completed",
+  "delivery.completed",
+  "review.completed",
+  "validation.completed"
+]);
+
+function hasExpertPanelEvidence(quest?: Quest, events: AgentEvent[] = []) {
+  return Boolean(
+    quest?.planPath ||
+      quest?.planApproval ||
+      getRuntimeParticipantEvents(events).length > 0
+  );
+}
+
+function uniqueStrings(items: Array<string | undefined>) {
+  return [...new Set(items.map((item) => item?.trim()).filter((item): item is string => Boolean(item)))];
+}
+
+function normalizedAgentKey(name: string) {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function getRuntimeParticipantEvents(events: AgentEvent[]) {
+  return events.filter((event) => {
+    const agent = event.agent.trim();
+    const agentKey = normalizedAgentKey(agent);
+    if (!agent || nonParticipantAgentNames.has(agentKey)) {
+      return false;
+    }
+    if (nonParticipantEventTypes.has(event.type) || nonParticipantEventPrefixes.some((prefix) => event.type.startsWith(prefix))) {
+      return false;
+    }
+    if (event.type === "collaboration.edge" || event.collaboration?.kind === "delegate") {
+      return false;
+    }
+    return Boolean(event.stepId) || participantEventPrefixes.some((prefix) => event.type.startsWith(prefix));
+  });
+}
+
+function isBlockedParticipantEvent(event: AgentEvent) {
+  return event.severity === "error" || blockedParticipantEventTypes.has(event.type);
+}
+
+function isCompletedParticipantEvent(event: AgentEvent) {
+  return completedParticipantEventTypes.has(event.type);
+}
+
+function inferParticipantRole(input: {
+  agentName: string;
+  text?: string;
+  phase?: AgentEvent["phase"];
+  fallback?: ParticipantAgentRole;
+}): ParticipantAgentRole {
+  if (input.phase && eventRoleByPhase[input.phase]) {
+    return eventRoleByPhase[input.phase];
+  }
+
+  const agentName = input.agentName.toLowerCase();
+  if (/coder|developer|implementer|frontend|backend|工程师|开发/.test(agentName)) return "Coder";
+  if (/planner|orchestrator|supervisor|规划|编排/.test(agentName)) return "Planner";
+  if (/reviewer|qa|test|validator|audit|审查|审核|验证/.test(agentName)) return "Reviewer";
+  if (/delivery|handoff|release|交付|发布/.test(agentName)) return "Delivery";
+  if (/spec|requirement|需求|规格/.test(agentName)) return "Spec";
+
+  const text = `${input.agentName} ${input.text ?? ""}`.toLowerCase();
+  if (/spec|requirement|需求|规格/.test(text)) return "Spec";
+  if (/plan|planner|orchestrat|supervisor|规划|编排/.test(text)) return "Planner";
+  if (/review|qa|test|validat|audit|验收|验证|审查|审核/.test(text)) return "Reviewer";
+  if (/code|coder|implement|build|fix|frontend|backend|实现|开发|修复/.test(text)) return "Coder";
+  if (/deliver|handoff|commit|pull request|pr|交付|发布/.test(text)) return "Delivery";
+  return input.fallback ?? "Coder";
+}
+
+function deriveParticipantStatus(quest: Quest | undefined, events: AgentEvent[], planned: boolean): ParticipantAgentStatus {
+  const latestTerminalEvent = orderedQuestEvents(events, { includeInternal: true })
+    .reverse()
+    .find((event) => isBlockedParticipantEvent(event) || isCompletedParticipantEvent(event));
+  if (latestTerminalEvent) {
+    return isBlockedParticipantEvent(latestTerminalEvent) ? "blocked" : "completed";
+  }
+  if (quest?.status === "ready" || quest?.status === "delivered") return planned || events.length > 0 ? "completed" : "planned";
+  if (["executing", "validating", "reviewing"].includes(quest?.status ?? "") && events.length > 0) return "running";
+  return "planned";
+}
+
+function stepEventsForAgent(step: OrchestrationPlanStep, events: AgentEvent[], siblingSteps: OrchestrationPlanStep[] = [step]) {
+  const stepAgentKey = normalizedAgentKey(step.agentName);
+  const agentStepCount = siblingSteps.filter((candidate) => normalizedAgentKey(candidate.agentName) === stepAgentKey).length;
+  return getRuntimeParticipantEvents(events).filter((event) => {
+    if (event.stepId) return event.stepId === step.id;
+    if (agentStepCount > 1) return false;
+    if (normalizedAgentKey(event.agent) !== stepAgentKey) return false;
+    if (event.projectId && step.targetProjectId && event.projectId !== step.targetProjectId) return false;
+    return true;
+  });
+}
+
+function buildParticipantAgents({
+  events,
+  plan,
   quest
 }: {
-  capabilities: CapabilityDefinition[];
+  events: AgentEvent[];
+  plan: OrchestrationPlan | null;
   quest?: Quest;
 }) {
-  const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
-  const recommendations = quest?.capabilityRecommendations ?? [];
+  const agents = new Map<string, ParticipantAgent>();
+  const runtimeEvents = getRuntimeParticipantEvents(events);
 
+  const ensureAgent = (input: {
+    key: string;
+    name: string;
+    role: ParticipantAgentRole;
+    source: ParticipantAgentSource;
+    status: ParticipantAgentStatus;
+    order: number;
+  }) => {
+    const current = agents.get(input.key);
+    if (current) {
+      current.role = current.role === "Coder" && input.role !== "Coder" ? input.role : current.role;
+      current.source = current.source === "planned" ? "planned" : input.source;
+      current.order = Math.min(current.order, input.order);
+      return current;
+    }
+    const next: ParticipantAgent = {
+      id: input.key,
+      name: input.name,
+      role: input.role,
+      source: input.source,
+      status: input.status,
+      stepIds: [],
+      responsibilities: [],
+      expectedOutputs: [],
+      targetProjectIds: [],
+      dependencies: [],
+      events: [],
+      order: input.order
+    };
+    agents.set(input.key, next);
+    return next;
+  };
+
+  plan?.steps.forEach((step, index) => {
+    const relatedEvents = stepEventsForAgent(step, events, plan.steps);
+    const role = inferParticipantRole({
+      agentName: step.agentName,
+      text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
+      fallback: index === 0 ? "Planner" : "Coder"
+    });
+    const agent = ensureAgent({
+      key: step.agentId || normalizedAgentKey(step.agentName),
+      name: step.agentName,
+      role,
+      source: "planned",
+      status: deriveParticipantStatus(quest, relatedEvents, true),
+      order: index
+    });
+    agent.stepIds = uniqueStrings([...agent.stepIds, step.id]);
+    agent.responsibilities = uniqueStrings([...agent.responsibilities, step.description]);
+    agent.expectedOutputs = uniqueStrings([...agent.expectedOutputs, step.expectedOutput, step.contract?.outputFormat]);
+    agent.targetProjectIds = uniqueStrings([...agent.targetProjectIds, step.targetProjectId]);
+    agent.dependencies = uniqueStrings([...agent.dependencies, ...step.dependencies]);
+    agent.events = [...agent.events, ...relatedEvents.filter((event) => !agent.events.some((current) => current.id === event.id))];
+  });
+
+  runtimeEvents.forEach((event, index) => {
+    const key = normalizedAgentKey(event.agent);
+    const existing = [...agents.values()].find((agent) => normalizedAgentKey(agent.name) === key);
+    const agent = ensureAgent({
+      key: existing?.id ?? key,
+      name: existing?.name ?? event.agent,
+      role: inferParticipantRole({
+        agentName: event.agent,
+        text: `${event.title} ${event.detail}`,
+        phase: event.phase,
+        fallback: existing?.role
+      }),
+      source: existing ? "planned" : "runtime",
+      status: deriveParticipantStatus(quest, [event], false),
+      order: existing?.order ?? (plan?.steps.length ?? 0) + index
+    });
+    agent.events = [...agent.events, event].filter(
+      (candidate, candidateIndex, all) => all.findIndex((item) => item.id === candidate.id) === candidateIndex
+    );
+    if (event.projectId) {
+      agent.targetProjectIds = uniqueStrings([...agent.targetProjectIds, event.projectId]);
+    }
+    if (!agent.responsibilities.some((item) => item === event.title)) {
+      agent.responsibilities = uniqueStrings([...agent.responsibilities, event.title]);
+    }
+  });
+
+  return [...agents.values()]
+    .map((agent) => ({
+      ...agent,
+      events: orderedQuestEvents(agent.events, { includeInternal: true }),
+      status: deriveParticipantStatus(quest, agent.events, agent.source === "planned")
+    }))
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+}
+
+function relatedFilesForAgent(agent: ParticipantAgent, changedFiles: ChangedFile[]) {
+  if (agent.targetProjectIds.length === 0) {
+    return [];
+  }
+  const targetProjects = new Set(agent.targetProjectIds);
+  return changedFiles.filter((file) => targetProjects.has(file.projectId));
+}
+
+function combineFlowStatuses(statuses: OrchestrationFlowStatus[], fallback: OrchestrationFlowStatus = "planned") {
+  if (statuses.includes("blocked")) return "blocked";
+  if (statuses.includes("attention")) return "attention";
+  if (statuses.includes("running")) return "running";
+  if (statuses.length > 0 && statuses.every((status) => status === "completed")) return "completed";
+  if (statuses.includes("completed")) return "running";
+  return fallback;
+}
+
+function stepPhase(step: OrchestrationPlanStep, index: number): OrchestrationFlowPhase {
+  const role = inferParticipantRole({
+    agentName: step.agentName,
+    text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
+    fallback: index === 0 ? "Planner" : "Coder"
+  });
+  const text = `${step.agentName} ${step.id} ${step.description} ${step.expectedOutput}`.toLowerCase();
+  if (role === "Spec") return "spec";
+  if (role === "Planner") return /coder|code|implement|build|fix|test|review|validate|实现|开发|修复|验证|审查/.test(text)
+    ? "execute"
+    : "plan";
+  if (role === "Delivery") return "deliver";
+  if (/review|reviewer|audit|审查|审核/.test(text)) return "review";
+  return "execute";
+}
+
+function eventPhase(event: AgentEvent): OrchestrationFlowPhase {
+  if (event.phase === "validate" || event.phase === "audit") return "review";
+  return event.phase ?? "execute";
+}
+
+function phaseEvents(events: AgentEvent[], phase: OrchestrationFlowPhase) {
+  return orderedQuestEvents(events, { includeInternal: true }).filter((event) => eventPhase(event) === phase);
+}
+
+function agentForStep(step: OrchestrationPlanStep, agents: ParticipantAgent[]) {
+  return agents.find((agent) => agent.stepIds.includes(step.id)) ??
+    agents.find((agent) => agent.id === step.agentId || normalizedAgentKey(agent.name) === normalizedAgentKey(step.agentName));
+}
+
+function taskFromStep({
+  agent,
+  allSteps,
+  changedFiles,
+  events,
+  index,
+  quest,
+  step
+}: {
+  agent?: ParticipantAgent;
+  allSteps: OrchestrationPlanStep[];
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  index: number;
+  quest?: Quest;
+  step: OrchestrationPlanStep;
+}): OrchestrationFlowTask {
+  const relatedEvents = stepEventsForAgent(step, events, allSteps);
+  const role = agent?.role ?? inferParticipantRole({
+    agentName: step.agentName,
+    text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
+    fallback: index === 0 ? "Planner" : "Coder"
+  });
+  const targetProjectIds = uniqueStrings([step.targetProjectId, ...relatedEvents.map((event) => event.projectId)]);
+  const files = changedFiles.filter((file) => targetProjectIds.includes(file.projectId));
+  return {
+    id: `step-${step.id}`,
+    title: step.description,
+    agentId: agent?.id ?? step.agentId,
+    agentName: agent?.name ?? step.agentName,
+    role,
+    status: deriveParticipantStatus(quest, relatedEvents, true),
+    source: agent?.source ?? "planned",
+    description: step.description,
+    expectedOutput: step.expectedOutput || step.contract?.outputFormat,
+    targetProjectIds,
+    stepIds: [step.id],
+    events: relatedEvents,
+    files
+  };
+}
+
+function taskFromAgent(agent: ParticipantAgent, changedFiles: ChangedFile[]): OrchestrationFlowTask {
+  const latestEvent = agent.events[agent.events.length - 1];
+  return {
+    id: `agent-${agent.id}`,
+    title: latestEvent?.title ?? agent.responsibilities[0] ?? agent.name,
+    agentId: agent.id,
+    agentName: agent.name,
+    role: agent.role,
+    status: agent.status,
+    source: agent.source,
+    description: latestEvent?.detail ?? agent.responsibilities[0],
+    expectedOutput: agent.expectedOutputs[0],
+    targetProjectIds: agent.targetProjectIds,
+    stepIds: agent.stepIds,
+    events: agent.events,
+    files: relatedFilesForAgent(agent, changedFiles)
+  };
+}
+
+function uniqueEvents(events: AgentEvent[]) {
+  return orderedQuestEvents(
+    events.filter((event, index, all) => all.findIndex((item) => item.id === event.id) === index),
+    { includeInternal: true }
+  );
+}
+
+function buildLoopRounds(events: AgentEvent[]): OrchestrationLoopRound[] {
+  return uniqueEvents(events)
+    .filter((event) => isBlockedParticipantEvent(event) || isCompletedParticipantEvent(event))
+    .map((event, index) => {
+      const status = isBlockedParticipantEvent(event) ? "blocked" : "completed";
+      return {
+        id: event.id,
+        label: `Round ${index + 1}`,
+        status,
+        agentName: event.agent,
+        detail: `${event.title}: ${event.detail}`,
+        event
+      };
+    });
+}
+
+function createFlowNode(input: {
+  id: string;
+  phase: OrchestrationFlowPhase;
+  kind?: OrchestrationFlowKind;
+  title: string;
+  summary: string;
+  status?: OrchestrationFlowStatus;
+  tasks?: OrchestrationFlowTask[];
+  events?: AgentEvent[];
+  rounds?: OrchestrationLoopRound[];
+}): OrchestrationFlowNode {
+  const tasks = input.tasks ?? [];
+  const events = uniqueEvents([...(input.events ?? []), ...tasks.flatMap((task) => task.events)]);
+  const rounds = input.rounds ?? [];
+  const status = input.status ?? combineFlowStatuses([...tasks.map((task) => task.status), ...rounds.map((round) => round.status)]);
+  return {
+    id: input.id,
+    phase: input.phase,
+    kind: input.kind ?? "phase",
+    title: input.title,
+    summary: input.summary,
+    status,
+    tasks,
+    events,
+    rounds
+  };
+}
+
+function taskNodeTitle(task: OrchestrationFlowTask, phase: OrchestrationFlowPhase) {
+  const stepId = task.stepIds[0];
+  if (phase === "plan") return stepId ? `规划 · ${stepId}` : "规划任务";
+  if (phase === "review") return stepId ? `Review · ${stepId}` : "Review / Validate";
+  if (phase === "deliver") return stepId ? `Delivery · ${stepId}` : "Delivery";
+  return stepId ? `执行 · ${stepId}` : "执行任务";
+}
+
+function parseDelegateTargets(events: AgentEvent[]) {
+  const targets: DelegateTarget[] = [];
+  events.forEach((event) => {
+    if (event.collaboration?.kind === "delegate") {
+      const agentKeys = uniqueStrings([
+        event.collaboration.targetAgentId ? normalizedAgentKey(event.collaboration.targetAgentId) : "",
+        event.collaboration.targetAgentName ? normalizedAgentKey(event.collaboration.targetAgentName) : ""
+      ].filter(Boolean));
+      const stepId = event.collaboration.targetStepId ?? event.stepId;
+      if (agentKeys.length > 0 || stepId) {
+        targets.push({
+          agentKeys,
+          agentId: event.collaboration.targetAgentId,
+          agentName: event.collaboration.targetAgentName,
+          stepId
+        });
+      }
+      return;
+    }
+    if (event.type !== "agent.tool_call") return;
+    if (!event.title.includes("委派任务") && !event.title.toLowerCase().includes("delegate")) return;
+    const titleTarget = event.title.split(":").slice(1).join(":").trim();
+    const agentKeys = titleTarget ? [normalizedAgentKey(titleTarget)] : [];
+    let stepId: string | undefined;
+    try {
+      const detail = JSON.parse(event.detail || "{}") as {
+        agentId?: unknown;
+        context?: { stepId?: unknown };
+        stepId?: unknown;
+      };
+      if (typeof detail.agentId === "string") {
+        agentKeys.push(normalizedAgentKey(detail.agentId));
+      }
+      stepId = typeof detail.context?.stepId === "string"
+        ? detail.context.stepId
+        : typeof detail.stepId === "string"
+          ? detail.stepId
+          : undefined;
+    } catch {
+      // Non-JSON tool-call detail still contributes the title target above.
+    }
+    if (agentKeys.length > 0 || stepId) {
+      const uniqueAgentKeys = uniqueStrings(agentKeys);
+      targets.push({ agentKeys: uniqueAgentKeys, agentId: uniqueAgentKeys[0], stepId });
+    }
+  });
+  return targets;
+}
+
+function taskHasActualDelegate(task: OrchestrationFlowTask, delegateTargets: DelegateTarget[]) {
+  const taskKeys = uniqueStrings([
+    task.agentId ? normalizedAgentKey(task.agentId) : "",
+    normalizedAgentKey(task.agentName)
+  ].filter(Boolean));
+  return delegateTargets.some((target) =>
+    target.stepId
+      ? task.stepIds.includes(target.stepId)
+      : taskKeys.some((key) => target.agentKeys.includes(key))
+  );
+}
+
+function actualDelegateForStep(stepId: string, delegateTargets: DelegateTarget[]) {
+  return [...delegateTargets].reverse().find((target) => target.stepId === stepId);
+}
+
+function terminalStepIds(steps: OrchestrationPlanStep[]) {
+  const dependedOn = new Set(steps.flatMap((step) => step.dependencies));
+  return steps.filter((step) => !dependedOn.has(step.id)).map((step) => step.id);
+}
+
+function buildCollaborationGraph({
+  events,
+  flowNodes,
+  participantAgents,
+  plan,
+  quest
+}: {
+  events: AgentEvent[];
+  flowNodes: OrchestrationFlowNode[];
+  participantAgents: ParticipantAgent[];
+  plan: OrchestrationPlan | null;
+  quest?: Quest;
+}): CollaborationGraph {
+  const graphNodes = new Map<string, CollaborationGraphNode>();
+  const edges = new Map<string, CollaborationGraphEdge>();
+  const delegateTargets = parseDelegateTargets(events);
+  const taskByStepId = new Map<string, OrchestrationFlowTask>();
+  flowNodes.flatMap((node) => node.tasks).forEach((task) => {
+    task.stepIds.forEach((stepId) => taskByStepId.set(stepId, task));
+  });
+  const stepById = new Map((plan?.steps ?? []).map((step) => [step.id, step]));
+  const stepLevels = new Map<string, number>();
+  const visitingStepIds = new Set<string>();
+  const computeStepLevel = (stepId: string): number => {
+    const existing = stepLevels.get(stepId);
+    if (existing !== undefined) return existing;
+    if (visitingStepIds.has(stepId)) return 2;
+    const step = stepById.get(stepId);
+    visitingStepIds.add(stepId);
+    const dependencyLevels = step?.dependencies.map((dependency) =>
+      stepById.has(dependency) ? computeStepLevel(dependency) : 1
+    ) ?? [];
+    const level = step && dependencyLevels.length > 0
+      ? Math.max(...dependencyLevels) + 1
+      : 2;
+    visitingStepIds.delete(stepId);
+    stepLevels.set(stepId, level);
+    return level;
+  };
+  (plan?.steps ?? []).forEach((step) => computeStepLevel(step.id));
+
+  const addNode = (node: CollaborationGraphNode) => {
+    graphNodes.set(node.id, node);
+  };
+  const addEdge = (edge: CollaborationGraphEdge) => {
+    if (edge.from === edge.to && edge.kind !== "loop") return;
+    if (!graphNodes.has(edge.from) || !graphNodes.has(edge.to)) return;
+    edges.set(edge.id, edge);
+  };
+  const nodeIdForTraceEndpoint = (
+    edge: NonNullable<AgentEvent["collaboration"]>,
+    endpoint: "source" | "target"
+  ) => {
+    const stepId = endpoint === "source" ? edge.sourceStepId : edge.targetStepId;
+    if (stepId && graphNodes.has(`step-${stepId}`)) return `step-${stepId}`;
+    const agentId = endpoint === "source" ? edge.sourceAgentId : edge.targetAgentId;
+    const agentName = endpoint === "source" ? edge.sourceAgentName : edge.targetAgentName;
+    const agentKey = agentId ? normalizedAgentKey(agentId) : "";
+    const nameKey = agentName ? normalizedAgentKey(agentName) : "";
+    const match = [...graphNodes.values()].find((node) =>
+      (agentKey && node.agentId && normalizedAgentKey(node.agentId) === agentKey) ||
+      (nameKey && normalizedAgentKey(node.title) === nameKey)
+    );
+    if (!match && endpoint === "source" && (agentKey || nameKey) && graphNodes.has("agent-lead")) {
+      return "agent-lead";
+    }
+    return match?.id;
+  };
+
+  const plannerAgent = participantAgents.find((agent) => agent.role === "Planner" && /lead|supervisor|planner|orchestrator|规划|编排/i.test(agent.name)) ??
+    participantAgents.find((agent) => agent.role === "Planner");
+  const tracedLeadName = events.find((event) => event.collaboration?.sourceAgentName)?.collaboration?.sourceAgentName;
+  const leadNodeId = "agent-lead";
+
+  if (quest?.spec) {
+    addNode({
+      id: "agent-spec",
+      title: participantAgents.find((agent) => agent.role === "Spec")?.name ?? "Spec Agent",
+      subtitle: "明确需求",
+      role: "Spec",
+      status: "completed",
+      source: participantAgents.some((agent) => agent.role === "Spec") ? "actual" : "inferred",
+      phase: "spec",
+      level: 0,
+      targetProjectIds: []
+    });
+  }
+
+  if (plan || plannerAgent || quest?.planApproval) {
+    addNode({
+      id: leadNodeId,
+      title: plannerAgent?.name ?? tracedLeadName ?? "Lead Agent",
+      subtitle: "拆解 / 调度",
+      role: "Planner",
+      status: plannerAgent?.status ?? (quest?.planApproval?.status === "rejected" ? "blocked" : "completed"),
+      source: plannerAgent || tracedLeadName ? "actual" : "inferred",
+      phase: "plan",
+      level: quest?.spec ? 1 : 0,
+      agentId: plannerAgent?.id,
+      targetProjectIds: plannerAgent?.targetProjectIds ?? []
+    });
+  }
+
+  (plan?.steps ?? []).forEach((step, index) => {
+    const task = taskByStepId.get(step.id);
+    const actualDelegate = actualDelegateForStep(step.id, delegateTargets);
+    const nodeAgentName = actualDelegate?.agentName ?? task?.agentName ?? step.agentName;
+    const nodeAgentId = actualDelegate?.agentId ?? task?.agentId ?? step.agentId;
+    const phase = stepPhase(step, index);
+    const role = task?.role ?? inferParticipantRole({
+      agentName: nodeAgentName,
+      text: `${step.description} ${step.expectedOutput} ${step.contract?.doneCriteria ?? ""}`,
+      fallback: phase === "review" ? "Reviewer" : "Coder"
+    });
+    addNode({
+      id: `step-${step.id}`,
+      title: nodeAgentName,
+      subtitle: `${step.id} · ${flowPhaseLabels[phase]}`,
+      role,
+      status: task?.status ?? deriveParticipantStatus(quest, [], true),
+      source: task?.events.length ? "actual" : "inferred",
+      phase,
+      level: computeStepLevel(step.id),
+      agentId: nodeAgentId,
+      stepId: step.id,
+      targetProjectIds: task?.targetProjectIds ?? uniqueStrings([step.targetProjectId])
+    });
+  });
+
+  flowNodes.forEach((node) => {
+    if (node.phase !== "execute") return;
+    node.tasks.forEach((task) => {
+      if (task.stepIds.some((stepId) => graphNodes.has(`step-${stepId}`))) return;
+      const graphNodeId = `runtime-${task.id}`;
+      if (graphNodes.has(graphNodeId)) return;
+      const runtimeRole: ParticipantAgentRole = task.role ?? "Coder";
+      addNode({
+        id: graphNodeId,
+        title: task.agentName,
+        subtitle: task.stepIds[0] ? `${task.stepIds[0]} · Execute` : "运行时执行",
+        role: runtimeRole,
+        status: task.status,
+        source: "actual",
+        phase: "execute",
+        level: 2,
+        agentId: task.agentId,
+        stepId: task.stepIds[0],
+        targetProjectIds: task.targetProjectIds
+      });
+    });
+  });
+
+  const reviewNode = flowNodes.find((node) => node.phase === "review");
+  if (reviewNode && !reviewNode.tasks.some((task) => task.stepIds.some((stepId) => graphNodes.has(`step-${stepId}`)))) {
+    const maxStepLevel = Math.max(1, ...[...graphNodes.values()].map((node) => node.level));
+    const task = reviewNode.tasks[0];
+    addNode({
+      id: "agent-review",
+      title: task?.agentName ?? "Reviewer",
+      subtitle: reviewNode.title,
+      role: "Reviewer",
+      status: reviewNode.status,
+      source: reviewNode.events.length ? "actual" : "inferred",
+      phase: "review",
+      level: maxStepLevel + 1,
+      agentId: task?.agentId,
+      targetProjectIds: task?.targetProjectIds ?? []
+    });
+  }
+
+  const deliveryNode = flowNodes.find((node) => node.phase === "deliver");
+  if (deliveryNode && !deliveryNode.tasks.some((task) => task.stepIds.some((stepId) => graphNodes.has(`step-${stepId}`)))) {
+    const maxStepLevel = Math.max(1, ...[...graphNodes.values()].map((node) => node.level));
+    const task = deliveryNode.tasks[0];
+    addNode({
+      id: "agent-delivery",
+      title: task?.agentName ?? "Delivery Agent",
+      subtitle: "交付汇总",
+      role: "Delivery",
+      status: deliveryNode.status,
+      source: deliveryNode.events.length || (quest?.deliveryResults.length ?? 0) > 0 ? "actual" : "inferred",
+      phase: "deliver",
+      level: maxStepLevel + 1,
+      agentId: task?.agentId,
+      targetProjectIds: task?.targetProjectIds ?? []
+    });
+  }
+
+  if (graphNodes.has("agent-spec") && graphNodes.has(leadNodeId)) {
+    addEdge({
+      id: "edge-spec-lead",
+      from: "agent-spec",
+      to: leadNodeId,
+      label: "明确需求",
+      kind: "dependency",
+      evidence: "inferred"
+    });
+  }
+
+  const rootSteps = (plan?.steps ?? []).filter((step) => step.dependencies.length === 0);
+  rootSteps.forEach((step) => {
+    const task = taskByStepId.get(step.id) ?? taskFromStep({
+      allSteps: plan?.steps ?? [],
+      changedFiles: [],
+      events,
+      index: plan?.steps.indexOf(step) ?? 0,
+      quest,
+      step
+    });
+    addEdge({
+      id: `edge-lead-${step.id}`,
+      from: graphNodes.has(leadNodeId) ? leadNodeId : `step-${step.id}`,
+      to: `step-${step.id}`,
+      label: rootSteps.length > 1 ? "并行委派" : "委派",
+      kind: "delegate",
+      evidence: taskHasActualDelegate(task, delegateTargets) ? "actual" : "inferred"
+    });
+  });
+
+  (plan?.steps ?? []).forEach((step) => {
+    if (step.dependencies.length === 0 || !graphNodes.has(leadNodeId)) return;
+    const task = taskByStepId.get(step.id) ?? taskFromStep({
+      allSteps: plan?.steps ?? [],
+      changedFiles: [],
+      events,
+      index: plan?.steps.indexOf(step) ?? 0,
+      quest,
+      step
+    });
+    if (!taskHasActualDelegate(task, delegateTargets)) return;
+    addEdge({
+      id: `edge-actual-delegate-${step.id}`,
+      from: leadNodeId,
+      to: `step-${step.id}`,
+      label: "实际委派",
+      kind: "delegate",
+      evidence: "actual"
+    });
+  });
+
+  const downstreamCounts = new Map<string, number>();
+  (plan?.steps ?? []).forEach((step) => {
+    step.dependencies.forEach((dependency) => downstreamCounts.set(dependency, (downstreamCounts.get(dependency) ?? 0) + 1));
+  });
+  (plan?.steps ?? []).forEach((step) => {
+    step.dependencies.forEach((dependency) => {
+      const label = step.dependencies.length > 1
+        ? "汇合依赖"
+        : (downstreamCounts.get(dependency) ?? 0) > 1
+          ? "并行分支"
+          : "依赖输出";
+      addEdge({
+        id: `edge-${dependency}-${step.id}`,
+        from: `step-${dependency}`,
+        to: `step-${step.id}`,
+        label,
+        kind: "dependency",
+        evidence: "inferred"
+      });
+    });
+  });
+
+  const reviewStep = (plan?.steps ?? []).find((step) => stepPhase(step, plan?.steps.indexOf(step) ?? 0) === "review");
+  const reviewGraphId = reviewStep ? `step-${reviewStep.id}` : (graphNodes.has("agent-review") ? "agent-review" : undefined);
+  const terminalIds = terminalStepIds(plan?.steps ?? []).filter((stepId) => stepId !== reviewStep?.id);
+  if (reviewGraphId && !reviewStep) {
+    terminalIds.forEach((stepId) => addEdge({
+      id: `edge-${stepId}-review`,
+      from: `step-${stepId}`,
+      to: reviewGraphId,
+      label: "汇合验收",
+      kind: "dependency",
+      evidence: reviewNode?.events.length ? "actual" : "inferred"
+    }));
+  }
+  if (graphNodes.has("agent-delivery")) {
+    const deliverySources = reviewGraphId ? [reviewGraphId] : terminalIds.map((stepId) => `step-${stepId}`);
+    deliverySources.forEach((sourceId) => addEdge({
+      id: `edge-${sourceId}-delivery`,
+      from: sourceId,
+      to: "agent-delivery",
+      label: "交付汇总",
+      kind: "handoff",
+      evidence: deliveryNode?.events.length || (quest?.deliveryResults.length ?? 0) > 0 ? "actual" : "inferred"
+    }));
+  }
+
+  events.forEach((event) => {
+    const trace = event.collaboration;
+    if (!trace) return;
+    if (trace.kind === "delegate" && trace.targetStepId && graphNodes.has(`step-${trace.targetStepId}`)) return;
+    const from = nodeIdForTraceEndpoint(trace, "source");
+    const to = nodeIdForTraceEndpoint(trace, "target");
+    if (!from || !to) return;
+    addEdge({
+      id: `edge-trace-${event.id}`,
+      from,
+      to,
+      label: trace.label ?? collaborationKindLabels[trace.kind],
+      kind: trace.kind,
+      evidence: trace.evidence
+    });
+  });
+
+  if (reviewGraphId && reviewNode?.kind === "loop") {
+    const loopTargetStepIds = reviewStep?.dependencies.length ? reviewStep.dependencies : terminalIds;
+    loopTargetStepIds.forEach((targetStepId) => {
+      addEdge({
+        id: `edge-loop-${reviewGraphId}-${targetStepId}`,
+        from: reviewGraphId,
+        to: `step-${targetStepId}`,
+        label: "返工范围",
+        kind: "loop",
+        evidence: "inferred"
+      });
+    });
+  }
+
+  const nodes = [...graphNodes.values()].sort((a, b) => a.level - b.level || a.title.localeCompare(b.title));
+  const loopEdges = [...edges.values()].filter((edge) => edge.kind === "loop");
+  const forwardEdges = [...edges.values()].filter((edge) => edge.kind !== "loop");
+  const columns = [...nodes.reduce((groups, node) => {
+    groups.set(node.level, [...(groups.get(node.level) ?? []), node]);
+    return groups;
+  }, new Map<number, CollaborationGraphNode[]>()).entries()]
+    .sort(([levelA], [levelB]) => levelA - levelB)
+    .map(([, levelNodes]) => levelNodes);
+  const parallelGroupCount = columns.filter((column) => column.length > 1).length;
+  return {
+    nodes,
+    columns,
+    edges: forwardEdges,
+    loopEdges,
+    actualEdgeCount: [...edges.values()].filter((edge) => edge.evidence === "actual").length,
+    inferredEdgeCount: [...edges.values()].filter((edge) => edge.evidence === "inferred").length,
+    loopCount: new Set(loopEdges.map((edge) => edge.from)).size,
+    parallelGroupCount
+  };
+}
+
+function buildOrchestrationFlow({
+  changedFiles,
+  events,
+  participantAgents,
+  plan,
+  quest
+}: {
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  participantAgents: ParticipantAgent[];
+  plan: OrchestrationPlan | null;
+  quest?: Quest;
+}): OrchestrationFlow {
+  const nodes: OrchestrationFlowNode[] = [];
+  const allEvents = orderedQuestEvents(events, { includeInternal: true });
+  const prepareEvents = phaseEvents(allEvents, "prepare");
+  const stepTasks = (plan?.steps ?? []).map((step, index) => ({
+    phase: stepPhase(step, index),
+    dependenciesKey: step.dependencies.slice().sort().join("|"),
+    order: index,
+    task: taskFromStep({
+      agent: agentForStep(step, participantAgents),
+      allSteps: plan?.steps ?? [],
+      changedFiles,
+      events,
+      index,
+      quest,
+      step
+    })
+  }));
+  const setup: OrchestrationFlowSetup = {
+    hasSpec: Boolean(quest?.spec),
+    hasPlan: Boolean(plan || quest?.planApproval),
+    planStepCount: plan?.steps.length ?? 0,
+    worktreeCount: quest?.worktrees.length ?? 0,
+    status: prepareEvents.some((event) => event.severity === "error") || quest?.planApproval?.status === "rejected"
+      ? "blocked"
+      : plan || quest?.planApproval || quest?.spec
+        ? "completed"
+        : "planned"
+  };
+  const runtimeTasks = participantAgents
+    .filter((agent) => agent.stepIds.length === 0 || agent.source === "runtime")
+    .map((agent) => ({
+      phase: eventPhase(agent.events[agent.events.length - 1] ?? ({ phase: undefined } as AgentEvent)),
+      dependenciesKey: `runtime-${agent.id}`,
+      order: agent.order,
+      task: taskFromAgent(agent, changedFiles)
+    }));
+
+  const plannedWorkItems = [
+    ...stepTasks.filter((item) => item.phase !== "review" && item.phase !== "deliver"),
+    ...(stepTasks.length === 0 ? runtimeTasks.filter((item) => item.phase === "execute") : [])
+  ].sort((a, b) => a.order - b.order);
+  const workGroups = new Map<string, typeof plannedWorkItems>();
+  plannedWorkItems.forEach((item) => {
+    const key = `${item.phase}:${item.dependenciesKey ?? `runtime-${item.order}`}`;
+    workGroups.set(key, [...(workGroups.get(key) ?? []), item]);
+  });
+  [...workGroups.entries()].forEach(([key, group], index) => {
+    const tasks = group.map((item) => item.task);
+    const parallel = tasks.length > 1;
+    const phase = group[0]?.phase ?? "execute";
+    nodes.push(createFlowNode({
+      id: `flow-work-${key || index}`,
+      phase,
+      kind: parallel ? "parallel" : "phase",
+      title: parallel ? "并行执行" : taskNodeTitle(tasks[0]!, phase),
+      summary: parallel ? `${tasks.length} 个 agent 在同一依赖后并行推进。` : tasks[0]?.title ?? "执行计划步骤。",
+      tasks,
+      events: phaseEvents(allEvents, phase).filter((event) => tasks.some((task) => task.events.some((taskEvent) => taskEvent.id === event.id)))
+    }));
+  });
+
+  const reviewTasks = [
+    ...stepTasks.filter((item) => item.phase === "review").map((item) => item.task),
+    ...runtimeTasks.filter((item) => item.phase === "review").map((item) => item.task)
+  ];
+  const reviewEvents = uniqueEvents([...phaseEvents(allEvents, "review"), ...reviewTasks.flatMap((task) => task.events)]);
+  if (reviewTasks.length > 0 || reviewEvents.length > 0) {
+    const rounds = buildLoopRounds(reviewEvents);
+    const hasRetry = rounds.some((round) => round.status === "blocked") && rounds.some((round) => round.status === "completed");
+    const latestRound = rounds[rounds.length - 1];
+    const reviewStatus: OrchestrationFlowStatus | undefined = latestRound?.status === "blocked"
+      ? "blocked"
+      : hasRetry
+        ? "attention"
+        : undefined;
+    nodes.push(createFlowNode({
+      id: "flow-review",
+      phase: "review",
+      kind: hasRetry ? "loop" : "phase",
+      title: hasRetry ? "Review Loop" : "Review / Validate",
+      summary: hasRetry ? `${Math.max(1, rounds.length)} 轮 review，问题修复后继续验收。` : "审查和验证本次改动。",
+      status: reviewStatus,
+      tasks: reviewTasks,
+      events: reviewEvents,
+      rounds
+    }));
+  }
+
+  const deliveryTasks = [
+    ...stepTasks.filter((item) => item.phase === "deliver").map((item) => item.task),
+    ...runtimeTasks.filter((item) => item.phase === "deliver").map((item) => item.task)
+  ];
+  const deliveryEvents = uniqueEvents([...phaseEvents(allEvents, "deliver"), ...deliveryTasks.flatMap((task) => task.events)]);
+  if (deliveryTasks.length > 0 || deliveryEvents.length > 0 || (quest?.deliveryResults.length ?? 0) > 0) {
+    const deliveryStatus = quest?.deliveryResults.some((delivery) => delivery.status === "failed")
+      ? "blocked"
+      : combineFlowStatuses(deliveryTasks.map((task) => task.status), quest?.status === "delivered" ? "completed" : "planned");
+    nodes.push(createFlowNode({
+      id: "flow-delivery",
+      phase: "deliver",
+      title: "Delivery",
+      summary: quest?.deliveryResults.length ? `${quest.deliveryResults.length} 条交付记录。` : "PR / comment / evidence summary。",
+      status: deliveryStatus,
+      tasks: deliveryTasks,
+      events: deliveryEvents
+    }));
+  }
+
+  const retryCount = nodes.reduce((count, node) => {
+    if (node.kind !== "loop") return count;
+    const blockedRounds = node.rounds.filter((round) => round.status === "blocked").length;
+    return count + blockedRounds;
+  }, 0);
+  const stageLabels = [...nodes.reduce((groups, node) => {
+    groups.set(node.phase, [...(groups.get(node.phase) ?? []), node]);
+    return groups;
+  }, new Map<OrchestrationFlowPhase, OrchestrationFlowNode[]>()).entries()]
+    .sort(([phaseA], [phaseB]) => flowPhaseOrder[phaseA] - flowPhaseOrder[phaseB])
+    .map(([phase, phaseNodes]) => ({
+      phase,
+      label: flowPhaseLabels[phase],
+      status: combineFlowStatuses(phaseNodes.map((node) => node.status)),
+      retryCount: phase === "review" ? retryCount : undefined
+    }));
+  const blockedNode = nodes.find((node) => node.status === "blocked");
+  const runningNode = nodes.find((node) => node.status === "running");
+  const currentNode = blockedNode ?? runningNode ?? nodes[nodes.length - 1];
+  const currentLabel = blockedNode
+    ? `当前阻塞在 ${blockedNode.title}`
+    : quest?.status === "delivered"
+      ? "已交付"
+      : currentNode
+        ? `当前在 ${currentNode.title}`
+        : "等待编排";
+  const collaboration = buildCollaborationGraph({
+    events: allEvents,
+    flowNodes: nodes,
+    participantAgents,
+    plan,
+    quest
+  });
+
+  return {
+    nodes,
+    collaboration,
+    setup,
+    nodeCount: nodes.length,
+    parallelCount: nodes.filter((node) => node.kind === "parallel").length,
+    retryCount,
+    stageLabels,
+    currentLabel
+  };
+}
+
+function flowStageSuffix(stage: OrchestrationFlow["stageLabels"][number]) {
+  if (stage.phase === "review" && stage.retryCount) return ` ↻${stage.retryCount}`;
+  if (stage.status === "completed") return " ✓";
+  if (stage.status === "blocked") return " !";
+  if (stage.status === "running" || stage.status === "planned") return " …";
+  return "";
+}
+
+function taskMatchesAgent(task: OrchestrationFlowTask, agentId: string) {
+  return task.agentId === agentId;
+}
+
+function nodeMatchesAgent(node: OrchestrationFlowNode, agentId: string) {
+  return node.tasks.some((task) => taskMatchesAgent(task, agentId));
+}
+
+function OrchestrationEvidenceLinks({
+  files,
+  showAudit,
+  showPlan,
+  showSpec,
+  onFileSelect,
+  onTabChange
+}: {
+  files: ChangedFile[];
+  showAudit?: boolean;
+  showPlan?: boolean;
+  showSpec?: boolean;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  if (!showSpec && !showPlan && !showAudit && files.length === 0) {
+    return null;
+  }
   return (
-    <div className="inspector-stack">
-      <InspectorSection title="本 Quest 使用的能力">
-        {recommendations.length === 0 ? (
-          <p className="muted">本 Quest 暂未匹配到额外能力，将使用默认能力执行。</p>
-        ) : null}
-        {recommendations.map((recommendation) => {
-          const capability = capabilityById.get(recommendation.capabilityId);
-          if (!capability) {
-            return null;
-          }
+    <div className="orchestration-evidence-links" aria-label="流程节点证据">
+      {showSpec ? (
+        <button className="ghost-action" onClick={() => onTabChange("spec")} type="button">
+          <FileText size={13} /> Spec
+        </button>
+      ) : null}
+      {showPlan ? (
+        <button className="ghost-action" onClick={() => onTabChange("plan")} type="button">
+          <Route size={13} /> Plan
+        </button>
+      ) : null}
+      {showAudit ? (
+        <button className="ghost-action" onClick={() => onTabChange("audit")} type="button">
+          <ShieldCheck size={13} /> Audit
+        </button>
+      ) : null}
+      {files.length > 0 ? (
+        <button className="ghost-action" onClick={() => onTabChange("files")} type="button">
+          <FolderOpen size={13} /> Files
+        </button>
+      ) : null}
+      {files[0] ? (
+        <button
+          className="ghost-action"
+          onClick={() => {
+            onFileSelect(files[0]!);
+            onTabChange("diff");
+          }}
+          type="button"
+        >
+          <Pencil size={13} /> Diff
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function OrchestrationTaskRow({
+  plan,
+  projects,
+  task,
+  onFileSelect,
+  onTabChange
+}: {
+  plan: OrchestrationPlan | null;
+  projects: Project[];
+  task: OrchestrationFlowTask;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const status = participantStatusMeta[task.status];
+  const projectLabels = task.targetProjectIds.map((projectId) => projectName(projects, projectId));
+  return (
+    <div className="orchestration-task-row">
+      <div className="orchestration-task-heading">
+        <div>
+          <strong>{task.agentName}</strong>
+          <span>{task.role ?? "Agent"} · {task.source === "runtime" ? "运行时加入" : "计划参与"}</span>
+        </div>
+        <em className={status.className}>{status.label}</em>
+      </div>
+      {task.description ? <p><CompactText text={task.description} max={150} /></p> : null}
+      <div className="orchestration-task-meta">
+        {projectLabels.map((label) => <span key={label}>项目: {label}</span>)}
+        {task.stepIds.map((stepId) => <span key={stepId}>步骤: {stepId}</span>)}
+        {task.expectedOutput ? <span>产物: <CompactText text={task.expectedOutput} max={70} /></span> : null}
+      </div>
+      <OrchestrationEvidenceLinks
+        files={task.files}
+        showAudit={task.events.length > 0}
+        showPlan={Boolean(plan && task.stepIds.length > 0)}
+        onFileSelect={onFileSelect}
+        onTabChange={onTabChange}
+      />
+    </div>
+  );
+}
+
+function OrchestrationTaskInline({
+  plan,
+  projects,
+  task,
+  onFileSelect,
+  onTabChange
+}: {
+  plan: OrchestrationPlan | null;
+  projects: Project[];
+  task: OrchestrationFlowTask;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const projectLabels = task.targetProjectIds.map((projectId) => projectName(projects, projectId));
+  return (
+    <div className="orchestration-task-inline">
+      <div className="orchestration-task-inline-heading">
+        <span><Bot size={13} /> {task.agentName}</span>
+        <em>{task.role ?? "Agent"} · {task.source === "runtime" ? "运行时加入" : "计划参与"}</em>
+      </div>
+      <div className="orchestration-task-meta">
+        {projectLabels.map((label) => <span key={label}>项目: {label}</span>)}
+        {task.stepIds.map((stepId) => <span key={stepId}>步骤: {stepId}</span>)}
+        {task.expectedOutput ? <span>产物: <CompactText text={task.expectedOutput} max={70} /></span> : null}
+      </div>
+      <OrchestrationEvidenceLinks
+        files={task.files}
+        showAudit={task.events.length > 0}
+        showPlan={Boolean(plan && task.stepIds.length > 0)}
+        onFileSelect={onFileSelect}
+        onTabChange={onTabChange}
+      />
+    </div>
+  );
+}
+
+const collaborationEvidenceLabels: Record<CollaborationEdgeEvidence, string> = {
+  actual: "实际",
+  inferred: "推断"
+};
+
+function collaborationEdgeClass(edge: CollaborationGraphEdge) {
+  return `collaboration-edge-chip ${edge.kind} ${edge.evidence}`;
+}
+
+function CollaborationGraphView({
+  graph,
+  projects,
+  selectedAgentId
+}: {
+  graph: CollaborationGraph;
+  projects: Project[];
+  selectedAgentId: string | null;
+}) {
+  if (graph.nodes.length === 0) {
+    return null;
+  }
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const nodeLabel = (node?: CollaborationGraphNode, fallback = "") => node
+    ? `${node.title}${node.stepId ? ` / ${node.stepId}` : ""}`
+    : fallback;
+  const edgeLabel = (edge: CollaborationGraphEdge) => {
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    return `${nodeLabel(from, edge.from)} → ${nodeLabel(to, edge.to)}`;
+  };
+  return (
+    <div className="collaboration-graph" aria-label="Agent 协作关系图">
+      <div className="collaboration-graph-heading">
+        <div>
+          <strong>协作关系图</strong>
+          <span>展示谁调度谁、哪些分支并行、哪里发生返工。</span>
+        </div>
+        <div className="collaboration-graph-metrics">
+          <span>{graph.actualEdgeCount} 条实际关系</span>
+          <span>{graph.inferredEdgeCount} 条推断关系</span>
+          {graph.parallelGroupCount > 0 ? <span>{graph.parallelGroupCount} 组并行</span> : null}
+          {graph.loopCount > 0 ? <span>{graph.loopCount} 个 loop</span> : null}
+        </div>
+      </div>
+      <div className="collaboration-map" role="list" aria-label="协作节点">
+        {graph.columns.map((column, index) => {
+          const currentLevel = column[0]?.level ?? index;
+          const nextLevel = graph.columns[index + 1]?.[0]?.level;
+          const gapEdges = nextLevel === undefined ? [] : graph.edges.filter((edge) => {
+            const from = nodeById.get(edge.from);
+            const to = nodeById.get(edge.to);
+            return Boolean(from && to && from.level <= currentLevel && to.level === nextLevel);
+          });
           return (
-            <article className="capability-row" key={recommendation.capabilityId}>
-              <div className="worktree-title">
-                <strong>{capability.name}</strong>
+            <Fragment key={`collaboration-column-${currentLevel}`}>
+              <div className="collaboration-stage" role="listitem">
+                {column.length > 1 ? <span className="collaboration-stage-label">Parallel Group</span> : null}
+                {column.map((node) => {
+                  const status = flowStatusMeta[node.status];
+                  const projectLabels = node.targetProjectIds.map((projectId) => projectName(projects, projectId));
+                  const selected = selectedAgentId && node.agentId === selectedAgentId;
+                  const dimmed = selectedAgentId && !selected;
+                  return (
+                    <article
+                      className={`collaboration-node ${node.phase} ${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}`}
+                      key={node.id}
+                    >
+                      <div className="collaboration-node-heading">
+                        <Bot size={14} />
+                        <div>
+                          <strong>{node.title}</strong>
+                          <span>{node.subtitle}</span>
+                        </div>
+                      </div>
+                      <div className="collaboration-node-meta">
+                        <span>{node.role}</span>
+                        {node.stepId ? <span>{node.stepId}</span> : null}
+                        {projectLabels.slice(0, 1).map((label) => <span key={label}>{label}</span>)}
+                      </div>
+                      <div className="collaboration-node-footer">
+                        <em className={status.className}>{status.label}</em>
+                        <span>{node.source === "actual" ? "有运行证据" : "按计划推断"}</span>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
-              <p>{capability.description}</p>
-              <span>{recommendation.reason}</span>
-              <code>{capability.kind} · {capability.source} · 匹配度 {Math.round(recommendation.confidence * 100)}%</code>
-              <div className="capability-permissions">
-                {recommendation.requiredPermissions.map((permission) => (
-                  <em key={permission}>{permission}</em>
-                ))}
+              {nextLevel !== undefined ? (
+                <div className="collaboration-edge-column" aria-label="协作关系">
+                  {gapEdges.length > 0 ? gapEdges.map((edge) => (
+                    <span className={collaborationEdgeClass(edge)} key={edge.id}>
+                      <em>{edge.label}</em>
+                      <strong>{collaborationEvidenceLabels[edge.evidence]}</strong>
+                    </span>
+                  )) : <span className="collaboration-edge-arrow">→</span>}
+                </div>
+              ) : null}
+            </Fragment>
+          );
+        })}
+      </div>
+      <div className="collaboration-relation-list" aria-label="协作关系清单">
+        {graph.edges.map((edge) => (
+          <span className={collaborationEdgeClass(edge)} key={`summary-${edge.id}`}>
+            <em>{edgeLabel(edge)}</em>
+            <strong>{edge.label} · {collaborationEvidenceLabels[edge.evidence]}</strong>
+          </span>
+        ))}
+        {graph.loopEdges.map((edge) => (
+          <span className={collaborationEdgeClass(edge)} key={`loop-${edge.id}`}>
+            <em>{edgeLabel(edge)}</em>
+            <strong>{edge.label} · {collaborationEvidenceLabels[edge.evidence]}</strong>
+          </span>
+        ))}
+      </div>
+      <div className="collaboration-legend" aria-label="关系图例">
+        <span><i className="solid" /> 实线：真实 delegate / 运行证据</span>
+        <span><i className="dashed" /> 虚线：从 plan dependency 推断</span>
+        <span><i className="loop" /> Loop：review 失败后的返工回路</span>
+      </div>
+    </div>
+  );
+}
+
+function OrchestrationTimeline({
+  flow,
+  participantCount,
+  plan,
+  projects,
+  quest,
+  selectedAgentId,
+  onFileSelect,
+  onTabChange
+}: {
+  flow: OrchestrationFlow;
+  participantCount: number;
+  plan: OrchestrationPlan | null;
+  projects: Project[];
+  quest?: Quest;
+  selectedAgentId: string | null;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const visibleNodes = selectedAgentId ? flow.nodes.filter((node) => nodeMatchesAgent(node, selectedAgentId)) : flow.nodes;
+  return (
+    <div className="orchestration-flow">
+      <div className="orchestration-flow-summary">
+        <div className="orchestration-setup-row" aria-label="准备概况">
+          {flow.setup.hasSpec ? <span>Request ✓</span> : null}
+          {flow.setup.hasPlan ? <span>Plan {flow.setup.planStepCount > 0 ? `${flow.setup.planStepCount} steps` : "✓"}</span> : null}
+          {flow.setup.worktreeCount > 0 ? <span>Worktrees {flow.setup.worktreeCount}</span> : null}
+          <OrchestrationEvidenceLinks
+            files={[]}
+            showAudit={flow.setup.worktreeCount > 0}
+            showPlan={Boolean(plan)}
+            showSpec={Boolean(quest?.spec)}
+            onFileSelect={onFileSelect}
+            onTabChange={onTabChange}
+          />
+        </div>
+        {flow.stageLabels.length > 0 ? (
+          <div className="orchestration-stage-strip" aria-label="流程摘要">
+            {flow.stageLabels.map((stage) => (
+              <span className={`orchestration-stage-chip ${stage.status}`} key={stage.phase}>
+                {stage.label}{flowStageSuffix(stage)}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <p>
+          {flow.nodeCount} 个主线节点 · {participantCount} 位参与专家 · {flow.parallelCount} 组并行 · {flow.retryCount} 次返工 · {flow.currentLabel}
+        </p>
+      </div>
+      {flow.nodeCount > 0 ? (
+        <div className="orchestration-flow-note">
+          主线只展示计划步骤、并行/返工和交付节点；准备、规划和监督角色会计入参与专家。
+        </div>
+      ) : null}
+      <CollaborationGraphView graph={flow.collaboration} projects={projects} selectedAgentId={selectedAgentId} />
+      {selectedAgentId && visibleNodes.length === 0 ? <p className="muted">这个专家参与了准备、规划或监督，但没有形成主线节点。</p> : null}
+      <div className="orchestration-timeline">
+        {visibleNodes.map((node, index) => {
+          const status = flowStatusMeta[node.status];
+          const taskRows = selectedAgentId ? node.tasks.filter((task) => taskMatchesAgent(task, selectedAgentId)) : node.tasks;
+          const nodeFiles = taskRows.flatMap((task) => task.files);
+          const showNodeEvidence = taskRows.length === 0 || node.phase === "spec" || node.phase === "prepare";
+          return (
+            <article className={`orchestration-flow-node ${node.kind}`} key={node.id}>
+              <div className="orchestration-node-marker">
+                <span>{String(index + 1).padStart(2, "0")}</span>
+              </div>
+              <div className="orchestration-node-body">
+                <div className="orchestration-node-heading">
+                  <div>
+                    <strong>{node.title}</strong>
+                    <span>{flowPhaseLabels[node.phase]}</span>
+                  </div>
+                  <em className={status.className}>{status.label}</em>
+                </div>
+                <p className="orchestration-node-summary"><CompactText text={node.summary} max={160} /></p>
+                {node.kind === "parallel" ? (
+                  <div className="orchestration-branch-list" aria-label="并行执行分支">
+                    {taskRows.map((task) => (
+                      <OrchestrationTaskRow
+                        key={task.id}
+                        plan={plan}
+                        projects={projects}
+                        task={task}
+                        onFileSelect={onFileSelect}
+                        onTabChange={onTabChange}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {node.kind === "loop" && node.rounds.length > 0 ? (
+                  <div className="orchestration-loop-rounds" aria-label="Review loop 轮次">
+                    {node.rounds.map((round) => {
+                      const roundStatus = flowStatusMeta[round.status];
+                      return (
+                        <div className="orchestration-loop-round" key={round.id}>
+                          <div>
+                            <strong>{round.label} · {round.agentName}</strong>
+                            <span><CompactText text={round.detail} max={150} /></span>
+                          </div>
+                          <em className={roundStatus.className}>{roundStatus.label}</em>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {node.kind !== "parallel" && taskRows.length === 1 ? (
+                  <OrchestrationTaskInline
+                    plan={plan}
+                    projects={projects}
+                    task={taskRows[0]!}
+                    onFileSelect={onFileSelect}
+                    onTabChange={onTabChange}
+                  />
+                ) : null}
+                {node.kind !== "parallel" && taskRows.length > 1 ? (
+                  <div className="orchestration-task-list">
+                    {taskRows.map((task) => (
+                      <OrchestrationTaskRow
+                        key={task.id}
+                        plan={plan}
+                        projects={projects}
+                        task={task}
+                        onFileSelect={onFileSelect}
+                        onTabChange={onTabChange}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {showNodeEvidence ? (
+                  <OrchestrationEvidenceLinks
+                    files={nodeFiles}
+                    showAudit={node.events.length > 0}
+                    showPlan={Boolean(plan && node.phase === "plan")}
+                    showSpec={Boolean(quest?.spec && node.phase === "spec")}
+                    onFileSelect={onFileSelect}
+                    onTabChange={onTabChange}
+                  />
+                ) : null}
               </div>
             </article>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function ParticipantAgentIndex({
+  agents,
+  selectedAgentId,
+  onSelectAgent
+}: {
+  agents: ParticipantAgent[];
+  selectedAgentId: string | null;
+  onSelectAgent: (agentId: string | null) => void;
+}) {
+  if (agents.length === 0) {
+    return null;
+  }
+  return (
+    <details className="evidence-details-panel participant-agent-index">
+      <summary>本次参与专家 ({agents.length})</summary>
+      <p className="participant-agent-index-hint">
+        这里统计所有参与角色；只有实际计划步骤、并行/返工和交付会进入上方主线。
+      </p>
+      <div className="participant-agent-filter-row" aria-label="按专家过滤流程">
+        <button
+          className={selectedAgentId === null ? "ghost-action active" : "ghost-action"}
+          onClick={() => onSelectAgent(null)}
+          type="button"
+        >
+          全部
+        </button>
+        {agents.map((agent) => {
+          const status = participantStatusMeta[agent.status];
+          return (
+            <button
+              className={selectedAgentId === agent.id ? "ghost-action active" : "ghost-action"}
+              key={agent.id}
+              onClick={() => onSelectAgent(agent.id)}
+              type="button"
+            >
+              <Bot size={13} />
+              <span>{agent.name}</span>
+              <em className={status.className}>{status.label}</em>
+            </button>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
+function CapabilitiesPanel({
+  changedFiles,
+  events,
+  projects,
+  quest,
+  onFileSelect,
+  onTabChange
+}: {
+  changedFiles: ChangedFile[];
+  events: AgentEvent[];
+  projects: Project[];
+  quest?: Quest;
+  onFileSelect: (file: ChangedFile) => void;
+  onTabChange: (tab: InspectorTab) => void;
+}) {
+  const [plan, setPlan] = useState<OrchestrationPlan | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const participantAgents = useMemo(() => buildParticipantAgents({ events, plan, quest }), [events, plan, quest]);
+  const flow = useMemo(
+    () => buildOrchestrationFlow({ changedFiles, events, participantAgents, plan, quest }),
+    [changedFiles, events, participantAgents, plan, quest]
+  );
+
+  useEffect(() => {
+    setSelectedAgentId(null);
+  }, [quest?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!quest?.planPath) {
+      setPlan(null);
+      setLoadingPlan(false);
+      setPlanError(null);
+      return;
+    }
+    setPlan(null);
+    setLoadingPlan(true);
+    setPlanError(null);
+    api.getQuestPlan(quest.id)
+      .then((nextPlan) => {
+        if (!cancelled) setPlan(nextPlan);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setPlan(null);
+          setPlanError(error.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPlan(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [quest?.id, quest?.planPath, quest?.updatedAt]);
+
+  return (
+    <div className="inspector-stack">
+      <InspectorSection title="本次协作流程">
+        <p className="section-hint">按本次 request 的实际计划、运行事件和交付证据生成。</p>
+        {loadingPlan ? <p className="muted">加载编排流程中...</p> : null}
+        {planError ? <p className="muted">计划加载失败：{planError}</p> : null}
+        {!loadingPlan && flow.nodes.length === 0 ? (
+          <p className="muted">暂无计划或运行事件显示协作流程。</p>
+        ) : null}
+        {flow.nodes.length > 0 ? (
+          <OrchestrationTimeline
+            flow={flow}
+            participantCount={participantAgents.length}
+            plan={plan}
+            projects={projects}
+            quest={quest}
+            selectedAgentId={selectedAgentId}
+            onFileSelect={onFileSelect}
+            onTabChange={onTabChange}
+          />
+        ) : null}
       </InspectorSection>
-      <InspectorSection title="Manifest">
-        {capabilities.map((capability) => (
-          <div className="manifest-row" key={capability.id}>
-            <strong>{capability.name}</strong>
-            <span>{capability.kind} · {capability.source}</span>
-            <em className={capability.installed ? "badge green" : "badge"}>{capability.installed ? "enabled" : "available"}</em>
-          </div>
-        ))}
-      </InspectorSection>
+      <ParticipantAgentIndex
+        agents={participantAgents}
+        selectedAgentId={selectedAgentId}
+        onSelectAgent={setSelectedAgentId}
+      />
     </div>
   );
 }
@@ -2043,12 +4339,30 @@ function FilesPanel({
   quest?: Quest;
   onFileSelect: (file: ChangedFile) => void;
 }) {
+  const projectCount = new Set(changedFiles.map((file) => file.projectId)).size;
+  const statusCounts = Array.from(
+    changedFiles.reduce((counts, file) => {
+      counts.set(file.status, (counts.get(file.status) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>())
+  );
+
   return (
     <div className="changed-file-list">
       {changedFiles.length === 0 ? (
         <p className="muted">
           {questHasExecuted(quest) ? "本次执行没有产生文件变更。" : "运行 Quest 后会展示变更文件。"}
         </p>
+      ) : null}
+      {changedFiles.length > 0 ? (
+        <div className="changed-file-summary" aria-label="文件变更摘要">
+          <strong>{changedFiles.length}</strong>
+          <span>文件变更</span>
+          <em>{projectCount} 项目</em>
+          {statusCounts.map(([status, count]) => (
+            <em key={status}>{count} {status}</em>
+          ))}
+        </div>
       ) : null}
       {changedFiles.map((file, index) => (
         <motion.button
@@ -2061,7 +4375,7 @@ function FilesPanel({
           transition={{ duration: 0.26, delay: Math.min(index * 0.04, 0.3), ease: [0.22, 0.61, 0.36, 1] }}
         >
           <span>{projectById.get(file.projectId)?.name ?? file.projectId}</span>
-          <code>{file.path}</code>
+          <code><CompactText text={file.path} /></code>
           <em>{file.status}</em>
         </motion.button>
       ))}
@@ -2081,7 +4395,8 @@ function DiffPanel({ file, projectById, quest }: { file?: ChangedFile; projectBy
     <div className="diff-review">
       <div className="diff-meta">
         <strong>{projectById.get(file.projectId)?.name ?? file.projectId}</strong>
-        <code>{file.path}</code>
+        <code><CompactText text={file.path} /></code>
+        <em>{file.status}</em>
       </div>
       <pre>{file.diff || "No diff content."}</pre>
     </div>
@@ -3942,11 +6257,13 @@ function SpecBlock({ title, items, empty }: { title: string; items: string[]; em
     <div className="spec-block">
       <h4>{title}</h4>
       {items.length === 0 ? <p className="muted">{empty ?? "暂无内容。"}</p> : null}
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
+      {items.length > 0 ? (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${title}-${index}-${item}`}><CompactText text={item} /></li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

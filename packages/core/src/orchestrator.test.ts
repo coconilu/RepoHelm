@@ -1939,6 +1939,23 @@ describe("Plan-then-execute flow", () => {
 
       const finalState = await service.getState();
       const events = finalState.events.filter((e) => e.questId === quest.id);
+      const delegateEvents = events.filter((e) => e.type === "agent.tool_call" && e.collaboration?.kind === "delegate");
+      expect(delegateEvents.map((event) => ({
+        targetAgentId: event.collaboration?.targetAgentId,
+        evidence: event.collaboration?.evidence,
+        sourceAgentName: event.collaboration?.sourceAgentName
+      }))).toEqual([
+        {
+          targetAgentId: "researcher",
+          evidence: "actual",
+          sourceAgentName: "Supervisor"
+        },
+        {
+          targetAgentId: "coder",
+          evidence: "actual",
+          sourceAgentName: "Supervisor"
+        }
+      ]);
       expect(events.some((e) => e.type === "step.failed" && e.title === "步骤失败: Coder")).toBe(true);
       expect(events.some((e) => e.type === "step.completed" && e.title === "步骤完成: Researcher")).toBe(true);
       expect(events.some((e) => e.type === "orchestrator.failed")).toBe(true);
@@ -2658,6 +2675,26 @@ describe("CLI backend timeline propagation", () => {
       await service.approvePlan(quest.id);
 
       const events = (await service.getState()).events;
+      const collaborationEdge = events.find((event) => event.type === "collaboration.edge");
+      expect(collaborationEdge).toMatchObject({
+        agent: "Supervisor",
+        phase: "execute",
+        visibility: "process",
+        severity: "info",
+        stepId: "step_1",
+        projectId: project.id,
+        collaboration: {
+          kind: "delegate",
+          evidence: "actual",
+          sourceAgentId: "supervisor",
+          sourceAgentName: "Supervisor",
+          targetAgentId: "coder",
+          targetAgentName: "Coder",
+          targetStepId: "step_1",
+          targetProjectId: project.id
+        }
+      });
+
       const toolCall = events.find((event) => event.type === "agent.tool_call");
       expect(toolCall).toBeDefined();
       expect(toolCall!.detail).toContain("pnpm test");
